@@ -3,6 +3,25 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## Q4: no hidden `_series_id` column (2026-10-18)
+
+IIoT small (string series key `tag`, dedup on), loaded with inline maintenance only (overlapping files remain),
+local disk, release build; 11 queries, 2 runs per setting, 3 repeats each:
+
+| | `read-dedup = false` | `read-dedup = true` |
+|---|---:|---:|
+| Geomean, median first run / best repeat | 54.0 / 37.3 ms | 61.7 / 45.0 ms |
+| `energy` best | 71.9 ms | 100.3 ms |
+| `latest-area` best | 26.2 ms | 41.2 ms |
+
+- `EXPLAIN ANALYZE` of `energy`: `DedupExec` computes for 2.1 ms. The readings scan takes 631 ms summed over
+  partitions with dedup and 341 ms without (the merge reads overlapping files in fewer, skewed partitions). Both decode
+  12.3 M rows to keep 144 K.
+- A hidden 64-bit `_series_id` would shorten the 2 ms of key comparisons, not the scan; it would not prune better
+  either, since DataFusion prunes with `IN` lists of at most 20 values whatever the type: `tag IN (20 tags)` decodes
+  2.4 M rows (scan 250 ms), `tag IN (21 tags)` 12.4 M (780 ms). Decided: keep the series id index-only; pruning for
+  large series-key sets is #103.
+
 ## P8: block cache requests of at most 1 MiB (2026-10-18, #65)
 
 Setup as in the next section (RustFS, 20 ms per request, 50 MiB/s per response; 3 runs each, interleaved). The cache
