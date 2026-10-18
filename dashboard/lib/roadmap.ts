@@ -21,6 +21,28 @@ export const NOW: RoadmapItem[] = [
     status: "next",
   },
   {
+    title: "Time-weighted averages",
+    description: "Means of irregular readings, each weighted by how long it held. Exact, from raw data or rollups.",
+    status: "done",
+  },
+  {
+    title: "Rollups answer more queries",
+    description:
+      "Daily queries from minute rollups, rollups computed from finer ones, and each bucket's first, lowest, highest, and last readings.",
+    status: "done",
+  },
+  {
+    title: "Faster reads from object storage",
+    description:
+      "A query's reads go out together, in parts of 1 MiB. First queries on S3-like storage take a third less time.",
+    status: "done",
+  },
+  {
+    title: "Hundreds of thousands of series",
+    description: "Ingest and dashboards measured at 400,000 series: about 2 million rows a second on a laptop.",
+    status: "done",
+  },
+  {
     title: "Write from Cloudflare Workers",
     description:
       "Append to tables and keep them compacted from Workers and other JavaScript runtimes, with the WebAssembly library.",
@@ -108,11 +130,11 @@ export const COMING_UP: RoadmapItem[] = [
   },
   {
     title: "More rollups",
-    description: "Percentiles and time-weighted averages in rollups.",
+    description: "Percentiles in rollups.",
   },
   {
     title: "Time-series functions",
-    description: "Gap filling, time-weighted averages, counters, and percentiles.",
+    description: "Gap filling, counters, and percentiles.",
   },
   {
     title: "Any engine can attach",
