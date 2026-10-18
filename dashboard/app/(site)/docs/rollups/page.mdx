@@ -55,11 +55,20 @@ WHERE bucket >= now() - INTERVAL '7 days'
 
 Or query the raw table. The reader answers from the rollup when:
 
-- the query groups by `time_bucket` of the same width and by the same series-key columns,
-- every aggregate it asks for is one the rollup stores, and
+- the query groups by `time_bucket` of the rollup's width or a multiple of it (daily from an hourly rollup), and by
+  the rollup's series-key columns or some of them,
+- every aggregate it asks for is one the rollup stores, or, for wider buckets or fewer columns, one it can be merged
+  from: `count`, `sum`, `min`, `max`, `first_value` and `last_value` from themselves, and `avg` from `sum` or `avg`
+  together with the matching `count`, and
 - its filters compare the time column with constants (`now()` included) or filter the grouping columns.
 
-The answer is exact. Buckets that are inside the query's time range and unchanged since the rollup's last refresh come from the rollup. The rest come from the raw table, as without a rollup: buckets that changed since the refresh, and the partial buckets at the edges of the time range. `EXPLAIN` shows both parts under a `Union`:
+For a wider bucket or fewer columns, the rollup's rows are aggregated again: counts and sums are added, minimums and
+maximums taken, first and last values taken from the first and last bucket, and averages weighted by their counts.
+On the industrial benchmark's 30 days of readings with a 1-minute rollup, daily statistics per tag took 0.25 s
+instead of 2.1 s, and 6-hourly totals over all tags 0.11 s instead of 1.1 s.
+
+The answer is exact, up to the rounding of floating-point sums added in a different order (a relative difference
+around 10⁻¹²). Buckets that are inside the query's time range and unchanged since the rollup's last refresh come from the rollup. The rest come from the raw table, as without a rollup: buckets that changed since the refresh, and the partial buckets at the edges of the time range. `EXPLAIN` shows both parts under a `Union`:
 
 ```console
 $ timelake sql "EXPLAIN SELECT device_id, time_bucket(INTERVAL '1 hour', time) AS hour, max(temp)
@@ -114,9 +123,9 @@ print(report["rollups_refreshed"], report["rollup_rows"])
 
 ## Not yet
 
-- Rollups built from other rollups (hourly from minutes).
+- Rollups built from other rollups (an hourly rollup stored from the minute one); a query for hours is already
+  answered from the minute rollup.
 - Aggregates that need stored state: percentiles, time-weighted averages.
-- Answering a coarser query (daily from an hourly rollup) or one grouped by fewer columns.
 - Calendar buckets (months), filters in the definition, and routing in plain DuckDB.
 
 The design is in SPEC.md §11.1.

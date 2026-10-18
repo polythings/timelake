@@ -3,6 +3,21 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: coarser queries from a rollup (2026-10-18)
+
+IIoT small (30 days, 1,000 tags, 370 M readings), maintained, local disk, release build, a 1-minute rollup
+(`tag`, `avg`, `min`, `max`, `count(*)`, `count(value)`; 30.4 M rows, created in 13 s); best of 7, process start
+included:
+
+| Query | Raw table | From the rollup |
+|---|---:|---:|
+| Hourly `avg`, `max` of 20 tags, 30 days | 144 ms | 66 ms |
+| Daily `avg`, `min`, `max`, `count(*)` per tag | 2,067 ms | 253 ms |
+| 6-hourly `avg`, `count(*)` over all tags (no key) | 1,099 ms | 113 ms |
+| 1-minute `avg` of 20 tags (the rollup's own width, as before) | 279 ms | 190 ms |
+
+Same rows; numbers differ only by the rounding of sums added in another order (at most 9 × 10⁻¹³ relative).
+
 ## P10: k-way merge on inputs that alternate key by key (2026-10-18)
 
 The merge behind compaction and large appends (`timelake_format::merge`) took each run as a slice of its batch and

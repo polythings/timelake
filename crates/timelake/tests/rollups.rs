@@ -43,6 +43,24 @@ const QUERIES: &[(&str, bool)] = &[
          GROUP BY 1, 2 HAVING max(t.value) > 15000",
         true,
     ),
+    // Wider buckets and fewer keys: the rollup's hours merged.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), min(value), max(value), count(*),
+                sum(value), count(value), first_value(value ORDER BY time), last_value(value ORDER BY time)
+         FROM iot.r GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT time_bucket(INTERVAL '6 hours', time) AS b, count(*) AS n, avg(value), max(value) FROM iot.r
+         GROUP BY 1",
+        true,
+    ),
+    (
+        "SELECT device, time_bucket(INTERVAL '3 hours', time) AS b, avg(value) FROM iot.r
+         WHERE time >= TIMESTAMP '2026-01-01 04:30:00' AND time < TIMESTAMP '2026-01-02 20:00:00' GROUP BY 1, 2",
+        true,
+    ),
+    ("SELECT device, time_bucket(INTERVAL '90 minutes', time) AS h, avg(value) FROM iot.r GROUP BY 1, 2", false),
     ("SELECT device, time_bucket(INTERVAL '30 minutes', time) AS h, avg(value) FROM iot.r GROUP BY 1, 2", false),
     (
         "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, avg(value) FROM iot.r WHERE value > 5 GROUP BY 1, 2",
@@ -102,6 +120,28 @@ async fn rollups_answer_like_the_raw_table() {
         ["device", "bucket", "avg_value", "min_value", "max_value", "sum_value", "n", "count_value", "first", "last"]
     );
     check_answers(&lake).await;
+}
+
+/// A rollup with averages and counts but no sums answers wider buckets by weighting each
+/// bucket's average by its count.
+#[tokio::test(flavor = "multi_thread")]
+async fn averages_merge_from_average_and_count() {
+    let (_dir, lake) = temp_lake();
+    let t = lake.create_table("iot.r", &common::schema(), opts()).await.unwrap();
+    let b = batch(T0, 2 * 24 * 60, MINUTE, 4, |d, i| f64::from(d) * 10_000.0 + i as f64);
+    t.append(&[b], AppendOptions::default()).await.unwrap();
+    let s = Session::new(lake.clone());
+    rows(
+        &s,
+        "CREATE MATERIALIZED ROLLUP iot.r_1h AS SELECT device, time_bucket(INTERVAL '1 hour', time) AS bucket,
+         avg(value) AS mean, count(value) AS n FROM iot.r GROUP BY device, bucket WITH (refresh_interval = 'off')",
+    )
+    .await;
+    let sql = "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value) FROM iot.r GROUP BY 1, 2";
+    let unrouted = Session::new(lake.clone());
+    unrouted.sql("SET timelake.rollup_routing = false").await.unwrap();
+    assert!(reads_rollup(&s, sql).await);
+    assert_eq!(answer(&s, sql).await, answer(&unrouted, sql).await);
 }
 
 #[tokio::test(flavor = "multi_thread")]

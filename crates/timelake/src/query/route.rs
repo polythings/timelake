@@ -15,12 +15,13 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::datasource::{provider_as_source, source_as_provider};
 use datafusion::error::Result as DfResult;
+use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, LogicalPlan, LogicalPlanBuilder, Operator, Projection, Union,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
-use datafusion::prelude::ident;
+use datafusion::prelude::{cast, ident};
 
 use super::PLANNING_REUSE;
 use super::provider::{Kind, TimelakeProvider};
@@ -175,37 +176,85 @@ impl RollupRewrite {
         let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(q.table.name()).cloned();
         let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
         for candidate in &routes.rollups {
-            let Some(columns) = candidate.answers(&q) else { continue };
+            let Some(answer) = candidate.answers(&q) else { continue };
             let Some((first, last)) = full_buckets(q.from, q.to, q.width) else { return Ok(None) };
+            // A query bucket comes from the rollup only if all of the rollup's buckets in it do.
             let from_rollup: Ranges = candidate
                 .clean
                 .iter()
-                .map(|&(lo, hi)| (lo.max(first), hi.min(last)))
+                .map(|&(lo, hi)| (ceil(lo, q.width).max(first), floor(hi, q.width).min(last)))
                 .filter(|(lo, hi)| lo < hi)
                 .collect();
             if from_rollup.is_empty() {
                 continue;
             }
-            return Ok(Some(rewrite(a, &q, candidate, &columns, &from_rollup)?));
+            return Ok(Some(rewrite(a, &q, candidate, &answer, &from_rollup)?));
         }
         Ok(None)
     }
 }
 
+/// How a rollup answers a query.
+enum Answer {
+    /// Its rows as they are: the query's buckets and keys are the rollup's. The rollup columns
+    /// holding the query's aggregates, in order.
+    Stored(Vec<String>),
+    /// Its rows merged into the query's wider buckets or fewer keys: the aggregates over the
+    /// rollup's rows giving the query's, in order.
+    Merged(Vec<Expr>),
+}
+
 impl Candidate {
-    /// The rollup columns answering the query's aggregates, in order, if this rollup can.
-    fn answers(&self, q: &Query<'_>) -> Option<Vec<String>> {
+    /// How this rollup answers the query, if it can: its buckets must divide the query's, and its
+    /// keys include the query's.
+    fn answers(&self, q: &Query<'_>) -> Option<Answer> {
         let keys: HashSet<&str> = self.def.keys.iter().map(String::as_str).collect();
-        if self.def.width != q.width || keys != q.keys {
+        if q.width % self.def.width != 0 || !q.keys.is_subset(&keys) {
             return None;
         }
-        q.aggregates
-            .iter()
-            .map(|(function, column)| {
-                let a = self.def.aggregates.iter().find(|a| a.function == *function && a.column == *column)?;
-                Some(a.name.clone())
+        let stored = |function: &str, column: &Option<String>| {
+            self.def.aggregates.iter().find(|a| a.function == function && a.column == *column).map(|a| a.name.clone())
+        };
+        if self.def.width == q.width && keys == q.keys {
+            let columns = q.aggregates.iter().map(|(f, c)| stored(f, c)).collect::<Option<_>>()?;
+            return Some(Answer::Stored(columns));
+        }
+        let by_bucket = || vec![ident(&self.def.bucket).sort(true, false)];
+        let merged = q.aggregates.iter().map(|(function, column)| {
+            Some(match function.as_str() {
+                "count" | "sum" => agg::sum(ident(stored(function, column)?)),
+                "min" => agg::min(ident(stored(function, column)?)),
+                "max" => agg::max(ident(stored(function, column)?)),
+                "first_value" => agg::first_value(ident(stored(function, column)?), by_bucket()),
+                "last_value" => agg::last_value(ident(stored(function, column)?), by_bucket()),
+                // A mean of means weighted by the rows each counted.
+                "avg" => {
+                    let n = self.count_of(column.as_deref()?, q)?;
+                    let total = match stored("sum", column) {
+                        Some(sum) => ident(sum),
+                        // Rules run after type coercion: the operands' types must match already.
+                        None => ident(stored("avg", column)?) * cast(ident(n.clone()), DataType::Float64),
+                    };
+                    cast(agg::sum(total), DataType::Float64) / cast(agg::sum(ident(n)), DataType::Float64)
+                }
+                _ => return None,
             })
-            .collect()
+        });
+        merged.collect::<Option<_>>().map(Answer::Merged)
+    }
+
+    /// The rollup column counting a bucket's non-null values of `column`: `count(column)`, or
+    /// `count(*)` where the column can't be null.
+    fn count_of(&self, column: &str, q: &Query<'_>) -> Option<String> {
+        let counts = |c: Option<&str>| {
+            self.def
+                .aggregates
+                .iter()
+                .find(|a| a.function == "count" && a.column.as_deref() == c)
+                .map(|a| a.name.clone())
+        };
+        let required = q.table.schema().field_with_name(column).is_ok_and(|f| !f.is_nullable());
+        counts(Some(column)).or_else(|| if required { counts(None) } else { None })
     }
 }
 
@@ -323,7 +372,7 @@ fn rewrite(
     a: &Aggregate,
     q: &Query<'_>,
     candidate: &Candidate,
-    columns: &[String],
+    answer: &Answer,
     from_rollup: &[(i64, i64)],
 ) -> DfResult<LogicalPlan> {
     // Raw side: the same aggregate, over the rows of the other buckets.
@@ -382,19 +431,34 @@ fn rewrite(
     for f in &q.key_filters {
         builder = builder.filter(unqualified((*f).clone())?)?;
     }
-    let scan_schema = builder.schema().clone();
     let n_group = a.group_expr.len();
-    let mut exprs = vec![];
-    for (i, (qualifier, field)) in a.schema.iter().enumerate() {
-        let column = if i < n_group {
-            match unalias(&a.group_expr[i]) {
+    // The rollup side's column for each of the aggregate's outputs.
+    let outputs: Vec<String> = match answer {
+        Answer::Stored(columns) => {
+            let groups = a.group_expr.iter().map(|g| match unalias(g) {
                 Expr::Column(c) => c.name.clone(),
                 _ => candidate.def.bucket.clone(),
-            }
-        } else {
-            columns[i - n_group].clone()
-        };
-        let mut e = ident(&column);
+            });
+            groups.chain(columns.iter().cloned()).collect()
+        }
+        Answer::Merged(aggregates) => {
+            // The query's grouping over the rollup's rows: its bucket of the bucket column.
+            let groups = a.group_expr.iter().enumerate().map(|(i, g)| {
+                let g = unqualified(unalias(g).clone())?.transform(|e| match e {
+                    Expr::Column(c) if c.name == q.time => Ok(Transformed::yes(ident(&candidate.def.bucket))),
+                    other => Ok(Transformed::no(other)),
+                });
+                Ok(g?.data.alias(format!("g{i}")))
+            });
+            let merged = aggregates.iter().enumerate().map(|(i, e)| e.clone().alias(format!("a{i}")));
+            builder = builder.aggregate(groups.collect::<DfResult<Vec<_>>>()?, merged)?;
+            (0..n_group).map(|i| format!("g{i}")).chain((0..aggregates.len()).map(|i| format!("a{i}"))).collect()
+        }
+    };
+    let scan_schema = builder.schema().clone();
+    let mut exprs = vec![];
+    for (i, (qualifier, field)) in a.schema.iter().enumerate() {
+        let mut e = ident(&outputs[i]);
         if e.get_type(&scan_schema)? != *field.data_type() {
             e = e.cast_to(field.data_type(), &scan_schema)?;
         }
