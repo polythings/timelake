@@ -10,6 +10,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Setting `filter-pushdown` (`auto`, `true`, `false`): the Timelake reader applies filters while decoding Parquet and
+  decodes the other columns only for rows that pass. `auto`, the default, turns it on for local files (TSBS geomeans
+  4–5% faster, selective group-bys up to 40%) and off on object storage, where it adds a round trip per row group.
 - Data files use the codec in Iceberg's `write.parquet.compression-codec` and `write.parquet.compression-level`
   (ZSTD 3 by default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Before, Timelake always wrote ZSTD 3.
 

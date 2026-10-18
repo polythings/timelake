@@ -124,7 +124,7 @@ def reader_options() -> dict[str, str]:
 def reader_settings() -> dict[str, str]:
     """Session settings for the CLI reader, from ``TIMEBENCH_TIMELAKE_SETTINGS`` (``key=value,...``).
 
-    For comparing settings such as ``datafusion.execution.parquet.pushdown_filters=true`` on the same tables.
+    For comparing settings such as ``timelake.filter_pushdown=true`` on the same tables.
     """
     raw = os.environ.get("TIMEBENCH_TIMELAKE_SETTINGS", "")
     return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)

@@ -276,6 +276,19 @@ pub static SETTINGS: &[Setting] = &[
         check: read_dedup_strategy,
     },
     Setting {
+        name: "filter-pushdown",
+        kind: "auto, true or false",
+        default: DefaultValue::Value("auto"),
+        levels: &[Level::Table, Level::Session],
+        since: "0.7.0",
+        description: "The Timelake reader applies filters while decoding Parquet pages, cheapest first, and decodes \
+                      the other columns only for the rows that pass. Less decoding when filters keep few rows, but \
+                      each row group's filter columns and other columns are fetched one after the other. `auto` is \
+                      on for local files and off on object storage, where first queries wait for the extra round \
+                      trip; `true` suits repeat queries served from the cache.",
+        check: auto_or_boolean,
+    },
+    Setting {
         name: "target-file-size-bytes",
         kind: "bytes",
         default: DefaultValue::Value("268435456"),
@@ -452,6 +465,13 @@ fn boolean(s: &str) -> Result<()> {
     }
 }
 
+fn auto_or_boolean(s: &str) -> Result<()> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" | "true" | "false" => Ok(()),
+        _ => Err(FormatError::new(format!("must be auto, true or false, got {s:?}"))),
+    }
+}
+
 fn count(s: &str) -> Result<()> {
     s.parse::<u64>().map(drop).map_err(|_| FormatError::new(format!("must be a non-negative integer, got {s:?}")))
 }
@@ -530,6 +550,7 @@ mod tests {
             property::INGEST_TIME_COLUMN,
             property::READ_DEDUP,
             property::READ_DEDUP_STRATEGY,
+            property::FILTER_PUSHDOWN,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -545,7 +566,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 28, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 29, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

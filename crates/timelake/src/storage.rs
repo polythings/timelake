@@ -263,6 +263,11 @@ impl Storage {
         self.list_on_load
     }
 
+    /// Whether the store is object storage, not local files or memory: each request is a round trip.
+    pub fn is_remote(&self) -> bool {
+        !matches!(self.url.scheme(), "file" | "memory")
+    }
+
     /// Whether the store supports listing (plain HTTPS does not).
     pub fn can_list(&self) -> bool {
         self.listable

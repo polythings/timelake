@@ -93,6 +93,8 @@ pub mod property {
     pub const READ_DEDUP: &str = "timelake.read-dedup";
     /// How the Timelake reader removes copies: `merge` (default) or `keys-first` (SPEC §9.1).
     pub const READ_DEDUP_STRATEGY: &str = "timelake.read-dedup-strategy";
+    /// Whether the Timelake reader filters rows while decoding Parquet: `auto` (default), `true` or `false`.
+    pub const FILTER_PUSHDOWN: &str = "timelake.filter-pushdown";
     /// Format of the head object (`metadata/timelake-head`): `arrow` (default), `json`, another
     /// registered codec, or `none` to not write one.
     pub const HEAD_FORMAT: &str = "timelake.head-format";

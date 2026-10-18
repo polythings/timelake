@@ -250,8 +250,25 @@ async fn scan_files(
     {
         builder = builder.with_output_ordering(vec![ordering]);
     }
-    let format = ParquetFormat::default().with_options(state.table_options().parquet.clone());
+    let mut options = state.table_options().parquet.clone();
+    let pushdown = filter_pushdown(table, state)?;
+    options.global.pushdown_filters = pushdown;
+    options.global.reorder_filters = pushdown;
+    let format = ParquetFormat::default().with_options(options);
     format.create_physical_plan(state, builder.build()).await
+}
+
+/// The session's `timelake.filter_pushdown`, else the table's `timelake.filter-pushdown`; `auto`
+/// is on for local files and off on object storage.
+fn filter_pushdown(table: &Table, state: &dyn DfSession) -> DfResult<bool> {
+    let settings = state.config().options().extensions.get::<SessionSettings>();
+    let session = settings.and_then(|s| s.get(property::FILTER_PUSHDOWN));
+    match session.unwrap_or(&table.contract().filter_pushdown).to_ascii_lowercase().as_str() {
+        "auto" => Ok(!table.lake().storage().is_remote()),
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(DataFusionError::Plan(format!("unknown filter pushdown {other:?}: auto, true or false"))),
+    }
 }
 
 /// Scans files that may share keys, strategy merge: each file's rows with its commit rank, split

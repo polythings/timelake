@@ -77,7 +77,7 @@ uv run timebench history --workload tsbs-iot                  # one line per run
   the concurrent dashboards if asked, without ingesting. `TIMEBENCH_TIMELAKE_OPTIONS=key=value,...` adds storage
   options to Timelake's readers, to compare settings on the same tables (`timelake_cache=off`), and
   `TIMEBENCH_TIMELAKE_SETTINGS=key=value,...` session settings of the CLI reader
-  (`datafusion.execution.parquet.pushdown_filters=true`).
+  (`timelake.filter_pushdown=true`).
 - **Adding a workload or system:** subclass `Workload` or `System` and register it in its package's `__init__.py`.
   Queries go in `queries/<suite>/queries.sql` with the dialect placeholders of `timebench/queries.py`.
 

@@ -133,6 +133,18 @@
   },
   {
     "default": {
+      "value": "auto"
+    },
+    "description": "The Timelake reader applies filters while decoding Parquet pages, cheapest first, and decodes the other columns only for the rows that pass. Less decoding when filters keep few rows, but each row group's filter columns and other columns are fetched one after the other. `auto` is on for local files and off on object storage, where first queries wait for the extra round trip; `true` suits repeat queries served from the cache.",
+    "kind": "auto, true or false",
+    "levels": ["table", "session"],
+    "name": "filter-pushdown",
+    "property": "timelake.filter-pushdown",
+    "since": "0.7.0",
+    "sql": "timelake.filter_pushdown"
+  },
+  {
+    "default": {
       "value": "268435456"
     },
     "description": "Size at which compaction output and writes roll to a new file (256 MiB).",

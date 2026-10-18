@@ -165,6 +165,8 @@ pub struct Contract {
     pub read_dedup: bool,
     /// How the Timelake reader removes copies: `merge` or `keys-first`.
     pub read_dedup_strategy: String,
+    /// Whether the Timelake reader filters rows while decoding Parquet: `auto`, `true` or `false`.
+    pub filter_pushdown: String,
     /// Format of the head object, or `none` to not write one.
     pub head_format: String,
     /// Bytes the head may spend on optional sections (the last-value index).
@@ -229,6 +231,7 @@ impl Contract {
             },
             read_dedup: p.flag(property::READ_DEDUP, p.flag(property::DEDUP, false)?)?,
             read_dedup_strategy: p.get(property::READ_DEDUP_STRATEGY).unwrap_or("merge").to_ascii_lowercase(),
+            filter_pushdown: p.get(property::FILTER_PUSHDOWN).unwrap_or("auto").to_ascii_lowercase(),
             head_format: p.get(property::HEAD_FORMAT).unwrap_or(Self::DEFAULT_HEAD_FORMAT).to_ascii_lowercase(),
             head_inline_bytes: p.number(property::HEAD_INLINE_BYTES, Self::DEFAULT_HEAD_INLINE_BYTES)?,
             format_version: p.get(property::FORMAT_VERSION).map_or(Ok(FormatVersion::UNVERSIONED), str::parse)?,

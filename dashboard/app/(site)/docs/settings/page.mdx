@@ -43,6 +43,16 @@ lake = timelake.Lake("s3://bucket/lake", settings={"read_dedup": "false"})
 
 Durations are a number and a unit: `s`, `m` (minutes), `h`, `d`, `w` or `y`, or the long forms (`90 days`, `2 weeks`). Examples: `30m`, `36h`, `90d`, `1y`.
 
+## Filter pushdown
+
+With `filter-pushdown` on, a scan decodes the filter columns of a row group, evaluates the filters, and decodes the
+other columns only for the rows that pass. On local disk (TSBS, standard scale, repeat queries) it cut the geomean by
+4–5% and selective group-bys by 15–40%, and made queries that keep most rows up to 20% slower. On object storage it
+costs a request round trip per row group: with 20 ms per request, first queries took 7% longer through the block
+cache and 32% longer without it, while repeat queries served from the cache were 7% faster. So `auto` turns it on
+for local files and off on object storage. Timelake's scans ignore DataFusion's own
+`datafusion.execution.parquet.pushdown_filters`; scans that remove duplicates use pushdown either way.
+
 ## Iceberg properties set at creation
 
 - `write.format.default = parquet` and `write.parquet.compression-codec = zstd`. Timelake writes data files with the codec this names, at `write.parquet.compression-level` where the codec has levels (ZSTD 3 by default): `zstd`, `lz4`, `snappy`, `gzip`, `brotli`, or `uncompressed` (from JavaScript: `zstd` and `snappy`). Set it with `timelake alter tsbs.readings --set write.parquet.compression-codec=lz4`. On TSBS IoT, repeat queries on local disk took 11.5 ms with ZSTD 3, 11.1 ms with ZSTD 1, 12.3 ms with LZ4 and 10.8 ms with Snappy, while the data took 200, 204, 242 and 277 MB: reading doesn't wait on decompression, and on object storage bytes cost time and money, so ZSTD 3 stays the default.

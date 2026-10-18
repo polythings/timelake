@@ -3,6 +3,51 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: filter pushdown, by store (2026-10-17)
+
+Laptop (M1 Pro), release build, TSBS standard scale, maintained checkpoint, Timelake reader, each query in a fresh
+process. Parquet filter pushdown (with filter reordering) decodes a row group's filter columns first and the other
+columns only for rows that pass; the setting `filter-pushdown` chooses it.
+
+**Local disk**, one first run and 5 repeats, geomean of per-query medians, each pair run twice:
+
+| Geomean first / best | Off | Pushdown | Pushdown + reorder |
+|---|---:|---:|---:|
+| IoT (12 queries) | 29.7 / 10.7 ms | 29.7 / 10.3 ms | 29.4 / 10.2 ms |
+| DevOps (15 queries), two runs | 30.6 / 16.5, 30.6 / 16.2 ms | | 28.9 / 15.6, 29.2 / 15.5 ms |
+
+- Faster: IoT `long-daily-sessions` −40%, `long-driving-sessions` −30%, `stationary-trucks` −15%; DevOps
+  `high-cpu-all` −20%, `double-groupby-1` −15%, `double-groupby-all` −10%: filters that keep few rows.
+- Slower: IoT `avg-vs-projected-fuel-consumption` +9–20% and `avg-load` +11%: filters that keep most rows pay for
+  evaluating them while decoding. Point queries are unchanged.
+
+**Object storage**, IoT (17 queries) on RustFS behind `tools/s3proxy` with 20 ms per request:
+
+| | Off | Pushdown + reorder |
+|---|---:|---:|
+| Engine's default storage (block cache in memory), 6–7 runs: median first run, geomean | 169 ms | 181 ms |
+| Same, best repeat (served from the cache), geomean | 13.5 ms | 12.6 ms |
+| Requests, first run: `avg-load`, `daily-activity` | 17, 14–18 | 29, 29 |
+| No block cache (in-process store over the same files, 20 ms per GET), best of 3 cold runs, geomean | 192 ms | 253 ms |
+
+- Pushdown fetches a row group's filter columns, then its other columns: one more round trip per row group, which a
+  cold query waits for. The block cache hides part of it.
+- The first runs on RustFS are bimodal (the same query takes about 150 or 350 ms in either mode), so the medians
+  matter more than single runs.
+
+Decision: `filter-pushdown = auto`, on for local files and off on object storage; `true` for repeat-heavy readers
+on object storage. Timelake's scans no longer follow `datafusion.execution.parquet.pushdown_filters`.
+
+Other options measured on the way, not taken:
+
+- **Codec** (IoT, best geomean, data size): ZSTD 3 11.5 ms 200 MB, ZSTD 1 11.1 ms 204 MB, LZ4 12.3 ms 242 MB,
+  Snappy 10.8 ms 277 MB. ZSTD 3 stays the default; the codec now follows `write.parquet.compression-codec`.
+- **TopK on the newest reading before a time across the fleet** (#72): 75–113 ms; DataFusion's TopK dynamic filter
+  prunes 1 of 12 row groups on day files. A scan that reads partitions newest first and stops once the top k are
+  settled would be about 3× faster; recorded on #72.
+- Profile of `avg-vs-projected-fuel-consumption` (11.7M rows × 3 columns): decoding 248 ms CPU, join 130 ms, partial
+  aggregate 171 ms; DataFusion's operators, not Timelake's scan, take most of it.
+
 ## Columns encoded in parallel (2026-10-17)
 
 Same machine, data and method as streaming compaction below. The shared file writer (`timelake_format::file`)

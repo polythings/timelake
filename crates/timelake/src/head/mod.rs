@@ -467,15 +467,20 @@ mod tests {
     }
 
     /// Round trips a cold query waits for, one after another, on a store where each request
-    /// takes 100 ms of (paused) time: `None` runs `latest`, `Some(sql)` a query.
+    /// takes 100 ms of (paused) time: `None` runs `latest`, `Some(sql)` a query. The memory store
+    /// stands in for object storage, so filter pushdown is off as `auto` would have it there.
     async fn cold_round_trips(head_format: &str, sql: Option<&str>) -> u128 {
-        cold_round_trips_with(head_format, sql, reopen).await
+        cold_round_trips_with(&[(property::HEAD_FORMAT, head_format)], sql, reopen).await
     }
 
-    async fn cold_round_trips_with(head_format: &str, sql: Option<&str>, open: fn(&Arc<FaultyStore>) -> Lake) -> u128 {
+    async fn cold_round_trips_with(
+        properties: &[(&str, &str)],
+        sql: Option<&str>,
+        open: fn(&Arc<FaultyStore>) -> Lake,
+    ) -> u128 {
         const RTT: Duration = Duration::from_millis(100);
         let (lake, store) = faulty_lake();
-        let o = with_properties(&[(property::HEAD_FORMAT, head_format)]);
+        let o = with_properties(&[&[(property::FILTER_PUSHDOWN, "false")], properties].concat());
         let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
         t.append(&[batch(&[(T0, 1, 1.0), (T0 + 1, 2, 2.0)])], no_maintenance()).await.unwrap();
         crate::flush().await;
@@ -500,10 +505,13 @@ mod tests {
         assert_eq!(cold_round_trips("arrow", None).await, 1);
         assert_eq!(cold_round_trips("arrow", scan).await, 2);
         // `timelake_version_lookup=hint`: the version hint instead of a listing, then the check.
-        assert_eq!(cold_round_trips_with("arrow", None, reopen_hint_lookup).await, 2);
-        assert_eq!(cold_round_trips_with("arrow", scan, reopen_hint_lookup).await, 3);
+        assert_eq!(cold_round_trips_with(&[], None, reopen_hint_lookup).await, 2);
+        assert_eq!(cold_round_trips_with(&[], scan, reopen_hint_lookup).await, 3);
         assert_eq!(cold_round_trips("none", None).await, 3);
         assert_eq!(cold_round_trips("none", scan).await, 6);
+        // Filter pushdown reads the filter column, then the others.
+        let pushdown = [(property::FILTER_PUSHDOWN, "true")];
+        assert_eq!(cold_round_trips_with(&pushdown, scan, reopen).await, 3);
     }
 
     /// A head that is behind (its write failed, and so did the version hint's) is noticed, and

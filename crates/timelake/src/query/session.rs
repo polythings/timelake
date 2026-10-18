@@ -70,8 +70,7 @@ impl Session {
         };
         // Raise the default (one partition per core) on remote storage, unless the caller changed it.
         let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
-        let remote = !matches!(lake.storage().url().scheme(), "file" | "memory");
-        let config = if remote && config.target_partitions() == cores {
+        let config = if lake.storage().is_remote() && config.target_partitions() == cores {
             config.with_target_partitions((cores * REMOTE_PARTITIONS_PER_CORE).max(MIN_REMOTE_PARTITIONS))
         } else {
             config
