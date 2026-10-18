@@ -178,8 +178,8 @@ pub(crate) async fn append_without_index(table: &Table, batches: &[RecordBatch])
     let props = writer_properties(table).unwrap();
     let uploads = Uploads::default();
     let mut files = vec![];
-    for (partition, batch) in sort_and_split(table, batches).unwrap() {
-        files.extend(write_partition(table, partition, [batch], &props, &uploads).await.unwrap());
+    for (partition, batches) in sort_and_split(table, batches).unwrap() {
+        files.extend(write_partition(table, partition, batches, &props, &uploads).await.unwrap());
     }
     commit(table, Change::Append { files, latest: None }, HashMap::new(), uploads).await.unwrap().0
 }

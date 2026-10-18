@@ -60,14 +60,14 @@ pub async fn append<H: Host>(
 ) -> WriteResult<(TableState, AppendReport)> {
     let now_us = host.now_ms().saturating_mul(1000);
     let partitions = sort_and_split(&table.schema, &table.contract, batches, now_us)?;
-    let rows = partitions.iter().map(|(_, b)| b.num_rows()).sum();
+    let rows = partitions.iter().flat_map(|(_, b)| b).map(RecordBatch::num_rows).sum();
     let touched: HashSet<Option<i32>> = partitions.iter().map(|(p, _)| *p).collect();
     let latest = latest_of_sorted(&table.schema, &table.contract, &partitions)?;
     let mut files = vec![];
     let mut footers = vec![];
     let result = async {
-        for (partition, batch) in &partitions {
-            for (file, footer) in write_files(host, &table, *partition, batch).await? {
+        for (partition, batches) in &partitions {
+            for (file, footer) in write_files(host, &table, *partition, batches).await? {
                 footers.push((file.path.clone(), footer));
                 files.push(file);
             }
@@ -124,10 +124,12 @@ pub async fn write_files<H: Host>(
     host: &H,
     table: &TableState,
     partition: Option<i32>,
-    rows: &RecordBatch,
+    batches: &[RecordBatch],
 ) -> WriteResult<Vec<(DataFile, Vec<u8>)>> {
     let mut writer = PartitionFiles::new(host, table, partition)?;
-    writer.write(rows).await?;
+    for rows in batches {
+        writer.write(rows).await?;
+    }
     writer.finish().await
 }
 

@@ -203,7 +203,8 @@ mod tests {
         let rows: Vec<(i64, i32, f64)> = (0..50_000)
             .map(|i| (T0 + i64::from(i), i % 9, if i % 7 == 0 { f64::NAN } else { f64::from(i) / 3.0 }))
             .collect();
-        let (partition, sorted) = sort_and_split(&t, &[batch(&rows)]).unwrap().remove(0);
+        let (partition, mut sorted) = sort_and_split(&t, &[batch(&rows)]).unwrap().remove(0);
+        let sorted = sorted.remove(0);
         let props = writer_properties(&t).unwrap();
 
         let uploads = Uploads::default();

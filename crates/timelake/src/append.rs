@@ -15,7 +15,7 @@ use crate::rollup::RollupRefresh;
 use crate::storage::Uploads;
 use crate::summary;
 use crate::table::Table;
-use crate::write::{row_groups, sort_and_split, write_partition, writer_properties};
+use crate::write::{PartitionRows, row_groups, sort_and_split, write_partition, writer_properties};
 
 /// How many partitions an append writes at once.
 const CONCURRENT_PARTITION_WRITES: usize = 8;
@@ -63,7 +63,7 @@ impl Table {
     /// per time partition. Returns the new table version.
     pub async fn append(&self, batches: &[RecordBatch], opts: AppendOptions) -> Result<(Table, AppendResult)> {
         let partitions = sort_and_split(self, batches)?;
-        let rows = partitions.iter().map(|(_, b)| b.num_rows()).sum();
+        let rows = partitions.iter().flat_map(|(_, b)| b).map(RecordBatch::num_rows).sum();
         let touched: HashSet<Option<i32>> = partitions.iter().map(|(p, _)| *p).collect();
         // Each partition is sorted: its last row per series is its newest (no second sort).
         let latest = timelake_format::rows::latest_of_sorted(&self.schema(), self.contract(), &partitions)?;
@@ -114,19 +114,16 @@ impl Table {
     }
 
     /// Writes each partition's rows to Parquet, a few partitions at a time.
-    async fn write_partitions(
-        &self,
-        partitions: Vec<(Option<i32>, RecordBatch)>,
-        uploads: &Uploads,
-    ) -> Result<Vec<DataFile>> {
+    async fn write_partitions(&self, partitions: Vec<PartitionRows>, uploads: &Uploads) -> Result<Vec<DataFile>> {
         let props = writer_properties(self)?;
         let rows_per_group = self.contract().row_group_rows;
         // The futures are created up front (not in a stream closure) so the returned future stays
         // `Send` and callers can spawn it.
         let writes: Vec<_> = partitions
             .into_iter()
-            .map(|(partition, rows)| {
-                write_partition(self, partition, row_groups(rows, rows_per_group), &props, uploads)
+            .map(|(partition, batches)| {
+                let groups = batches.into_iter().flat_map(move |rows| row_groups(rows, rows_per_group));
+                write_partition(self, partition, groups, &props, uploads)
             })
             .collect();
         let files: Vec<Vec<DataFile>> =

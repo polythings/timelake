@@ -28,6 +28,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- An append whose string or binary column held more than 2 GiB failed with "offset overflow" (one hour of a 400,000-tag
+  plant): the rows were concatenated into one batch to sort. Appends now sort groups of up to 1 GiB and merge them.
 - The block cache fetched the runs of blocks one read needs one after another; it fetches them at once. First
   queries on object storage with 20 ms per request: TSBS IoT geomean 162 → 125 ms, one truck's history 233 → 109 ms.
 - Tigris is recognised when its endpoint comes from `AWS_ENDPOINT_URL_S3` (as Fly.io and the Tigris CLI set it), so

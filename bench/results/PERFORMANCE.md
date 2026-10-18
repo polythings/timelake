@@ -3,6 +3,46 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P10: 100,000 series (2026-10-18, R27)
+
+IIoT `large` (10,000 machines × 10 tags = 100,000 series, mixed 1 s / 10 s / 60 s rates), 3 days, local disk, release
+build, Timelake only (run `20261018T063959Z-iiot-large-local`, kept out of the committed runs as an experiment).
+
+| | |
+|---|---|
+| Rows | 3.75 billion (1.24 billion a day), 25 GB of Parquet |
+| Ingest | 1,706 s, 2.2 M rows/s overall |
+| History: one hour per commit (52 M rows) | 19.4 s per commit (p50) |
+| Live: 5 minutes per commit (4.3 M rows) | 1.1 s per commit (p50) |
+| Last-value index | 585 KB, rewritten on every commit |
+| `maintain` | 5.9 s |
+
+Commit time follows the rows per commit, not the series. A typical deployment (20,000 devices × 10 metrics at 1 s) is
+200,000 rows/s, a tenth of this laptop's rate.
+
+| Query (first / best, ms) | 1,000 series, 30 days (maintained) | 100,000 series, 3 days (maintained) |
+|---|---:|---:|
+| `latest-area` | 79 / 64 | 74 / 52 |
+| `recent-machines` | 10 / 4.7 | 10 / 3 |
+| `trend-30d` | 30 / 21 | 77 / 34 |
+| `alarm-window` | 24 / 16 | 23 / 5 |
+| `shift-report` | 46 / 39 | 38 / 25 |
+| `daily-stats` | 506 / 469 | 236 / 180 |
+| `time-above-limit` | 438 / 391 | 360 / 328 |
+| `time-weighted-avg` | 23 / 16 | 43 / 23 |
+| `uptime` | 24 / 16 | 97 / 53 |
+| `energy` | 79 / 65 | 94 / 64 |
+| `gaps` | 294 / 248 | 21,695 / 21,693 |
+
+- The dashboard and report queries stay within tens of milliseconds of the 1,000-series run (different spans, so a
+  rough comparison).
+- `gaps` (per 1-second pressure tag, gaps over 5 minutes in the last 24 hours) reads 853 M rows: the window
+  (`lead`) takes 41.8 s of CPU, the dedup merge of the newest day's overlapping files 12.6 s, the scan 0.25 s, summed
+  over 36 partitions; no re-sort. It grows with the data, not the series count; a rollup that keeps per-bucket gap
+  statistics would answer it from buckets (P7).
+- The last-value index grows about 6 bytes per series compressed: 6 MB at a million series, 600 MB at a hundred
+  million, where rewriting it on every commit stops working (R27's top end needs it split by series hash).
+
 ## P8: pruning with long `IN` lists (2026-10-18, #103)
 
 DataFusion prunes with `IN` lists of at most 20 values. Timelake now computes, for longer lists of literals, the row

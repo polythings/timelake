@@ -17,6 +17,7 @@ use arrow_select::zip::zip;
 
 use crate::Contract;
 use crate::error::{WriteError, WriteResult};
+use crate::merge::{Merge, Step};
 
 /// Ascending with nulls first: the order Timelake writes and declares for `(series…, time)`.
 pub const ASCENDING: SortOptions = SortOptions { descending: false, nulls_first: true };
@@ -24,8 +25,9 @@ pub const ASCENDING: SortOptions = SortOptions { descending: false, nulls_first:
 /// The time zone timestamps with any zone are stored in.
 pub const UTC: &str = "+00:00";
 
-/// Rows of one time partition (`None` for unpartitioned tables), sorted by the table's write order.
-pub type PartitionRows = (Option<i32>, RecordBatch);
+/// Rows of one time partition (`None` for unpartitioned tables), sorted by the table's write order,
+/// in one or more batches.
+pub type PartitionRows = (Option<i32>, Vec<RecordBatch>);
 
 /// Casts and reorders a batch to the table schema by column name. Missing nullable columns are
 /// filled with nulls; extra columns are an error.
@@ -74,6 +76,14 @@ pub fn with_ingest_time(batch: &RecordBatch, column: &str, now: i64) -> WriteRes
     Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?)
 }
 
+/// Input is sorted in groups of at most about this many bytes: a group is concatenated and sorted
+/// at once, and an append of several groups merges its sorted groups. An Arrow string or binary
+/// array holds at most 2 GiB, so no single sort may hold more.
+const SORT_GROUP_BYTES: usize = 1 << 30;
+
+/// The partition of each row, as a key column while sorted groups are merged.
+const PARTITION: &str = "_timelake_partition";
+
 /// Aligns `batches` to `schema`, stamps the insertion time `now`, sorts by `(partition, series…,
 /// time, insertion time)` with input order as the tiebreak, splits by partition and, when dedup
 /// is on, keeps the last of rows with the same `(series…, time)`.
@@ -83,19 +93,15 @@ pub fn sort_and_split(
     batches: &[RecordBatch],
     now: i64,
 ) -> WriteResult<Vec<PartitionRows>> {
-    let split = sort_and_split_all(schema, contract, batches, now)?;
-    let keys = contract.sort_columns();
-    if !contract.dedup || keys.is_empty() {
-        return Ok(split);
-    }
-    split.into_iter().map(|(p, rows)| Ok((p, last_per_group(&rows, &keys)?))).collect()
+    sort_and_split_in_groups(schema, contract, batches, now, SORT_GROUP_BYTES)
 }
 
-fn sort_and_split_all(
+fn sort_and_split_in_groups(
     schema: &SchemaRef,
     contract: &Contract,
     batches: &[RecordBatch],
     now: i64,
+    group_bytes: usize,
 ) -> WriteResult<Vec<PartitionRows>> {
     let ingest = contract.ingest_time_column.as_deref();
     let aligned = batches
@@ -103,27 +109,129 @@ fn sort_and_split_all(
         .filter(|b| b.num_rows() > 0)
         .map(|b| align_batch(&ingest.map_or_else(|| Ok(b.clone()), |c| with_ingest_time(b, c, now))?, schema))
         .collect::<WriteResult<Vec<_>>>()?;
-    if aligned.is_empty() {
-        return Ok(vec![]);
+    let groups = groups_of(aligned, group_bytes);
+    if let [group] = groups.as_slice() {
+        return sort_group(schema, contract, group);
     }
-    let all = concat_batches(schema, &aligned)?;
+    merge_groups(schema, contract, &groups)
+}
+
+/// `batches` in consecutive groups of at most `bytes` each (a larger batch is a group of its own).
+fn groups_of(batches: Vec<RecordBatch>, bytes: usize) -> Vec<Vec<RecordBatch>> {
+    let mut groups: Vec<Vec<RecordBatch>> = vec![];
+    let mut size = 0;
+    for batch in batches {
+        let n = batch.get_array_memory_size();
+        match groups.last_mut() {
+            Some(group) if size + n <= bytes => {
+                size += n;
+                group.push(batch);
+            }
+            _ => {
+                size = n;
+                groups.push(vec![batch]);
+            }
+        }
+    }
+    groups
+}
+
+/// One group's rows, sorted, split by partition and deduplicated.
+fn sort_group(schema: &SchemaRef, contract: &Contract, group: &[RecordBatch]) -> WriteResult<Vec<PartitionRows>> {
+    let all = concat_batches(schema, group)?;
     let partitions = partition_values(&all, contract)?;
     let mut keys: Vec<ArrayRef> =
         partitions.iter().map(|p| Arc::new(Int32Array::from(p.clone())) as ArrayRef).collect();
     keys.extend(columns(&all, &contract.write_order())?);
-    if keys.is_empty() {
-        return Ok(vec![(None, all)]);
-    }
-    let order = stable_sort_indices(&keys, all.num_rows())?;
-    let sorted = take_record_batch(&all, &order)?;
-    let Some(partitions) = partitions else { return Ok(vec![(None, sorted)]) };
-
-    // Rows are now grouped by partition: slice out each run.
-    let sorted_partitions: Vec<i32> = order.values().iter().map(|&i| partitions[i as usize]).collect();
+    let (sorted, runs) = if keys.is_empty() {
+        let rows = all.num_rows();
+        (all, vec![(None, rows)])
+    } else {
+        let order = stable_sort_indices(&keys, all.num_rows())?;
+        let sorted = take_record_batch(&all, &order)?;
+        let runs = match partitions {
+            None => vec![(None, sorted.num_rows())],
+            // Rows are now grouped by partition: one run per partition.
+            Some(p) => {
+                let sorted_partitions: Vec<i32> = order.values().iter().map(|&i| p[i as usize]).collect();
+                sorted_partitions.chunk_by(|a, b| a == b).map(|run| (Some(run[0]), run.len())).collect()
+            }
+        };
+        (sorted, runs)
+    };
+    let dedup = contract.dedup && !contract.sort_columns().is_empty();
     let mut out = vec![];
     let mut offset = 0;
-    for run in sorted_partitions.chunk_by(|a, b| a == b) {
-        out.push((Some(run[0]), sorted.slice(offset, run.len())));
+    for (partition, len) in runs {
+        let rows = sorted.slice(offset, len);
+        let rows = if dedup { last_per_group(&rows, &contract.sort_columns())? } else { rows };
+        out.push((partition, vec![rows]));
+        offset += len;
+    }
+    Ok(out)
+}
+
+/// Sorts each group with its partition as a leading key column, then merges the groups in that
+/// order (with dedup: the last write of each key kept), split by partition into batches of
+/// `row_group_rows`.
+fn merge_groups(
+    schema: &SchemaRef,
+    contract: &Contract,
+    groups: &[Vec<RecordBatch>],
+) -> WriteResult<Vec<PartitionRows>> {
+    let partitioned = contract.time_column.is_some() && contract.chunk.is_some();
+    let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
+    if partitioned {
+        fields.push(Arc::new(Field::new(PARTITION, DataType::Int32, false)));
+    }
+    let keyed = Arc::new(Schema::new(fields));
+    let mut keys: Vec<String> = partitioned.then(|| PARTITION.to_string()).into_iter().collect();
+    keys.extend(contract.write_order());
+    let mut runs = vec![];
+    for group in groups {
+        let all = concat_batches(schema, group)?;
+        let mut columns = all.columns().to_vec();
+        if let Some(p) = partition_values(&all, contract)? {
+            columns.push(Arc::new(Int32Array::from(p)));
+        }
+        let all = RecordBatch::try_new(keyed.clone(), columns)?;
+        runs.push(Some(stable_sort(&all, &keys)?));
+    }
+    let sort_columns = contract.sort_columns();
+    let unique =
+        if contract.dedup && !sort_columns.is_empty() { usize::from(partitioned) + sort_columns.len() } else { 0 };
+    let names: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let mut merge = Merge::new(keyed, &names, unique, runs.len(), contract.row_group_rows)?;
+    let mut out: Vec<PartitionRows> = vec![];
+    loop {
+        match merge.step()? {
+            Step::Need(i) => merge.push(i, runs[i].take())?,
+            Step::Output(batch) => {
+                for (partition, rows) in split_partitions(&batch, partitioned)? {
+                    match out.last_mut() {
+                        Some((p, batches)) if *p == partition => batches.push(rows),
+                        _ => out.push((partition, vec![rows])),
+                    }
+                }
+            }
+            Step::Done => break,
+        }
+    }
+    Ok(out)
+}
+
+/// A merged batch's rows by partition, without the partition column.
+fn split_partitions(batch: &RecordBatch, partitioned: bool) -> WriteResult<Vec<(Option<i32>, RecordBatch)>> {
+    if !partitioned {
+        return Ok(vec![(None, batch.clone())]);
+    }
+    let last = batch.num_columns() - 1;
+    let values = batch.column(last).as_any().downcast_ref::<Int32Array>().expect("the partition column");
+    let rows = batch.project(&(0..last).collect::<Vec<_>>())?;
+    let mut out = vec![];
+    let mut offset = 0;
+    for run in values.values().chunk_by(|a, b| a == b) {
+        out.push((Some(run[0]), rows.slice(offset, run.len())));
         offset += run.len();
     }
     Ok(out)
@@ -216,8 +324,9 @@ pub fn latest_of_sorted(
     }
     let lasts = partitions
         .iter()
-        .filter(|(_, rows)| rows.num_rows() > 0)
-        .map(|(_, rows)| last_per_group(rows, &contract.series_key))
+        .flat_map(|(_, batches)| batches)
+        .filter(|rows| rows.num_rows() > 0)
+        .map(|rows| last_per_group(rows, &contract.series_key))
         .collect::<WriteResult<Vec<_>>>()?;
     latest_per_series(schema, contract, &lasts)
 }
@@ -298,9 +407,60 @@ mod tests {
         .unwrap();
         let partitions = sort_and_split(&schema, &contract, &[batch], 0).unwrap();
         assert!(partitions.len() > 1);
-        let all: Vec<RecordBatch> = partitions.iter().map(|(_, b)| b.clone()).collect();
+        let all: Vec<RecordBatch> = partitions.iter().flat_map(|(_, b)| b.clone()).collect();
         let expected = latest_per_series(&schema, &contract, &all).unwrap();
         assert_eq!(latest_of_sorted(&schema, &contract, &partitions).unwrap(), expected);
+    }
+
+    /// An append sorted in several groups and merged gives the rows sorting it at once gives, with
+    /// dedup across groups (the later write wins) and with dedup off.
+    #[test]
+    fn merged_groups_match_one_sort() {
+        use std::collections::HashMap;
+
+        use arrow_array::{Float64Array, TimestampMicrosecondArray};
+
+        const DAY: i64 = 86_400_000_000;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("time", DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some(UTC.into())), false),
+            Field::new("device", DataType::Utf8, true),
+            Field::new("value", DataType::Float64, true),
+        ]));
+        let batch = |from: i64| {
+            // Times repeat across batches (every batch writes the same keys), over three days.
+            let rows: Vec<i64> = (0..300).collect();
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(
+                        TimestampMicrosecondArray::from_iter_values(rows.iter().map(|i| i % 3 * DAY + i % 50))
+                            .with_timezone(UTC),
+                    ),
+                    Arc::new(StringArray::from_iter_values(rows.iter().map(|i| format!("d{}", (i * 7) % 11)))),
+                    Arc::new(Float64Array::from_iter_values(rows.iter().map(|i| (from + i) as f64))),
+                ],
+            )
+            .unwrap()
+        };
+        let batches: Vec<RecordBatch> = (0..4).map(|b| batch(b * 1000)).collect();
+        for dedup in ["true", "false"] {
+            let contract = Contract::from_properties(&HashMap::from([
+                (crate::property::TIME_COLUMN.to_string(), "time".to_string()),
+                (crate::property::SERIES_KEY.to_string(), "device".to_string()),
+                (crate::property::CHUNK.to_string(), "day".to_string()),
+                (crate::property::DEDUP.to_string(), dedup.to_string()),
+                (crate::property::ROW_GROUP_ROWS.to_string(), "64".to_string()),
+            ]))
+            .unwrap();
+            let flat = |p: Vec<PartitionRows>| -> Vec<(Option<i32>, RecordBatch)> {
+                p.into_iter().map(|(p, b)| (p, concat_batches(&schema, &b).unwrap())).collect()
+            };
+            let once = flat(sort_and_split_in_groups(&schema, &contract, &batches, 0, usize::MAX).unwrap());
+            let merged = sort_and_split_in_groups(&schema, &contract, &batches, 0, 1).unwrap();
+            assert!(merged.iter().any(|(_, b)| b.len() > 1), "batches of row_group_rows");
+            assert_eq!(flat(merged), once, "dedup {dedup}");
+            assert_eq!(once.len(), 3);
+        }
     }
 
     #[test]

@@ -103,8 +103,10 @@ class Iiot(Workload):
             return READINGS.empty_table().append_column("window", pa.array([], pa.int32()))
         parts = sorted(directory.glob("*.parquet"))
         table = pa.concat_tables(pq.read_table(p) for p in parts)
-        order = np.argsort(table["window"].to_numpy(), kind="stable")
-        return table.take(order)
+        # Filtering keeps the table's chunks, where `take` would concatenate them (and overflow a
+        # string column past 2 GiB at a few hundred thousand tags).
+        windows = table["window"].to_numpy()
+        return pa.concat_tables(table.filter(pa.array(windows == w)) for w in np.unique(windows))
 
     def bulk(self, first: int, last: int) -> Iterator[list[Batch]]:
         """Arrival hours ``first``..``last``, one commit per hour."""
