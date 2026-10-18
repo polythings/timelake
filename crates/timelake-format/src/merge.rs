@@ -40,7 +40,7 @@ use arrow_array::{ArrayRef, RecordBatch, UInt32Array};
 use arrow_ord::partition::partition;
 use arrow_row::{RowConverter, Rows, SortField};
 use arrow_schema::{ArrowError, SchemaRef, SortOptions};
-use arrow_select::concat::concat_batches;
+use arrow_select::interleave::interleave_record_batch;
 use arrow_select::take::take_record_batch;
 
 /// Keys sort ascending with nulls first, the order Timelake writes.
@@ -65,6 +65,8 @@ struct Input {
     next: usize,
     /// No more batches.
     done: bool,
+    /// The batch's index among the merge's sources, once rows of it were taken.
+    source: Option<usize>,
 }
 
 impl Input {
@@ -87,9 +89,9 @@ pub struct Merge {
     unique: usize,
     converter: RowConverter,
     inputs: Vec<Input>,
-    /// Slices of input batches taken for the next output batch.
-    taken: Vec<RecordBatch>,
-    taken_rows: usize,
+    /// The batches the next output batch takes rows from, and those rows, in order: (source, row).
+    sources: Vec<RecordBatch>,
+    taken: Vec<(usize, usize)>,
     batch_rows: usize,
     /// With dedup: the last row output so far is held back, as a later row may replace it.
     held: Option<RecordBatch>,
@@ -122,8 +124,8 @@ impl Merge {
             keys,
             unique,
             inputs: (0..inputs).map(|_| Input::default()).collect(),
+            sources: vec![],
             taken: vec![],
-            taken_rows: 0,
             batch_rows: batch_rows.max(1),
             held: None,
             rows_in: 0,
@@ -152,6 +154,7 @@ impl Merge {
                 input.rows = if keys.is_empty() { None } else { Some(self.converter.convert_columns(&keys)?) };
                 input.batch = Some(batch);
                 input.next = 0;
+                input.source = None;
             }
         }
         Ok(())
@@ -163,11 +166,11 @@ impl Merge {
             if let Some(i) = self.inputs.iter().position(|s| s.exhausted() && !s.done) {
                 return Ok(Step::Need(i));
             }
-            if self.taken_rows >= self.batch_rows {
+            if self.taken.len() >= self.batch_rows {
                 return Ok(Step::Output(self.flush(false)?));
             }
             let Some(first) = self.smallest() else {
-                if self.taken_rows > 0 || self.held.is_some() {
+                if !self.taken.is_empty() || self.held.is_some() {
                     return Ok(Step::Output(self.flush(true)?));
                 }
                 return Ok(Step::Done);
@@ -204,7 +207,9 @@ impl Merge {
     /// Takes the rows of input `i` that sort before the next row of every other input.
     fn take_run(&mut self, i: usize) {
         let input = &self.inputs[i];
-        let Some(batch) = &input.batch else { return };
+        if input.batch.is_none() {
+            return;
+        }
         let (start, len) = (input.next, input.len());
         // The next row of all the others, and whether input `i` comes first among equals.
         let bound = (0..self.inputs.len())
@@ -215,11 +220,27 @@ impl Merge {
             (None, _) | (_, None) => len,
             (Some((other, first_on_ties)), Some(rows)) => {
                 // Rows `start..end` sort before `other` (or equal to it, when `i` goes first).
-                let (mut lo, mut hi) = (start + 1, len);
+                let before = |r: usize| {
+                    let ord = rows.row(r).cmp(&other);
+                    ord == Ordering::Less || (ord == Ordering::Equal && first_on_ties)
+                };
+                // Galloping: runs are often a row or a few (inputs that alternate key by key), so
+                // probe 1, 2, 4… rows ahead, then search between the last two probes. Rows before
+                // `lo` are in the run; row `hi` (or the end) is not.
+                let (mut lo, mut probe, mut step) = (start + 1, start + 1, 1);
+                let mut hi = len;
+                while probe < len {
+                    if !before(probe) {
+                        hi = probe;
+                        break;
+                    }
+                    lo = probe + 1;
+                    probe += step;
+                    step *= 2;
+                }
                 while lo < hi {
                     let mid = lo + (hi - lo) / 2;
-                    let ord = rows.row(mid).cmp(&other);
-                    if ord == Ordering::Less || (ord == Ordering::Equal && first_on_ties) {
+                    if before(mid) {
                         lo = mid + 1;
                     } else {
                         hi = mid;
@@ -228,20 +249,21 @@ impl Merge {
                 lo
             }
         };
-        let end = end.min(start + (self.batch_rows - self.taken_rows.min(self.batch_rows)).max(1));
-        self.taken.push(batch.slice(start, end - start));
-        self.taken_rows += end - start;
-        self.inputs[i].next = end;
+        let end = end.min(start + (self.batch_rows - self.taken.len().min(self.batch_rows)).max(1));
+        let input = &mut self.inputs[i];
+        let source = *input.source.get_or_insert_with(|| {
+            self.sources.push(input.batch.clone().expect("checked above"));
+            self.sources.len() - 1
+        });
+        self.taken.extend((start..end).map(|row| (source, row)));
+        input.next = end;
         self.runs += 1;
     }
 
     /// The rows taken so far as one batch, deduplicated; with dedup, the last row is held back
     /// unless this is the end.
     fn flush(&mut self, end: bool) -> Result<RecordBatch, ArrowError> {
-        let mut parts: Vec<RecordBatch> = self.held.take().into_iter().collect();
-        parts.append(&mut self.taken);
-        self.taken_rows = 0;
-        let batch = concat_batches(&self.schema, &parts)?;
+        let batch = self.take_rows()?;
         let batch = if self.unique == 0 || batch.num_rows() == 0 {
             batch
         } else {
@@ -255,6 +277,26 @@ impl Merge {
         };
         self.rows_out += batch.num_rows() as u64;
         Ok(batch)
+    }
+
+    /// The held row, then the rows taken, as one batch: gathered in one pass, since with inputs
+    /// that alternate key by key most runs are a single row. The sources are then released.
+    fn take_rows(&mut self) -> Result<RecordBatch, ArrowError> {
+        let mut sources = std::mem::take(&mut self.sources);
+        let mut rows = std::mem::take(&mut self.taken);
+        for input in &mut self.inputs {
+            input.source = None;
+        }
+        if let Some(held) = self.held.take() {
+            sources.push(held);
+            rows.insert(0, (sources.len() - 1, 0));
+        }
+        match sources.as_slice() {
+            [] => Ok(RecordBatch::new_empty(self.schema.clone())),
+            // One source in order (a long run, or the end of one input): a slice, no copy.
+            [only] if rows.windows(2).all(|w| w[1].1 == w[0].1 + 1) => Ok(only.slice(rows[0].1, rows.len())),
+            _ => interleave_record_batch(&sources.iter().collect::<Vec<_>>(), &rows),
+        }
     }
 
     /// The last row of each run of rows equal in the first `unique` keys.
@@ -388,7 +430,7 @@ mod tests {
             let mut inputs = vec![];
             let mut all = vec![];
             for i in 0..k {
-                let mut rows: Vec<(&str, i64, String)> = (0..rand(30))
+                let mut rows: Vec<(&str, i64, String)> = (0..rand(200))
                     .map(|r| (series[rand(4)], i64::try_from(rand(20)).unwrap(), format!("{i}.{r}")))
                     .collect();
                 rows.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));

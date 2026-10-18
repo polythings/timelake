@@ -3,6 +3,25 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P10: k-way merge on inputs that alternate key by key (2026-10-18)
+
+The merge behind compaction and large appends (`timelake_format::merge`) took each run as a slice of its batch and
+concatenated the slices per output batch, and found each run's end by a binary search over the rest of the batch. When
+inputs alternate series by series (5-minute IIoT files, an index and its update), runs are one row long. Now the
+merge records (batch, row) pairs and gathers each output batch in one pass (`interleave`), and finds a run's end by
+galloping (probing 1, 2, 4… rows ahead) before the binary search.
+
+Two inputs of N rows (string key `tag`, timestamp), every key in both, release build, in memory:
+
+| N | Before | Gathered in one pass | And galloping | Sorting both together |
+|---:|---:|---:|---:|---:|
+| 400,000 | 532 ms | 353 ms | 124 ms | 118 ms |
+| 1,000,000 | 1.33 s | 858 ms | 255 ms | 309 ms |
+| 10,000,000 | 13.9 s | 9.9 s | 2.57 s | 3.43 s |
+
+TSBS compaction (72 hourly files → 3, runs of an hour per truck) is unchanged: 1.25 s before and after (3 runs each,
+same peak memory).
+
 ## P10: 100,000 series (2026-10-18, R27)
 
 IIoT `large` (10,000 machines × 10 tags = 100,000 series, mixed 1 s / 10 s / 60 s rates), 3 days, local disk, release
@@ -76,8 +95,9 @@ release build, in memory (scratch test, not kept):
 - At 400,000 series that is 0.15 s of a 4.5 s commit. It grows with the series, about as the commit's own work does
   when every series reports each commit.
 - Tried: merging the sorted index with the sorted new rows (compaction's k-way merge) instead of sorting them
-  together: 532 ms, 1.3 s and 13.9 s, 4× slower. With inputs that alternate series by series the merge takes one row
-  at a time; the sort stays. The same merge sorts appends past 1 GiB (above), where it will be slower than needed.
+  together: 532 ms, 1.3 s and 13.9 s, 4× slower. With inputs that alternate series by series the merge took one row
+  at a time, each as a slice of its batch, and searched the rest of the batch for each run's end. Fixed in the merge
+  (next section); the index keeps the sort, which is as fast at these sizes.
 - Left for the top end of R27: when most series don't report in a commit (millions of slow meters), rewriting the
   whole index is wasted; writing only the new rows and folding them in during maintenance would make a commit's cost
   follow its rows.

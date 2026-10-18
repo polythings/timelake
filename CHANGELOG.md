@@ -22,6 +22,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Compaction's merge (also used for appends past 1 GiB) is up to 5× faster on files that alternate series by series,
+  such as 5-minute batches of every device: 10 M rows of two such inputs merge in 2.6 s instead of 13.9 s.
 - The block cache sends GETs of at most 1 MiB (storage option `timelake_cache_request_bytes`; `0` for no limit),
   longer runs split into parts fetched at once. With 20 ms per request and 50 MiB/s per request, TSBS IoT first
   queries 126 → 115 ms (geomean), with 47% more requests.
