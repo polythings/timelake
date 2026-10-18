@@ -229,7 +229,9 @@ impl Candidate {
         let stored = |function: &str, column: &Option<String>| {
             self.def.aggregates.iter().find(|a| a.function == function && a.column == *column).map(|a| a.name.clone())
         };
-        if self.def.width == q.width && keys == q.keys {
+        // A stored state (a time-weighted mean's segments) is turned into the answer by merging it.
+        let states = q.aggregates.iter().any(|(f, _)| f.starts_with("time_weighted_mean"));
+        if self.def.width == q.width && keys == q.keys && !states {
             let columns = q.aggregates.iter().map(|(f, c)| stored(f, c)).collect::<Option<_>>()?;
             return Some(Answer::Stored(columns));
         }
@@ -243,6 +245,11 @@ impl Candidate {
                 "last_value" => agg::last_value(ident(stored(function, column)?), by_bucket()),
                 // The stored points merge into the wider bucket's.
                 "m4" => super::m4::m4_udaf().call(vec![ident(stored(function, column)?)]),
+                "time_weighted_mean" => {
+                    super::twa::time_weighted_mean_udaf().call(vec![ident(stored(function, column)?)])
+                }
+                "time_weighted_mean:linear" => super::twa::time_weighted_mean_udaf()
+                    .call(vec![ident(stored(function, column)?), datafusion::prelude::lit("linear")]),
                 // A mean of means weighted by the rows each counted.
                 "avg" => {
                     let n = self.count_of(column.as_deref()?, q)?;

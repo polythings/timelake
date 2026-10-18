@@ -47,6 +47,8 @@ pub struct Session {
     catalog: Arc<LakeCatalog>,
     /// What rollup routing may use, worked out before each query is planned.
     pub(super) routes: RouteMap,
+    /// Tables whose scans may give one series' rows out of time order (for `time_weighted_mean`).
+    out_of_order: super::series_order::OutOfOrder,
 }
 
 impl Session {
@@ -82,11 +84,13 @@ impl Session {
         };
         let config = config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace);
         let routes = RouteMap::default();
+        let out_of_order = super::series_order::OutOfOrder::default();
         let state = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
             .with_optimizer_rule(Arc::new(LatestRewrite))
             .with_optimizer_rule(Arc::new(super::newest::NewestFirst))
+            .with_optimizer_rule(Arc::new(super::series_order::SeriesOrder { out_of_order: out_of_order.clone() }))
             .with_optimizer_rule(Arc::new(RollupRewrite { routes: routes.clone() }))
             .build();
         let ctx = SessionContext::new_with_state(state);
@@ -97,7 +101,9 @@ impl Session {
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
         ctx.register_udaf(super::m4::m4_udaf());
-        Self { lake, ctx, catalog, routes }
+        ctx.register_udaf(super::twa::time_weighted_mean_udaf());
+        ctx.register_udaf(super::twa::time_weighted_state_udaf());
+        Self { lake, ctx, catalog, routes, out_of_order }
     }
 
     /// The lake this session reads.
@@ -157,6 +163,12 @@ impl Session {
             self.catalog.set_interval(interval);
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
             futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None))).await;
+            let read_dedup =
+                state.config().options().extensions.get::<SessionSettings>().and_then(|s| s.flag(property::READ_DEDUP));
+            let out_of_order = names
+                .iter()
+                .map(|n| super::series_order::prepare(&self.lake, n, interval, read_dedup, &self.out_of_order));
+            futures::future::join_all(out_of_order).await;
         }
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)

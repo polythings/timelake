@@ -15,6 +15,28 @@ WHERE time >= now() - INTERVAL '1 day'
 GROUP BY 1, 2
 ```
 
+## Time-weighted averages
+
+Sensors report at irregular times, so a plain `avg` over-weights the moments with many readings.
+`time_weighted_mean(time, value [, method])` weights each reading by how long it held:
+
+```sql
+SELECT device_id, time_bucket(INTERVAL '1 hour', time) AS hour,
+       time_weighted_mean(time, temp) AS temp,                 -- forward fill: a value holds until the next
+       time_weighted_mean(time, temp, 'linear') AS temp_linear -- a straight line between readings
+FROM iot.readings GROUP BY 1, 2
+```
+
+The mean covers each group's first to last reading. Readings at the same time count once, with the largest value. A
+group with one reading time gives that value. Group by the series key: a group that mixes series has no single
+signal, and the query says so. `forward_fill` (`ffill`) is the default, `linear` the other method.
+
+Each partition sums runs of readings in time order, and the runs are joined, so the result is exact and about as fast
+as `avg`: hourly means of 1,000 tags over 30 days in 2.0 s on a laptop. A table with dedup off whose files overlap,
+or whose rows aren't sorted, could give one series' runs out of order; for those, the scan merges such files in series
+order first, like dedup on read (setting `time-weighted-mean`: `auto`, `segments`, `merge`).
+[Rollups](/docs/rollups) store the runs and answer wider buckets from them.
+
 ## What the reader accelerates
 
 ### Time and series filters

@@ -139,6 +139,8 @@ pub(super) enum Keep {
     Latest,
     /// The older copies of each key (strategy keys-first: what a later scan must leave out).
     Older,
+    /// Every row: only the series order (for `time_weighted_mean` without dedup).
+    All,
 }
 
 /// Keeps the newest write of each key. Its input is sorted by the key and the commit rank (each
@@ -196,6 +198,7 @@ impl DisplayAs for DedupExec {
         let keep = match self.keep {
             Keep::Latest => "last",
             Keep::Older => "older copies",
+            Keep::All => "every row",
         };
         write!(f, "DedupExec: keep {keep} of [{}], {slices} slices by hash", keys.join(", "))
     }
@@ -240,6 +243,7 @@ impl ExecutionPlan for DedupExec {
         let mut state = match self.keep {
             Keep::Latest => State::Latest(LastOfKey { keys: self.keys.clone(), held: None }),
             Keep::Older => State::Older(OlderCopies { keys: self.keys.clone(), last: None }),
+            Keep::All => State::All,
         };
         let baseline = BaselineMetrics::new(&self.metrics, partition);
         let input = self.split.execute(partition, context)?.map(Some).chain(futures::stream::once(async { None }));
@@ -286,6 +290,7 @@ impl ExecutionPlan for DedupExec {
 enum State {
     Latest(LastOfKey),
     Older(OlderCopies),
+    All,
 }
 
 impl State {
@@ -293,6 +298,7 @@ impl State {
         match self {
             Self::Latest(s) => s.push(batch),
             Self::Older(s) => s.push(batch),
+            Self::All => Ok(Some(batch.clone())),
         }
     }
 
@@ -300,7 +306,7 @@ impl State {
         match self {
             Self::Latest(s) => s.finish(),
             // The last row seen has no newer copy.
-            Self::Older(_) => None,
+            Self::Older(_) | Self::All => None,
         }
     }
 }

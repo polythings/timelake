@@ -16,7 +16,8 @@ const CREATE: &str = "CREATE MATERIALIZED ROLLUP iot.r_1h AS
     SELECT device, time_bucket(INTERVAL '1 hour', time) AS bucket,
            avg(value) AS avg_value, min(value), max(value), sum(value), count(*) AS n, count(value),
            first_value(value ORDER BY time) AS first, last_value(value ORDER BY time) AS last,
-           m4(time, value) AS points
+           m4(time, value) AS points, time_weighted_mean(time, value) AS twa,
+           time_weighted_mean(time, value, 'linear') AS twa_linear
     FROM iot.r GROUP BY device, bucket
     WITH (refresh_interval = 'off')";
 
@@ -24,6 +25,16 @@ const CREATE: &str = "CREATE MATERIALIZED ROLLUP iot.r_1h AS
 const QUERIES: &[(&str, bool)] = &[
     ("SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, avg(value), count(*) FROM iot.r GROUP BY 1, 2", true),
     ("SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, m4(time, value) FROM iot.r GROUP BY 1, 2", true),
+    (
+        "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, time_weighted_mean(time, value),
+                time_weighted_mean(time, value, 'linear') FROM iot.r GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT time_bucket(INTERVAL '1 day', time) AS d, device, time_weighted_mean(time, value, 'linear')
+         FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 05:30:00' GROUP BY 1, 2",
+        true,
+    ),
     (
         "SELECT time_bucket(INTERVAL '1 hour', time) AS h, device, max(value) AS m, sum(value) FROM iot.r
          WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND time < TIMESTAMP '2026-01-02 03:00:00' GROUP BY 1, 2",
@@ -131,7 +142,9 @@ async fn rollups_answer_like_the_raw_table() {
             "count_value",
             "first",
             "last",
-            "points"
+            "points",
+            "twa",
+            "twa_linear"
         ]
     );
     check_answers(&lake).await;

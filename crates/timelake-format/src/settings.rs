@@ -289,6 +289,19 @@ pub static SETTINGS: &[Setting] = &[
         check: auto_or_boolean,
     },
     Setting {
+        name: "time-weighted-mean",
+        kind: "auto, segments or merge",
+        default: DefaultValue::Value("auto"),
+        levels: &[Level::Table, Level::Session],
+        since: "0.7.0",
+        description: "How `time_weighted_mean` gets each series' readings in time order. It sums runs of readings \
+                      in order and joins them; runs that overlap in time can't be joined. `segments`: as the files \
+                      come (an overlap is an error). `merge`: files that overlap on the series and time, or aren't \
+                      sorted, are merged in order first (as dedup on read does). `auto`: `merge` for tables with \
+                      dedup off and such files, else `segments`.",
+        check: time_weighted_mean,
+    },
+    Setting {
         name: "newest-first",
         kind: "boolean",
         default: DefaultValue::Value("true"),
@@ -495,6 +508,13 @@ fn auto_or_boolean(s: &str) -> Result<()> {
     }
 }
 
+fn time_weighted_mean(s: &str) -> Result<()> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" | "segments" | "merge" => Ok(()),
+        _ => Err(FormatError::new(format!("must be auto, segments or merge, got {s:?}"))),
+    }
+}
+
 fn count(s: &str) -> Result<()> {
     s.parse::<u64>().map(drop).map_err(|_| FormatError::new(format!("must be a non-negative integer, got {s:?}")))
 }
@@ -576,6 +596,7 @@ mod tests {
             property::FILTER_PUSHDOWN,
             property::IN_LIST_PRUNING,
             property::NEWEST_FIRST,
+            property::TIME_WEIGHTED_MEAN,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -591,7 +612,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 31, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 32, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

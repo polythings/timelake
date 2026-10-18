@@ -699,6 +699,23 @@ The answer is exact, not a stale rollup:
 averages), answering a coarser query (hourly from minutes) or fewer keys from a rollup, calendar buckets (months),
 filters in the definition, routing in plain DuckDB, and recomputing buckets after a delete (§9.2).
 
+#### 11.1.4 Time-weighted means (built 2026-10-18)
+`time_weighted_mean(time, value [, method])`, method `forward_fill` (default, alias `ffill`) or `linear`, over each
+group's first to last reading; readings at one time count once with the largest value; one reading time gives its
+value. Decided with the user on 2026-10-18 (exact always, both methods, first to last reading).
+- **State:** a list of segments, runs of a group's readings in time order: first and last reading, the time from the
+  first to the next and into the last, and the area. Segments that follow each other join exactly (the gap's area
+  added; a shared time takes the larger value, corrected through the stored spans); partial results emit their runs
+  unjoined, since another partition may hold readings between them. Overlapping segments are an error.
+- **Series order:** each partition's rows of a series must come in non-overlapping runs. With dedup on read they do
+  (the dedup merge); a table with dedup off and files that overlap on `(series…, time)` or aren't sorted may not, and
+  the scans under a time-weighted mean then merge those files in series order (the dedup operator keeping every row).
+  Setting `time-weighted-mean`: `auto` (merge for such tables, found before planning), `segments`, `merge`. Measured
+  alternative: rewriting to windows (`lead` per group in time order): hourly means of 370 M IIoT readings 550 s and
+  20 GB peak, against 2.0 s with segments.
+- **Rollups** store the state (`time_weighted_state`); routing merges it with `time_weighted_mean(state [, method])`,
+  at the rollup's width too.
+
 #### 11.1.3 `m4` (built 2026-10-18, #73)
 `m4(time, value)` is an aggregate returning a group's first, smallest, largest and last points as a list of
 `{time, value}` structs in time order, repeats removed (after Apache IoTDB's time-window `M4`). Ties are broken by fixed

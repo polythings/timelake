@@ -10,6 +10,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Aggregate `time_weighted_mean(time, value [, 'forward_fill' | 'linear'])`: the mean of irregular readings weighted
+  by how long each held, over each group's first to last reading; exact, as fast as `avg` (hourly means of 1,000 tags
+  over 30 days: 2.0 s). Rollups store its state and answer wider buckets. Setting `time-weighted-mean` (`auto`,
+  `segments`, `merge`) for tables with dedup off whose files overlap.
 - Aggregate `m4(time, value)`: a group's first, smallest, largest and last points, as a list of `{time, value}`.
   Rollups store it and answer wider buckets from it (hourly points of 1,000 tags over 30 days: 2.0 → 0.51 s from a
   1-minute rollup). After Apache IoTDB's M4.

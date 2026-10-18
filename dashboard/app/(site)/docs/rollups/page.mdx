@@ -33,7 +33,7 @@ The query must have this shape:
 - It reads one Timelake time-series table, with no `WHERE`, join, or subquery.
 - It groups by one `time_bucket` (or `date_bin`) of the table's time column, with a fixed width (seconds to days, not months) and the default origin.
 - It also groups by any of the table's series-key columns, and selects each of them under its own name.
-- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, `last_value(x ORDER BY time)`, and `m4(time, x)` (below). Each bucket's rows give these exactly.
+- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, `last_value(x ORDER BY time)`, `m4(time, x)` (below), and `time_weighted_mean(time, x [, 'linear'])`. Each bucket's rows give these exactly.
 
 Outputs the query doesn't name get names like `bucket`, `avg_temp`, and `count`. Grouping only by series-key columns keeps a reading in the same group when a newer write replaces it (see [Rows sent twice](/docs/querying#rows-sent-twice)), so a rollup only ever gains rows.
 
@@ -116,6 +116,14 @@ the earlier point. The points of several buckets merge (the `m4` of their points
 rollup can store them, `m4(points)` merges stored lists, and routing answers wider buckets from a rollup's points. On
 the industrial benchmark (30 days, 1,000 tags), hourly points for every tag took 0.51 s from a 1-minute rollup and
 2.0 s from the readings. After Apache IoTDB's time-window M4 function.
+
+## Time-weighted averages
+
+A rollup with `time_weighted_mean(time, value [, 'linear'])` stores each bucket's run of readings: its first and last
+reading, the area under the signal, and the time from the first reading to the next and into the last. The column
+holds that state, not the mean: query the raw table, which routing answers from the rollup, or merge the state with
+`time_weighted_mean(column)` (`time_weighted_mean(column, 'linear')` for a linear rollup). Runs of neighbouring buckets
+join exactly, the gap between them included, so wider buckets come out as they would from the readings.
 
 ## Rollups of rollups
 

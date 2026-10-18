@@ -90,21 +90,34 @@ pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<Strin
     if params.distinct || params.filter.is_some() || params.null_treatment.is_some() {
         return None;
     }
-    let function = func.name();
+    let mut function = func.name().to_string();
     let column = match params.args.as_slice() {
-        [Expr::Column(c)] if function != "m4" => Some(c.name.clone()),
-        // m4(time, value): the points of `value`.
-        [Expr::Column(t), Expr::Column(c)] if function == "m4" && t.name == time => Some(c.name.clone()),
+        [Expr::Column(c)] if function != "m4" && function != "time_weighted_mean" => Some(c.name.clone()),
+        // m4(time, value), time_weighted_mean(time, value): of `value`.
+        [Expr::Column(t), Expr::Column(c)]
+            if (function == "m4" || function == "time_weighted_mean") && t.name == time =>
+        {
+            Some(c.name.clone())
+        }
+        // time_weighted_mean(time, value, 'linear'): the method is part of what is stored.
+        [Expr::Column(t), Expr::Column(c), Expr::Literal(ScalarValue::Utf8(Some(m)), _)]
+            if function == "time_weighted_mean" && t.name == time =>
+        {
+            if super::twa::Method::parse(m).ok()? == super::twa::Method::Linear {
+                function = "time_weighted_mean:linear".to_string();
+            }
+            Some(c.name.clone())
+        }
         [Expr::Literal(ScalarValue::Int64(Some(1)), _)] if function == "count" => None,
         _ => return None,
     };
     let by_time =
         matches!(params.order_by.as_slice(), [Sort { expr: Expr::Column(c), asc: true, .. }] if c.name == time);
-    let fits = match function {
+    let fits = match function.as_str() {
         "first_value" | "last_value" => by_time && column.is_some(),
         f => FUNCTIONS.contains(&f) && params.order_by.is_empty(),
     };
-    fits.then(|| (function.to_string(), column))
+    fits.then_some((function, column))
 }
 
 /// The expression computing `a` over the raw table.
@@ -121,6 +134,11 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
         "first_value" => agg::first_value(column()?, by_time()),
         "last_value" => agg::last_value(column()?, by_time()),
         "m4" => super::m4::m4_udaf().call(vec![ident(time), column()?]),
+        // The state: a bucket's segment, which wider buckets merge.
+        "time_weighted_mean" => super::twa::time_weighted_state_udaf().call(vec![ident(time), column()?]),
+        "time_weighted_mean:linear" => {
+            super::twa::time_weighted_state_udaf().call(vec![ident(time), column()?, lit("linear")])
+        }
         other => return Err(Error::invalid(format!("a rollup can't store {other}"))),
     })
 }

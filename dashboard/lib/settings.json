@@ -145,6 +145,18 @@
   },
   {
     "default": {
+      "value": "auto"
+    },
+    "description": "How `time_weighted_mean` gets each series' readings in time order. It sums runs of readings in order and joins them; runs that overlap in time can't be joined. `segments`: as the files come (an overlap is an error). `merge`: files that overlap on the series and time, or aren't sorted, are merged in order first (as dedup on read does). `auto`: `merge` for tables with dedup off and such files, else `segments`.",
+    "kind": "auto, segments or merge",
+    "levels": ["table", "session"],
+    "name": "time-weighted-mean",
+    "property": "timelake.time-weighted-mean",
+    "since": "0.7.0",
+    "sql": "timelake.time_weighted_mean"
+  },
+  {
+    "default": {
       "value": "true"
     },
     "description": "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) reads the newest time partition first and older ones only while they can still hold one of the k newest rows.",

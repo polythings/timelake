@@ -3,6 +3,21 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: `time_weighted_mean` (2026-10-18)
+
+IIoT small (30 days, 1,000 tags, 370 M readings), maintained, local disk, release build; hourly mean per tag
+(719,554 groups):
+
+| | Time | Peak memory |
+|---|---:|---:|
+| `avg(value)` | 2.04 s | 270 MB |
+| `time_weighted_mean(time, value)`, segments (best of 7) | 1.99 s | |
+| The same as windows (`lead` per tag and hour in time order; the first fallback built) | 550 s | 20.6 GB |
+
+The window form sorted and spilled every reading twice; it was replaced by merging out-of-order files in series order
+(the dedup scan's merge keeping every row), which costs what dedup on read costs (+21% on IIoT before compaction,
+measured above for Q4) and only for tables with dedup off and overlapping files.
+
 ## P8: newest-first scans (2026-10-18, #72)
 
 `ORDER BY time DESC LIMIT k` over a time-partitioned table: each partition's scan planned as usual, read newest first

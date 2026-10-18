@@ -99,6 +99,8 @@ pub mod property {
     pub const IN_LIST_PRUNING: &str = "timelake.in-list-pruning";
     /// `ORDER BY time DESC LIMIT k` reads time partitions newest first and stops early.
     pub const NEWEST_FIRST: &str = "timelake.newest-first";
+    /// How `time_weighted_mean` gets readings in time order: `auto` (default), `segments` or `merge`.
+    pub const TIME_WEIGHTED_MEAN: &str = "timelake.time-weighted-mean";
     /// Format of the head object (`metadata/timelake-head`): `arrow` (default), `json`, another
     /// registered codec, or `none` to not write one.
     pub const HEAD_FORMAT: &str = "timelake.head-format";
