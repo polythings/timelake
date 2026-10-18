@@ -185,6 +185,10 @@ pub struct Contract {
     pub version_check_interval: Duration,
     /// Rows per Parquet data page in the files written (`None`: the writer's default).
     pub data_page_rows: Option<usize>,
+    /// Iceberg's `write.parquet.compression-codec` (`zstd` when unset), lowercase.
+    pub compression_codec: String,
+    /// Iceberg's `write.parquet.compression-level`, for codecs with levels.
+    pub compression_level: Option<i32>,
 }
 
 impl Contract {
@@ -246,6 +250,9 @@ impl Contract {
                 .get(property::DATA_PAGE_ROWS)
                 .map(|_| p.number(property::DATA_PAGE_ROWS, 0))
                 .transpose()?,
+            // Iceberg's own properties: checked when a file is written, so a bad value never blocks reads.
+            compression_codec: p.get(property::COMPRESSION_CODEC).unwrap_or("zstd").to_ascii_lowercase(),
+            compression_level: p.get(property::COMPRESSION_LEVEL).and_then(|v| v.parse().ok()),
         })
     }
 

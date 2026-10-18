@@ -8,6 +8,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ## Unreleased
 
+### Added
+
+- Data files use the codec in Iceberg's `write.parquet.compression-codec` and `write.parquet.compression-level`
+  (ZSTD 3 by default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Before, Timelake always wrote ZSTD 3.
+
 ### Fixed
 
 - Tigris is recognised when its endpoint comes from `AWS_ENDPOINT_URL_S3` (as Fly.io and the Tigris CLI set it), so

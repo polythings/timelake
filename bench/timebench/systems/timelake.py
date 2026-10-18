@@ -106,6 +106,7 @@ class Timelake(System):
         options = [x for k, v in {**store, **reader_options()}.items() for x in ("-o", f"{k}={v}")]
         cmd = [str(CLI), "-w", state["root"], *options]
         cmd += ["sql", "--namespace", state["namespace"], "--bench-runs", str(runs)]
+        cmd += [x for k, v in reader_settings().items() for x in ("--set", f"{k}={v}")]
         if place.target.s3:
             cmd += ["--proxy-admin", str(PROXY.admin)]
         return cmd
@@ -117,4 +118,13 @@ def reader_options() -> dict[str, str]:
     For comparing settings such as ``timelake_cache=off`` on the same tables.
     """
     raw = os.environ.get("TIMEBENCH_TIMELAKE_OPTIONS", "")
+    return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)
+
+
+def reader_settings() -> dict[str, str]:
+    """Session settings for the CLI reader, from ``TIMEBENCH_TIMELAKE_SETTINGS`` (``key=value,...``).
+
+    For comparing settings such as ``datafusion.execution.parquet.pushdown_filters=true`` on the same tables.
+    """
+    raw = os.environ.get("TIMEBENCH_TIMELAKE_SETTINGS", "")
     return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)

@@ -16,7 +16,7 @@ use parquet::arrow::ArrowSchemaConverter;
 use parquet::arrow::arrow_writer::{
     ArrowColumnChunk, ArrowColumnWriter, ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves,
 };
-use parquet::basic::{Compression, Encoding, LogicalType, Type as PhysicalType, ZstdLevel};
+use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, LogicalType, Type as PhysicalType, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, SortingColumn};
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterPropertiesPtr};
@@ -36,6 +36,27 @@ const BYTE_CHECK_ROWS: usize = 8 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_MIN_ROWS: usize = 8 * 1024;
 
+/// The Parquet codec named by Iceberg's `write.parquet.compression-codec` and `-level`.
+/// Measured on TSBS IoT (repeat queries, local disk): ZSTD 3 11.5 ms and 200 MB, ZSTD 1 11.1 ms
+/// and 204 MB, LZ4 12.3 ms and 242 MB, Snappy 10.8 ms and 277 MB: decoding isn't the bottleneck,
+/// and on object storage bytes are, so ZSTD 3 is the default (`bench/results/PERFORMANCE.md`).
+/// Codecs this build lacks (WebAssembly has ZSTD and Snappy) fail when a file is written.
+pub fn compression(codec: &str, level: Option<i32>) -> Result<Compression, ParquetError> {
+    Ok(match codec {
+        "zstd" => Compression::ZSTD(ZstdLevel::try_new(level.unwrap_or(ZSTD_LEVEL))?),
+        "lz4" | "lz4_raw" => Compression::LZ4_RAW,
+        "snappy" => Compression::SNAPPY,
+        "gzip" => Compression::GZIP(GzipLevel::try_new(level.map_or(Ok(6), u32::try_from).unwrap_or(6))?),
+        "brotli" => Compression::BROTLI(BrotliLevel::try_new(level.map_or(Ok(1), u32::try_from).unwrap_or(1))?),
+        "uncompressed" | "none" => Compression::UNCOMPRESSED,
+        other => {
+            return Err(ParquetError::General(format!(
+                "write.parquet.compression-codec {other:?}: use zstd, lz4, snappy, gzip, brotli or uncompressed"
+            )));
+        }
+    })
+}
+
 /// Rows per data page when the table doesn't set `data-page-rows`: Parquet's own default.
 pub const DATA_PAGE_ROWS: usize = 20_000;
 
@@ -50,7 +71,7 @@ pub fn writer_properties(
     default_page_rows: usize,
 ) -> Result<WriterProperties, ParquetError> {
     let mut b = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::try_new(ZSTD_LEVEL)?))
+        .set_compression(compression(&contract.compression_codec, contract.compression_level)?)
         .set_max_row_group_row_count(Some(contract.row_group_rows))
         .set_statistics_enabled(EnabledStatistics::Page)
         .set_data_page_row_count_limit(contract.data_page_rows.unwrap_or(default_page_rows).max(1))

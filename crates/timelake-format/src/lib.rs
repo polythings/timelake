@@ -120,6 +120,10 @@ pub mod property {
     pub const VERSION_CHECK_INTERVAL: &str = "timelake.version-check-interval";
     /// Rows per Parquet data page in the files written.
     pub const DATA_PAGE_ROWS: &str = "timelake.data-page-rows";
+    /// Iceberg's Parquet codec: `zstd` (default), `lz4`, `snappy`, `gzip`, `brotli`, or `uncompressed`.
+    pub const COMPRESSION_CODEC: &str = "write.parquet.compression-codec";
+    /// Iceberg's Parquet compression level, for `zstd`, `gzip` and `brotli`.
+    pub const COMPRESSION_LEVEL: &str = "write.parquet.compression-level";
 }
 
 /// Snapshot summary keys: Timelake's own, and the standard Iceberg counters Timelake maintains.

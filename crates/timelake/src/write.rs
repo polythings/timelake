@@ -335,3 +335,32 @@ mod shared_iceberg_tests {
         assert_eq!(parsed.existing_rows_count, Some(theirs[1].data_file.record_count()));
     }
 }
+
+#[cfg(test)]
+mod codec_tests {
+    use parquet::basic::Compression;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    use crate::append::AppendOptions;
+    use crate::testing::{T0, batch, faulty_lake, opts, schema};
+
+    /// Iceberg's `write.parquet.compression-codec` picks the codec; an unknown one fails the write.
+    #[tokio::test]
+    async fn the_iceberg_codec_property_picks_the_codec() {
+        let (lake, _store) = faulty_lake();
+        let mut o = opts();
+        o.properties.insert(timelake_format::property::COMPRESSION_CODEC.into(), "LZ4".into());
+        let t = lake.create_table("iot.lz4", &schema(), o).await.unwrap();
+        let (t, _) = t.append(&[batch(&[(T0, 1, 1.0)])], AppendOptions::default()).await.unwrap();
+        let file = t.files().await.unwrap().remove(0);
+        let bytes = lake.storage().read(file.data_file.file_path()).await.unwrap();
+        let reader = SerializedFileReader::new(bytes).unwrap();
+        assert_eq!(reader.metadata().row_group(0).column(0).compression(), Compression::LZ4_RAW);
+
+        let mut o = opts();
+        o.properties.insert(timelake_format::property::COMPRESSION_CODEC.into(), "zip".into());
+        let t = lake.create_table("iot.zip", &schema(), o).await.unwrap();
+        let err = t.append(&[batch(&[(T0, 1, 1.0)])], AppendOptions::default()).await.unwrap_err();
+        assert!(err.to_string().contains("compression-codec \"zip\""), "{err}");
+    }
+}

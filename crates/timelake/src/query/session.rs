@@ -81,10 +81,7 @@ impl Session {
         } else {
             config.with_option_extension(SessionSettings::default())
         };
-        let config = config
-            .with_information_schema(true)
-            .with_default_catalog_and_schema(CATALOG, namespace)
-            .set_bool("datafusion.execution.parquet.pushdown_filters", false);
+        let config = config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace);
         let routes = RouteMap::default();
         let state = SessionStateBuilder::new()
             .with_config(config)
