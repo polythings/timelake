@@ -37,6 +37,13 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- **Breaking:** Timelake's scans no longer follow DataFusion's `datafusion.execution.parquet.pushdown_filters`; set
+  `timelake.filter_pushdown` instead (see Added).
+- **Breaking (Rust):** in `timelake-format`, `rows::PartitionRows` holds a partition's rows as a list of batches
+  (`(Option<i32>, Vec<RecordBatch>)`), and `Contract` has new fields for the new settings. Callers of `sort_and_split`
+  iterate the batches; code that builds a `Contract` field by field uses `Contract::from_properties`.
+- Tables created by other engines with a codec other than ZSTD in `write.parquet.compression-codec` are now written with
+  that codec (see Added); tables Timelake created already say ZSTD.
 - Compaction's merge (also used for appends past 1 GiB) is up to 5× faster on files that alternate series by series,
   such as 5-minute batches of every device: 10 M rows of two such inputs merge in 2.6 s instead of 13.9 s.
 - The block cache sends GETs of at most 1 MiB (storage option `timelake_cache_request_bytes`; `0` for no limit),
