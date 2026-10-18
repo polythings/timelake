@@ -43,6 +43,45 @@ Commit time follows the rows per commit, not the series. A typical deployment (2
 - The last-value index grows about 6 bytes per series compressed: 6 MB at a million series, 600 MB at a hundred
   million, where rewriting it on every commit stops working (R27's top end needs it split by series hash).
 
+**400,000 series** (40,000 machines, 1 day, 4.95 billion rows, 40 GB; run `20261018T075500Z-iiot-large-local`, after
+the fix for appends past 2 GiB of strings below): ingest 2,167 s, 2.3 M rows/s; live commits of 5 minutes (17 M rows)
+4.5 s p50, 16.9 s p95; last-value index 1.8 MB.
+
+| Query, maintained (first / best, ms) | 100,000 series | 400,000 series |
+|---|---:|---:|
+| `latest-area` | 74 / 52 | 85 / 53 |
+| `recent-machines` | 10 / 3 | 22 / 2 |
+| `trend-30d` | 77 / 34 | 49 / 10 |
+| `alarm-window` | 23 / 5 | 36 / 9 |
+| `shift-report` | 38 / 25 | 66 / 28 |
+| `daily-stats` | 236 / 180 | 155 / 99 |
+| `time-above-limit` | 360 / 328 | 421 / 378 |
+| `time-weighted-avg` | 43 / 23 | 116 / 62 |
+| `uptime` | 97 / 53 | 111 / 61 |
+| `energy` | 94 / 64 | 171 / 114 |
+| `gaps` | 21,695 / 21,693 | 87,621 / 87,805 |
+
+Dashboards stay flat at four times the series; queries over an area grow with the area's rows (an area holds four
+times the machines here), and `gaps` with the rows it reads.
+
+**The last-value index per commit**, by series count, every series in the commit (as in a 5-minute IIoT commit),
+release build, in memory (scratch test, not kept):
+
+| Series | Sort of index + new rows | Encode | Decode | Size |
+|---:|---:|---:|---:|---:|
+| 400,000 | 118 ms | 34 ms | 11 ms | 0.9 MB |
+| 1,000,000 | 309 ms | 69 ms | 25 ms | 1.9 MB |
+| 10,000,000 | 3.4 s | 0.7 s | 0.25 s | 18 MB |
+
+- At 400,000 series that is 0.15 s of a 4.5 s commit. It grows with the series, about as the commit's own work does
+  when every series reports each commit.
+- Tried: merging the sorted index with the sorted new rows (compaction's k-way merge) instead of sorting them
+  together: 532 ms, 1.3 s and 13.9 s, 4× slower. With inputs that alternate series by series the merge takes one row
+  at a time; the sort stays. The same merge sorts appends past 1 GiB (above), where it will be slower than needed.
+- Left for the top end of R27: when most series don't report in a commit (millions of slow meters), rewriting the
+  whole index is wasted; writing only the new rows and folding them in during maintenance would make a commit's cost
+  follow its rows.
+
 ## P8: pruning with long `IN` lists (2026-10-18, #103)
 
 DataFusion prunes with `IN` lists of at most 20 values. Timelake now computes, for longer lists of literals, the row
