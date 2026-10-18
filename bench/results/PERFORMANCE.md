@@ -3,6 +3,27 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: pruning with long `IN` lists (2026-10-18, #103)
+
+DataFusion prunes with `IN` lists of at most 20 values. Timelake now computes, for longer lists of literals, the row
+groups and pages whose `[min, max]` holds one of the values (a binary search per page over the sorted values) and
+passes them to the scan as each file's access plan. Setting `in-list-pruning`, on by default.
+
+IIoT small, `SELECT count(*), sum(value) FROM readings WHERE tag IN (<n energy tags>) AND time >= <last day>`, local
+disk, release build, best of 7 (process start included):
+
+| Layout | Tags | Off | On |
+|---|---:|---:|---:|
+| After inline maintenance (29 files for the day, 704 tags per small file) | 21 | 73.5 ms | 35.5 ms |
+| Same | 100 | 93.3 ms | 88.2 ms |
+| Compacted (3 row groups for the day) | 21 | 52.6 ms | 26.4 ms |
+| Same | 100 | 54.2 ms | 30.9 ms |
+
+- In small files a 20,000-row page spans hundreds of tags and always holds one of the list, so only row groups and
+  files whose range misses the list are skipped. In compacted files each tag fills pages of its own.
+- Not covered: a join's filter (`readings JOIN tags … WHERE t.area = 'A000'`) becomes an `IN` list only while the
+  query runs, after planning; it still prunes nothing above 20 values (#103).
+
 ## Q4: no hidden `_series_id` column (2026-10-18)
 
 IIoT small (string series key `tag`, dedup on), loaded with inline maintenance only (overlapping files remain),

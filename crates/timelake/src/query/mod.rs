@@ -6,6 +6,8 @@
 //! - **Last-value rewrite:** "newest row per series" queries (`ROW_NUMBER() OVER (PARTITION BY
 //!   <series key> ORDER BY <time> DESC) = 1`) and "newest row" queries (`ORDER BY <time> DESC
 //!   LIMIT 1` filtered on the series key) are answered from the last-value index instead of a scan.
+//! - **Pruning with long `IN` lists:** row groups and pages are skipped by `column IN (…)` filters
+//!   of more than 20 values too, which DataFusion's pruning leaves alone.
 //! - **Dedup on read:** in tables with dedup on, files that may share a `(series…, time)` are
 //!   merged and only the newest write of each key is returned, before compaction removes the rest.
 //! - **Rollup routing:** `GROUP BY time_bucket(…)` queries read the buckets a rollup has right from
@@ -15,6 +17,7 @@
 
 mod catalog;
 mod dedup;
+mod in_list;
 mod provider;
 mod rewrite;
 mod rollup;

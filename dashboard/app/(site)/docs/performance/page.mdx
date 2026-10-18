@@ -12,6 +12,7 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 | Version | Change | Commit | Effect |
 | --- | --- | --- | --- |
+| Unreleased | Pruning with long `IN` lists | | `tag IN (<100 tags>)` over compacted IIoT readings: 54 → 31 ms on local disk |
 | Unreleased | Block cache requests of at most 1 MiB | | First queries on S3 (20 ms and 50 MiB/s per request, TSBS IoT): 126 → 115 ms geomean, 47% more requests |
 | Unreleased | Block cache fetches separate runs at once | | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
 | Unreleased | Filter pushdown on local files | | TSBS repeat queries on local disk 4–5% faster (geomean), selective group-bys up to 40%; off on object storage |
@@ -24,6 +25,12 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 | 0.2.0 | Two-step commit | `d2b80cd` | Commit p50 on S3: 483 → 243 ms; a 1,728-commit ingest 1,307 → 795 s |
 
 From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 240 ms, and on Tigris from about 810 ms to 210 ms. 0.1.0 is the baseline for 0.2.0’s commit numbers.
+
+## Unreleased: pruning with long `IN` lists
+
+- **What changed:** DataFusion skips row groups and pages with `IN` lists of up to 20 values only. For longer lists of literals, Timelake works out from the file footers which row groups and pages hold one of the values and has the scan read only those. Setting `in-list-pruning`, on by default.
+- **Measured** on the IIoT benchmark's readings, one day, local disk, best of 7: with compacted files, 100 tags 54 → 31 ms and 21 tags 53 → 26 ms; with the small files inline maintenance leaves, 21 tags 74 → 36 ms and 100 tags 93 → 88 ms (their pages each span hundreds of tags).
+- **Not yet:** filters that come from a join are only known while the query runs and still aren't used this way.
 
 ## Unreleased: block cache requests of at most 1 MiB
 

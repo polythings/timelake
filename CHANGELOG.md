@@ -10,6 +10,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Setting `in-list-pruning` (on by default): `column IN (…)` filters of more than 20 values skip row groups and pages
+  whose range holds none of the values, which DataFusion's pruning leaves alone (#103). IIoT, compacted, local disk:
+  a 100-tag list 54 → 31 ms, a 21-tag list 53 → 26 ms. Joins, whose filters are only known while the query runs,
+  are not covered yet.
 - Setting `filter-pushdown` (`auto`, `true`, `false`): the Timelake reader applies filters while decoding Parquet and
   decodes the other columns only for rows that pass. `auto`, the default, turns it on for local files (TSBS geomeans
   4–5% faster, selective group-bys up to 40%) and off on object storage, where it adds a round trip per row group.

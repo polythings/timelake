@@ -145,6 +145,18 @@
   },
   {
     "default": {
+      "value": "true"
+    },
+    "description": "The Timelake reader skips row groups and pages whose range of a column holds none of the values of a `column IN (…)` filter with more than 20 values, which DataFusion doesn't prune with. Costs a binary search per page and value list at planning.",
+    "kind": "boolean",
+    "levels": ["table", "session"],
+    "name": "in-list-pruning",
+    "property": "timelake.in-list-pruning",
+    "since": "0.7.0",
+    "sql": "timelake.in_list_pruning"
+  },
+  {
+    "default": {
       "value": "268435456"
     },
     "description": "Size at which compaction output and writes roll to a new file (256 MiB).",

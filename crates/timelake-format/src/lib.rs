@@ -95,6 +95,8 @@ pub mod property {
     pub const READ_DEDUP_STRATEGY: &str = "timelake.read-dedup-strategy";
     /// Whether the Timelake reader filters rows while decoding Parquet: `auto` (default), `true` or `false`.
     pub const FILTER_PUSHDOWN: &str = "timelake.filter-pushdown";
+    /// The Timelake reader prunes row groups and pages with `IN` lists of more than 20 values.
+    pub const IN_LIST_PRUNING: &str = "timelake.in-list-pruning";
     /// Format of the head object (`metadata/timelake-head`): `arrow` (default), `json`, another
     /// registered codec, or `none` to not write one.
     pub const HEAD_FORMAT: &str = "timelake.head-format";

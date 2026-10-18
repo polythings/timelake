@@ -289,6 +289,17 @@ pub static SETTINGS: &[Setting] = &[
         check: auto_or_boolean,
     },
     Setting {
+        name: "in-list-pruning",
+        kind: "boolean",
+        default: DefaultValue::Value("true"),
+        levels: &[Level::Table, Level::Session],
+        since: "0.7.0",
+        description: "The Timelake reader skips row groups and pages whose range of a column holds none of the \
+                      values of a `column IN (…)` filter with more than 20 values, which DataFusion doesn't prune \
+                      with. Costs a binary search per page and value list at planning.",
+        check: boolean,
+    },
+    Setting {
         name: "target-file-size-bytes",
         kind: "bytes",
         default: DefaultValue::Value("268435456"),
@@ -551,6 +562,7 @@ mod tests {
             property::READ_DEDUP,
             property::READ_DEDUP_STRATEGY,
             property::FILTER_PUSHDOWN,
+            property::IN_LIST_PRUNING,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -566,7 +578,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 29, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 30, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

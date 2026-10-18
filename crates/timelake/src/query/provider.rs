@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::{Session as DfSession, TableProvider};
 use datafusion::common::stats::Precision;
@@ -32,6 +32,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
+use super::in_list::{InList, access_plan, long_in_lists};
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
 use crate::property;
@@ -220,6 +221,7 @@ async fn scan_files(
     let target = state.config().target_partitions().max(1);
     let n_groups = files.len().min(target);
     let mut groups: Vec<Vec<PartitionedFile>> = vec![vec![]; n_groups];
+    let lists = in_lists(table, state, filters);
     // Biggest files first, round-robin: roughly balanced groups.
     files.sort_by_key(|f| std::cmp::Reverse(f.data_file.file_size_in_bytes()));
     let mut total_rows = 0u64;
@@ -228,7 +230,7 @@ async fn scan_files(
         let path = storage.path(f.data_file.file_path())?;
         let pf = PartitionedFile::new(path.to_string(), f.data_file.file_size_in_bytes())
             .with_statistics(Arc::new(file_statistics(&schema, f)));
-        groups[i % n_groups].push(pf);
+        groups[i % n_groups].push(with_access_plan(state, &schema, &lists, pf));
     }
     let one_file_per_group = groups.iter().all(|g| g.len() == 1);
 
@@ -256,6 +258,34 @@ async fn scan_files(
     options.global.reorder_filters = pushdown;
     let format = ParquetFormat::default().with_options(options);
     format.create_physical_plan(state, builder.build()).await
+}
+
+/// The long `IN` lists among `filters` that the scan prunes with itself, unless the session's
+/// `timelake.in_list_pruning` (else the table's `timelake.in-list-pruning`) turns that off.
+fn in_lists(table: &Table, state: &dyn DfSession, filters: &[Expr]) -> Vec<InList> {
+    let settings = state.config().options().extensions.get::<SessionSettings>();
+    let on = settings.and_then(|s| s.flag(property::IN_LIST_PRUNING)).unwrap_or(table.contract().in_list_pruning);
+    if on { long_in_lists(filters) } else { vec![] }
+}
+
+/// `file` with the row groups and pages `lists` leave to read as its access plan, from its footer
+/// in DataFusion's metadata cache (where the scan's footers were put before planning).
+fn with_access_plan(
+    state: &dyn DfSession,
+    schema: &Schema,
+    lists: &[InList],
+    file: PartitionedFile,
+) -> PartitionedFile {
+    if lists.is_empty() {
+        return file;
+    }
+    let cache = state.runtime_env().cache_manager.get_file_metadata_cache();
+    let Some(entry) = cache.get(&file.object_meta.location) else { return file };
+    let Some(metadata) = entry.file_metadata.as_any().downcast_ref::<CachedParquetMetaData>() else { return file };
+    match access_plan(metadata.parquet_metadata(), schema, lists) {
+        Some(plan) => file.with_extension(plan),
+        None => file,
+    }
 }
 
 /// The session's `timelake.filter_pushdown`, else the table's `timelake.filter-pushdown`; `auto`
@@ -438,8 +468,13 @@ impl Ranked {
         }
         let mut stats = Statistics::new_unknown(&with_rank);
         stats.num_rows = Precision::Inexact(usize::try_from(self.rows).unwrap_or(usize::MAX));
+        let lists = in_lists(table, state, filters);
+        let groups = self
+            .groups
+            .iter()
+            .map(|g| FileGroup::new(g.iter().map(|pf| with_access_plan(state, &schema, &lists, pf.clone())).collect()));
         let mut builder = FileScanConfigBuilder::new(url.clone(), Arc::new(source))
-            .with_file_groups(self.groups.clone())
+            .with_file_groups(groups.collect())
             .with_statistics(stats)
             .with_projection_indices(Some(read))?;
         if ordered && self.sorted {
