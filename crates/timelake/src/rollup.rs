@@ -200,8 +200,18 @@ pub(crate) async fn refresh_all(raw: &Table, mode: RollupRefresh) -> Result<Refr
     if mode == RollupRefresh::Never {
         return Ok(done);
     }
+    // Narrowest buckets first: a wider rollup is then computed from an up-to-date narrower one.
+    let mut rollups = vec![];
     for name in &raw.contract().rollups {
         let Ok(name) = name.parse::<TableName>() else { continue };
+        let width = match raw.lake().table(&name).await {
+            Ok(t) => Definition::of(&t).map_or(i64::MAX, |d| d.width),
+            Err(_) => i64::MAX,
+        };
+        rollups.push((width, name));
+    }
+    rollups.sort();
+    for (_, name) in rollups {
         if mode == RollupRefresh::Due && !due(raw, &name) {
             continue;
         }
@@ -286,7 +296,7 @@ async fn refresh_now(lake: &Lake, name: &TableName, raw: Option<&Table>, mode: R
         (summary::ROLLUP_SOURCE_SNAPSHOT.to_string(), snapshot_id.to_string()),
         (summary::ROLLUP_SOURCE_SEQUENCE.to_string(), sequence.to_string()),
     ]);
-    let session = crate::query::refresh_session(lake)?;
+    let session = crate::query::refresh_session(lake, raw.name(), name).await?;
     let (mut pending, mut rows): (Vec<RecordBatch>, u64) = (vec![], 0);
     for (i, &window) in windows.iter().enumerate() {
         let ranges = window.map(|w| vec![w]);

@@ -60,9 +60,15 @@ pub(super) type RouteMap = Arc<RwLock<HashMap<TableName, Arc<Routes>>>>;
 /// Works out the routes of raw table `name` for the next query, or forgets them when it has no
 /// rollups to route to. The table version is confirmed current first, so the rule only routes a
 /// version that won't be replaced while it is scanned. `interval` is the session's
-/// `version-check-interval`, if it sets one.
-pub(super) async fn prepare(lake: &Lake, name: &TableName, interval: Option<Duration>, routes: &RouteMap) {
-    let prepared = routes_for(lake, name, interval).await;
+/// `version-check-interval`, if it sets one; rollup `except` is left out (the one being refreshed).
+pub(super) async fn prepare(
+    lake: &Lake,
+    name: &TableName,
+    interval: Option<Duration>,
+    routes: &RouteMap,
+    except: Option<&TableName>,
+) {
+    let prepared = routes_for(lake, name, interval, except).await;
     let mut map = routes.write().unwrap_or_else(PoisonError::into_inner);
     match prepared {
         Some(r) => map.insert(name.clone(), Arc::new(r)),
@@ -70,7 +76,12 @@ pub(super) async fn prepare(lake: &Lake, name: &TableName, interval: Option<Dura
     };
 }
 
-async fn routes_for(lake: &Lake, name: &TableName, interval: Option<Duration>) -> Option<Routes> {
+async fn routes_for(
+    lake: &Lake,
+    name: &TableName,
+    interval: Option<Duration>,
+    except: Option<&TableName>,
+) -> Option<Routes> {
     let mut raw = lake.table_recent(name, interval, PLANNING_REUSE).await.ok()?;
     if raw.contract().rollups.is_empty() || !raw.contract().rollup_routing {
         return None;
@@ -83,6 +94,9 @@ async fn routes_for(lake: &Lake, name: &TableName, interval: Option<Duration>) -
     let mut rollups = vec![];
     for rollup_name in &raw.contract().rollups {
         let Ok(rollup_name) = rollup_name.parse::<TableName>() else { continue };
+        if Some(&rollup_name) == except {
+            continue;
+        }
         let Ok(rollup) = lake.table_recent(&rollup_name, interval, PLANNING_REUSE).await else { continue };
         let Ok(def) = Definition::of(&rollup) else { continue };
         let Some(recorded) = recorded_sequence(&rollup) else { continue };

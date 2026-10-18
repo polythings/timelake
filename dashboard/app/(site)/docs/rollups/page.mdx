@@ -99,6 +99,13 @@ A refresh recomputes the buckets that the raw table's new data files cover since
 
 Late data is handled the same way: a reading for last week makes its bucket count as changed until the next refresh recomputes it. A refresh that stops halfway leaves the rollup's record of what it reflects where it was, so the next one recomputes the same buckets. If the raw table is rolled back to an earlier snapshot, its rollups aren't used until the next refresh, which rebuilds them.
 
+## Rollups of rollups
+
+Define every rollup on the raw table. When a table has several, each is computed from a narrower one where that one is
+up to date: a daily rollup next to a minute rollup reads the minute rollup's buckets instead of every reading, and the
+narrowest rollups are refreshed first. On the industrial benchmark (30 days, 1,000 tags), creating a daily rollup took
+5.2 s from the raw readings and 1.8 s with a 1-minute rollup in place.
+
 ## Drop a rollup
 
 ```sql
@@ -123,8 +130,6 @@ print(report["rollups_refreshed"], report["rollup_rows"])
 
 ## Not yet
 
-- Rollups built from other rollups (an hourly rollup stored from the minute one); a query for hours is already
-  answered from the minute rollup.
 - Aggregates that need stored state: percentiles, time-weighted averages.
 - Calendar buckets (months), filters in the definition, and routing in plain DuckDB.
 

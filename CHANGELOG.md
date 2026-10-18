@@ -10,6 +10,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Rollups of rollups: a table's rollups are refreshed narrowest first, and each is computed from a narrower one where
+  that is up to date (a daily rollup from the minute rollup: 5.2 → 1.8 s on 30 days of IIoT readings).
 - Rollups answer coarser queries: a query whose `time_bucket` is a multiple of the rollup's width (daily from an
   hourly rollup), or that groups by fewer of its columns, is answered by aggregating the rollup's rows again. IIoT,
   30 days, a 1-minute rollup: daily statistics per tag 2.1 → 0.25 s, 6-hourly totals 1.1 → 0.11 s.

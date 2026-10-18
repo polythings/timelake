@@ -46,7 +46,7 @@ pub struct Session {
     ctx: SessionContext,
     catalog: Arc<LakeCatalog>,
     /// What rollup routing may use, worked out before each query is planned.
-    routes: RouteMap,
+    pub(super) routes: RouteMap,
 }
 
 impl Session {
@@ -154,7 +154,7 @@ impl Session {
             let interval = self.version_check_interval();
             self.catalog.set_interval(interval);
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
-            futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes))).await;
+            futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None))).await;
         }
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)
@@ -214,7 +214,7 @@ impl Session {
         };
         let plan = planner.execute_sql(*select).await?.into_optimized_plan()?;
         let (raw, def, order) = definition_of(&plan, name)?;
-        let ctx = refresh_session(&self.lake)?;
+        let ctx = refresh_session(&self.lake, raw.name(), name).await?;
         let order: Vec<&str> = order.iter().map(String::as_str).collect();
         let frame = rollup_frame(&ctx, &raw, &def, Some(&[]))?.select_columns(&order)?;
         let schema = frame.schema().as_arrow().clone();

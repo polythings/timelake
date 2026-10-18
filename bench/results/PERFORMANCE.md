@@ -18,6 +18,9 @@ included:
 
 Same rows; numbers differ only by the rounding of sums added in another order (at most 9 × 10⁻¹³ relative).
 
+Creating a daily rollup (`tag`, `avg`, `min`, `max`, `count(*)`; 30,000 rows) on the same lake: 5.24 s from the raw
+readings, 1.78 s with the 1-minute rollup in place, which its computation is routed to. Same rows, rounding as above.
+
 ## P10: k-way merge on inputs that alternate key by key (2026-10-18)
 
 The merge behind compaction and large appends (`timelake_format::merge`) took each run as a slice of its batch and

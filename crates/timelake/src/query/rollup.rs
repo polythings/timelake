@@ -122,12 +122,19 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
     })
 }
 
-/// A session for computing rollups: reads with dedup on, whatever the table says, so each
-/// reading counts once.
-pub(crate) fn refresh_session(lake: &Lake) -> Result<SessionContext> {
+/// A session for computing `rollup` from `raw`: reads with dedup on, whatever the table says, so
+/// each reading counts once, and routes to the raw table's other rollups, so a rollup is computed
+/// from a finer one where that one is up to date (hours from minutes) instead of from every row.
+pub(crate) async fn refresh_session(
+    lake: &Lake,
+    raw: &crate::TableName,
+    rollup: &crate::TableName,
+) -> Result<SessionContext> {
     let mut config = Session::config();
     config.options_mut().set("timelake.read_dedup", "true")?;
-    Ok(Session::with_config(lake.clone(), config).context().clone())
+    let session = Session::with_config(lake.clone(), config);
+    super::route::prepare(lake, raw, None, &session.routes, Some(rollup)).await;
+    Ok(session.context().clone())
 }
 
 /// The buckets of rollup `def` computed from `raw`, for the rows in `ranges` (all rows for `None`):

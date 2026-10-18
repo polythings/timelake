@@ -108,8 +108,7 @@ export const COMING_UP: RoadmapItem[] = [
   },
   {
     title: "More rollups",
-    description:
-      "Rollups built from rollups, percentiles and time-weighted averages in rollups, and daily queries answered from hourly rollups.",
+    description: "Percentiles and time-weighted averages in rollups.",
   },
   {
     title: "Time-series functions",

@@ -144,6 +144,37 @@ async fn averages_merge_from_average_and_count() {
     assert_eq!(answer(&s, sql).await, answer(&unrouted, sql).await);
 }
 
+/// A daily rollup next to an hourly one is computed from the hourly rollup where that is up to
+/// date, and holds what computing it from the raw rows gives: at creation and after a refresh.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wider_rollup_is_computed_from_a_narrower_one() {
+    let (_dir, lake) = lake_with_rollup().await;
+    let s = Session::new(lake.clone());
+    rows(
+        &s,
+        "CREATE MATERIALIZED ROLLUP iot.r_1d AS SELECT device, time_bucket(INTERVAL '1 day', time) AS bucket,
+         avg(value) AS avg_value, max(value), count(*) AS n FROM iot.r GROUP BY device, bucket
+         WITH (refresh_interval = 'off')",
+    )
+    .await;
+    let expected = "SELECT device, time_bucket(INTERVAL '1 day', time) AS bucket, avg(value) AS avg_value,
+                           max(value) AS max_value, count(*) AS n
+                    FROM iot.r GROUP BY 1, 2";
+    let stored = "SELECT device, bucket, avg_value, max_value, n FROM iot.r_1d";
+    let unrouted = Session::new(lake.clone());
+    unrouted.sql("SET timelake.rollup_routing = false").await.unwrap();
+    assert_eq!(answer(&unrouted, stored).await, answer(&unrouted, expected).await);
+
+    // A third day, then a refresh of both: the hourly rollup first, the daily from it.
+    let t = lake.table("iot.r").await.unwrap();
+    let b = batch(T0 + 2 * DAY, 24 * 60, MINUTE, 4, |d, i| f64::from(d) * 10_000.0 + i as f64);
+    t.append(&[b], AppendOptions { maintain: Some(false), ..AppendOptions::default() }).await.unwrap();
+    rows(&s, "REFRESH MATERIALIZED ROLLUP iot.r_1h").await;
+    rows(&s, "REFRESH MATERIALIZED ROLLUP iot.r_1d").await;
+    assert_eq!(scalar_i64(&unrouted, "SELECT count(*) FROM iot.r_1d").await, 12);
+    assert_eq!(answer(&unrouted, stored).await, answer(&unrouted, expected).await);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn changes_since_the_refresh_come_from_the_raw_table() {
     let (_dir, lake) = lake_with_rollup().await;
