@@ -108,4 +108,3 @@ export default {
 - It answers time-series query shapes, not arbitrary SQL. For SQL, use the engine (CLI, Python) or plain DuckDB.
 - The WASM module is embedded as base64, about 8 MB of JavaScript (about 2 MB gzipped). That is fine on servers; in browsers, load it lazily.
 - Pruning works at the row-group level. Tables meant for web reads should use smaller row groups (the demo uses `timelake.row-group-rows=65536`).
-- **Known issue:** a `range` or `bucket` query that needs 16 or more files waits forever with the default `concurrency` of 16. Until it is fixed, set `concurrency` higher than the number of files a query can touch, or run `timelake maintain` so tables have fewer files.

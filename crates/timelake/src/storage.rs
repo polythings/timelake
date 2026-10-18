@@ -171,7 +171,12 @@ impl Storage {
                         .map_err(|_| Error::config(format!("unknown S3 option {k:?}")))?;
                     b = b.with_config(key, v);
                 }
-                let endpoint = b.get_config_value(&AmazonS3ConfigKey::Endpoint).unwrap_or_default();
+                // The endpoint requests go to: object_store prefers the S3-specific one
+                // (`AWS_ENDPOINT_URL_S3`, which Fly.io and the Tigris CLI set) over the generic one.
+                let endpoint = b
+                    .get_config_value(&AmazonS3ConfigKey::S3Endpoint)
+                    .or_else(|| b.get_config_value(&AmazonS3ConfigKey::Endpoint))
+                    .unwrap_or_default();
                 let tigris = ["tigris", "storage.dev"].iter().any(|t| endpoint.contains(t));
                 let s3 = Arc::new(b.build()?);
                 lister = Some((s3.clone(), tigris));
@@ -779,7 +784,8 @@ fn with_cache(
 ) -> (Arc<dyn ObjectStore>, Option<Arc<CachedStore>>) {
     let Some(config) = config else { return (store, None) };
     // Two stores never share disk blocks: the scope names the endpoint as well as the bucket.
-    let endpoint = ["aws_endpoint", "endpoint", "aws_endpoint_url"].iter().find_map(|k| options.get(*k));
+    let endpoint =
+        ["aws_endpoint_url_s3", "aws_endpoint", "endpoint", "aws_endpoint_url"].iter().find_map(|k| options.get(*k));
     let scope = endpoint.map_or_else(|| base.to_string(), |e| format!("{base}@{e}"));
     let cache = Arc::new(CachedStore::new(store, scope, config));
     (Arc::new(Cached(cache.clone())), Some(cache))
@@ -888,15 +894,18 @@ mod tests {
             let options = HashMap::from([(FRESHNESS_CHECK_OPTION.to_string(), check.to_string())]);
             Storage::open(&Url::parse(url).unwrap(), options).map(|s| format!("{:?}", s.check))
         };
-        let s3 = |endpoint: &str| {
+        let s3 = |key: &str, endpoint: &str| {
             let options = HashMap::from([
-                ("aws_endpoint".to_string(), endpoint.to_string()),
+                (key.to_string(), endpoint.to_string()),
                 ("aws_region".to_string(), "auto".to_string()),
             ]);
             format!("{:?}", Storage::open(&Url::parse("s3://b").unwrap(), options).unwrap().check)
         };
-        assert_eq!(s3("https://s3.us-east-2.amazonaws.com"), "Head");
-        assert_eq!(s3("https://t3.storage.dev"), "List");
+        assert_eq!(s3("aws_endpoint", "https://s3.us-east-2.amazonaws.com"), "Head");
+        // Each way of naming the endpoint finds Tigris (#102).
+        for key in ["aws_endpoint", "aws_endpoint_url", "aws_endpoint_url_s3"] {
+            assert_eq!(s3(key, "https://t3.storage.dev"), "List", "{key}");
+        }
         assert_eq!(open("s3://b", "LIST").unwrap(), "List");
         assert_eq!(open("memory://", "head").unwrap(), "Head");
         assert!(open("memory://", "list").is_err(), "memory can't list a name");

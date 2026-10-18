@@ -92,6 +92,9 @@ jobs:
       - run: bun test scripts
       - name: Website runs match bench/results/runs
         run: bun dashboard/scripts/sync-results.ts && git diff --exit-code dashboard/data/runs
+      # Vercel builds the site on every push; build it here too, so a change that breaks it fails CI.
+      - name: Website builds
+        run: bun run --cwd dashboard build
 
   client:
     name: TypeScript client vs the engine

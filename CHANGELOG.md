@@ -8,6 +8,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ## Unreleased
 
+### Fixed
+
+- Tigris is recognised when its endpoint comes from `AWS_ENDPOINT_URL_S3` (as Fly.io and the Tigris CLI set it), so
+  readers check for new versions with a LIST there, about 245 ms faster per check than a HEAD (#102).
+
 ## 0.6.0 – 2026-10-17
 
 ### Added
