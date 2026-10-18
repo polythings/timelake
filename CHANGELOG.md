@@ -8,6 +8,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ## Unreleased
 
+## 0.7.0 – 2026-10-18
+
 ### Added
 
 - Aggregate `time_weighted_mean(time, value [, 'forward_fill' | 'linear'])`: the mean of irregular readings weighted

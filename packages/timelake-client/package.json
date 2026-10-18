@@ -1,6 +1,6 @@
 {
   "name": "@timelake/client",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Read and append to Timelake tables from the browser, Node, Cloudflare Workers, or serverless functions (WASM reader and writer, Zod-typed rows)",
   "license": "Apache-2.0",
   "homepage": "https://timelake.dev/docs/typescript",

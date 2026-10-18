@@ -4197,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "timelake"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4223,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "timelake-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4237,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "timelake-format"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "apache-avro",
  "arrow-arith",
@@ -4260,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "timelake-py"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arrow-array",
  "arrow-pyarrow",
