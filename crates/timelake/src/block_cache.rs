@@ -235,11 +235,11 @@ impl CachedStore {
                 }
             }
         }
-        for (b, f) in waits {
-            let bytes =
-                f.await.map_err(|e| object_store::Error::Generic { store: "cache", source: Box::new(ArcError(e)) })?;
-            blocks.insert(b, bytes);
-        }
+        // The runs are fetched at the same time, not one after another.
+        let fetched = futures::future::try_join_all(waits.into_iter().map(|(b, f)| f.map(move |r| r.map(|v| (b, v)))))
+            .await
+            .map_err(|e| object_store::Error::Generic { store: "cache", source: Box::new(ArcError(e)) })?;
+        blocks.extend(fetched);
         if info.is_none() {
             info = self.objects.get(location);
         }
@@ -831,6 +831,23 @@ mod tests {
         assert_eq!(n, 0);
         let stats = c.0.stats();
         assert_eq!((stats.misses, stats.bytes_fetched), (3, 10_000));
+    }
+
+    /// Runs of missing blocks apart from each other are fetched at the same time: three runs take
+    /// one request's latency (5 ms in `Counting`), not three.
+    #[tokio::test(start_paused = true)]
+    async fn separate_runs_are_fetched_at_once() {
+        let store = Arc::new(Counting::default());
+        let path = Path::from("t/data/b.parquet");
+        store.inner.put(&path, data(40_000).into()).await.unwrap();
+        let c = cached(&store, None);
+        let started = tokio::time::Instant::now();
+        let n = gets_for(&store, async {
+            c.get_ranges(&path, &[0..100, 16_000..16_100, 32_000..32_100]).await.unwrap();
+        })
+        .await;
+        assert_eq!(n, 3);
+        assert_eq!(started.elapsed(), Duration::from_millis(5));
     }
 
     #[tokio::test]

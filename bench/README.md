@@ -114,15 +114,20 @@ an `end` record. Commit the runs worth keeping: they are the history the website
 converted from the v0 scripts' result files.
 
 ## Local S3 (RustFS + 20 ms per request)
+On macOS, run RustFS natively (the `rustfs-macos-aarch64` build from its GitHub releases): behind Docker Desktop's
+networking, new connections opened several at a time stall about 200 ms in their first response, which shows up
+in every first-run time. On Linux the container works as well.
 ```bash
-docker volume create timelake-bench-rustfs
-docker run -d --name timelake-bench-rustfs -p 59000:9000 -v timelake-bench-rustfs:/data \
-  -e RUSTFS_ACCESS_KEY=benchkey -e RUSTFS_SECRET_KEY=benchsecret123 rustfs/rustfs:latest
+RUSTFS_ACCESS_KEY=benchkey RUSTFS_SECRET_KEY=benchsecret123 \
+  rustfs server --address 127.0.0.1:59000 --console-address 127.0.0.1:59001 data/rustfs &
+# Linux: docker run -d --name timelake-bench-rustfs -p 59000:9000 -v timelake-bench-rustfs:/data \
+#   -e RUSTFS_ACCESS_KEY=benchkey -e RUSTFS_SECRET_KEY=benchsecret123 rustfs/rustfs:latest
 .bin/s3proxy -listen :59100 -upstream localhost:59000 -admin :59101 -ttfb 20ms &
-uv run timebench run tsbs-iot --scale small --target s3 --ttfb-ms 20
-docker rm -f timelake-bench-rustfs && docker volume rm timelake-bench-rustfs     # cleanup
+uv run timebench run tsbs-iot --scale small --target s3 --ttfb-ms 20 --mibps 50
 ```
-Create the bucket `bench` first (any S3 client against `localhost:59000`).
+Create the bucket `bench` first (any S3 client against `localhost:59000`). `--ttfb-ms` is the latency the proxy adds
+before each response, `--mibps` caps each response's throughput (S3 serves one request at roughly 50–90 MiB/s;
+`0` for no cap), so request sizes and concurrency matter as they do on S3.
 
 ## Real AWS S3
 From this machine (`run_aws.sh`) or from an instance in the region, including the weekly run: see

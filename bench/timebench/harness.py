@@ -91,6 +91,8 @@ class RunSpec:
     ``skipped``), instead of waiting out the timeout again."""
     ttfb_ms: int | None = None
     """Latency the proxy adds per request (local object stores)."""
+    mibps: int | None = None
+    """Throughput cap per response in MiB/s the proxy applies, 0 for none (local object stores)."""
     label: str = ""
     reuse: bool = False
     """Query the tables an earlier run left instead of ingesting (``--checkpoints`` then picks the passes)."""
@@ -134,7 +136,9 @@ def run(spec: RunSpec) -> Path:
     if not spec.reuse:  # the tables exist; the data files may not
         spec.workload.prepare()
     if spec.target.s3 and spec.ttfb_ms is not None:
-        set_ttfb(spec.ttfb_ms)
+        set_proxy("ttfb", f"ms={spec.ttfb_ms}")
+    if spec.target.s3 and spec.mibps is not None:
+        set_proxy("mibps", f"v={spec.mibps}")
     started = dt.datetime.now(dt.timezone.utc)
     header = run_header(spec, started)
     path = RUNS / f"{header['id']}.jsonl"
@@ -247,6 +251,8 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
     }
     if target.s3 and spec.ttfb_ms is not None:
         header["ttfb_ms"] = spec.ttfb_ms
+    if target.s3 and spec.mibps is not None:
+        header["mibps"] = spec.mibps
     if spec.live_interval:
         header["live_interval_s"] = spec.live_interval
     if spec.pace:
@@ -629,9 +635,9 @@ def concurrency_line(r: ConcurrencyRecord) -> str:
     return f"clients  {r['system']}+{r['reader']} x{r['clients']}: {r['qps']} q/s, {times}, {r['errors']} errors"
 
 
-def set_ttfb(ms: int) -> None:
-    """Sets the latency the counting proxy adds per request."""
-    with urllib.request.urlopen(f"http://{PROXY.admin}/ttfb?ms={ms}", data=b"", timeout=5):  # a POST
+def set_proxy(setting: str, query: str) -> None:
+    """Sets the counting proxy's ``ttfb`` (``ms=20``) or ``mibps`` (``v=50``)."""
+    with urllib.request.urlopen(f"http://{PROXY.admin}/{setting}?{query}", data=b"", timeout=5):  # a POST
         pass
 
 

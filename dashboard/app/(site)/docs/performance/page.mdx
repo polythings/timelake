@@ -12,6 +12,7 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 | Version | Change | Commit | Effect |
 | --- | --- | --- | --- |
+| Unreleased | Block cache fetches separate runs at once | | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
 | Unreleased | Filter pushdown on local files | | TSBS repeat queries on local disk 4–5% faster (geomean), selective group-bys up to 40%; off on object storage |
 | Unreleased | Columns encoded in parallel | | The same compaction 2.37 → 1.17 s; importing 11.7M rows 6.0 → 4.7 s |
 | Unreleased | Streaming compaction | | Full compaction of 72 hourly files (11.7M rows) into 3 days: 3.65 → 2.37 s, peak memory 1.95 → 0.53 GB |
@@ -23,11 +24,16 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 240 ms, and on Tigris from about 810 ms to 210 ms. 0.1.0 is the baseline for 0.2.0’s commit numbers.
 
+## Unreleased: block cache fetches separate runs at once
+
+- **What changed:** a read that needs several runs of uncached blocks, such as three column chunks of a row group, sends their GETs together. Before, it waited for each before sending the next.
+- **Measured** on RustFS on the same laptop with 20 ms per request and 50 MiB/s per response, TSBS IoT standard, four runs each: first queries 162 → 125 ms (geomean), one truck's history 233 → 109 ms, its hourly averages 170 → 89 ms. Repeat queries, served from the cache, are unchanged.
+
 ## Unreleased: filter pushdown on local files
 
 - **What changed:** the setting `filter-pushdown` (`auto`, `true`, `false`). With it on, a scan decodes a row group's filter columns, evaluates the filters, and decodes the other columns only for rows that pass. `auto` turns it on for local files and off on object storage. Before, it was always off on plain scans.
 - **Measured** on a laptop, TSBS standard scale, each pair run twice. Local disk, repeat queries (geomean): IoT 10.7 → 10.2 ms, DevOps 16.4 → 15.6 ms. Selective group-bys gained 15–40%; queries whose filters keep most rows lost up to 20%.
-- **Object storage** (RustFS with 20 ms per request): each row group takes one more round trip, the filter columns first. First queries took 7% longer (median geomean 169 → 181 ms), and 32% longer without the block cache; repeats from the cache were 7% faster. So `auto` leaves it off there, and `true` turns it on for readers that mostly repeat queries.
+- **Object storage** (RustFS with 20 ms per request): each row group takes one more round trip, the filter columns first. First queries took 12–17% longer (geomean 125 → 147 ms at 50 MiB/s per request), and repeats from the cache 5–8% faster. So `auto` leaves it off there, and `true` turns it on for readers that mostly repeat queries.
 
 ## Unreleased: columns encoded in parallel
 

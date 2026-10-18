@@ -48,8 +48,8 @@ Durations are a number and a unit: `s`, `m` (minutes), `h`, `d`, `w` or `y`, or 
 With `filter-pushdown` on, a scan decodes the filter columns of a row group, evaluates the filters, and decodes the
 other columns only for the rows that pass. On local disk (TSBS, standard scale, repeat queries) it cut the geomean by
 4–5% and selective group-bys by 15–40%, and made queries that keep most rows up to 20% slower. On object storage it
-costs a request round trip per row group: with 20 ms per request, first queries took 7% longer through the block
-cache and 32% longer without it, while repeat queries served from the cache were 7% faster. So `auto` turns it on
+costs a request round trip per row group: with 20 ms per request, first queries took 12–17% longer, while repeat
+queries served from the block cache were 5–8% faster. So `auto` turns it on
 for local files and off on object storage. Timelake's scans ignore DataFusion's own
 `datafusion.execution.parquet.pushdown_filters`; scans that remove duplicates use pushdown either way.
 

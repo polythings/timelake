@@ -3,6 +3,31 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: block cache fetches separate runs at once (2026-10-18)
+
+The block cache answers a ranged read with one GET per run of missing blocks, and awaited them one after another, so
+a read of three column chunks took three round trips. They now go out together.
+
+TSBS IoT standard, maintained, on RustFS behind `tools/s3proxy` (20 ms per request, 50 MiB/s per response), release
+build, filter pushdown off, 4 runs each; median first run and best repeat, geomeans over 17 queries:
+
+| | Before | Runs at once |
+|---|---:|---:|
+| First run | 162 ms | 125 ms |
+| Best repeat | 13.3 ms | 12.7 ms |
+| `one-truck-all-history`, first run | 233 ms | 109 ms |
+| `one-truck-hourly-avg`, first run | 170 ms | 89 ms |
+| `avg-vs-projected-fuel-consumption`, first run | 320 ms | 241 ms |
+
+Unit test: three runs take one request's latency (`block_cache::tests::separate_runs_are_fetched_at_once`).
+
+**The local S3 target on macOS.** RustFS in Docker Desktop stalled about 200 ms on new connections opened several at
+a time (fresh connections fetching 1 MiB, 8 or 16 at a time: 3–10 of 48 took over 150 ms; one at a time, none). First runs
+there were bimodal by about 200 ms, which hid differences like the one above. RustFS's native macOS build has no
+stall (48 of 48 under 10 ms), and the bench README now uses it. Local-S3 first-run numbers before 2026-10-18 carry
+the stall; AWS runs don't. `s3proxy` also gained `-mibps` (timebench `--mibps`), a throughput cap per response, so
+request sizes count as on S3 (roughly 50–90 MiB/s per request).
+
 ## P8: filter pushdown, by store (2026-10-17)
 
 Laptop (M1 Pro), release build, TSBS standard scale, maintained checkpoint, Timelake reader, each query in a fresh
@@ -21,19 +46,22 @@ columns only for rows that pass; the setting `filter-pushdown` chooses it.
 - Slower: IoT `avg-vs-projected-fuel-consumption` +9–20% and `avg-load` +11%: filters that keep most rows pay for
   evaluating them while decoding. Point queries are unchanged.
 
-**Object storage**, IoT (17 queries) on RustFS behind `tools/s3proxy` with 20 ms per request:
+**Object storage**, IoT (17 queries) on RustFS (native, see below) behind `tools/s3proxy` with 20 ms per request,
+with the block cache fetching runs at once (next section); median of 3–4 first runs and best repeat, geomeans:
 
 | | Off | Pushdown + reorder |
 |---|---:|---:|
-| Engine's default storage (block cache in memory), 6–7 runs: median first run, geomean | 169 ms | 181 ms |
-| Same, best repeat (served from the cache), geomean | 13.5 ms | 12.6 ms |
-| Requests, first run: `avg-load`, `daily-activity` | 17, 14–18 | 29, 29 |
-| No block cache (in-process store over the same files, 20 ms per GET), best of 3 cold runs, geomean | 192 ms | 253 ms |
+| 20 ms, 50 MiB/s per response: first run | 125 ms | 147 ms |
+| Same, best repeat (from the cache) | 12.5 ms | 11.9 ms |
+| 20 ms, no throughput cap: first run | 102 ms | 115 ms |
+| Same, best repeat | 12.5 ms | 11.5 ms |
+| No block cache (in-process store over local files, 20 ms per GET), best of 3 cold runs | 192 ms | 253 ms |
 
 - Pushdown fetches a row group's filter columns, then its other columns: one more round trip per row group, which a
-  cold query waits for. The block cache hides part of it.
-- The first runs on RustFS are bimodal (the same query takes about 150 or 350 ms in either mode), so the medians
-  matter more than single runs.
+  cold query waits for (`one-truck-all-history` 111 → 152 ms, `avg-load` 171 → 196 ms). Repeats from the cache gain
+  as on local disk.
+- With the cache's runs fetched one after another (before the next section), the extra round trip hid behind the
+  others: 162 ms both ways.
 
 Decision: `filter-pushdown = auto`, on for local files and off on object storage; `true` for repeat-heavy readers
 on object storage. Timelake's scans no longer follow `datafusion.execution.parquet.pushdown_filters`.

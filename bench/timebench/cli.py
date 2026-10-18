@@ -79,6 +79,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         reference_timeout=args.reference_timeout,
         skip_after_timeout=args.skip_after_timeout,
         ttfb_ms=args.ttfb_ms,
+        mibps=args.mibps,
         label=args.label,
         reuse=args.reuse,
         live_interval=args.live_interval,
@@ -167,6 +168,7 @@ def main() -> None:
         help="skip a query at a system's later checkpoints once it timed out there",
     )
     r.add_argument("--ttfb-ms", type=int, help="latency the proxy adds per request (local object stores)")
+    r.add_argument("--mibps", type=int, help="throughput cap per response in MiB/s the proxy applies, 0 for none")
     r.add_argument("--param", action="append", default=[], help="workload parameter key=value (repeatable)")
     r.add_argument("--label", default="", help="free text recorded with the run")
     r.add_argument("--variant", default="", help="names a kind of run kept apart from the others, e.g. bulk")

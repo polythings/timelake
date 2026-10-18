@@ -32,6 +32,8 @@ class RunRecord(TypedDict, total=False):
     """``local`` or ``s3``: how the target is reached (S3 goes through ``tools/s3proxy``)."""
     ttfb_ms: int
     """Latency the proxy adds per request (local object stores only)."""
+    mibps: int
+    """Throughput cap per response in MiB/s the proxy applied (local object stores only)."""
     machine: str
     commit: str
     dirty: bool

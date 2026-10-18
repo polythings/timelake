@@ -18,6 +18,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The block cache fetched the runs of blocks one read needs one after another; it fetches them at once. First
+  queries on object storage with 20 ms per request: TSBS IoT geomean 162 → 125 ms, one truck's history 233 → 109 ms.
 - Tigris is recognised when its endpoint comes from `AWS_ENDPOINT_URL_S3` (as Fly.io and the Tigris CLI set it), so
   readers check for new versions with a LIST there, about 245 ms faster per check than a HEAD (#102).
 
