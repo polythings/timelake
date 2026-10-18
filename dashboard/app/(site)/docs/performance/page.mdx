@@ -30,7 +30,7 @@ From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 24
 
 - **What changed:** DataFusion skips row groups and pages with `IN` lists of up to 20 values only. For longer lists of literals, Timelake works out from the file footers which row groups and pages hold one of the values and has the scan read only those. Setting `in-list-pruning`, on by default.
 - **Measured** on the IIoT benchmark's readings, one day, local disk, best of 7: with compacted files, 100 tags 54 → 31 ms and 21 tags 53 → 26 ms; with the small files inline maintenance leaves, 21 tags 74 → 36 ms and 100 tags 93 → 88 ms (their pages each span hundreds of tags).
-- **Not yet:** filters that come from a join are only known while the query runs and still aren't used this way.
+- **Joins:** a join's runtime filter, the list of keys of the dimension rows that matched, is used the same way on object storage. IIoT `energy` (readings joined to 100 tags) on RustFS with 20 ms per request: 54 → 26 ms repeated, 204 → 183 ms first run. On local disk, where filters run while pages are decoded, the extra checks cost more than they saved on other queries (`daily-stats` 469 → 712 ms), so joins aren't pruned this way there.
 
 ## Unreleased: block cache requests of at most 1 MiB
 

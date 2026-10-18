@@ -296,7 +296,8 @@ pub static SETTINGS: &[Setting] = &[
         since: "0.7.0",
         description: "The Timelake reader skips row groups and pages whose range of a column holds none of the \
                       values of a `column IN (…)` filter with more than 20 values, which DataFusion doesn't prune \
-                      with. Costs a binary search per page and value list at planning.",
+                      with: lists in the query, and, on scans that don't filter rows while decoding (object \
+                      storage by default), the key lists of a join's runtime filter.",
         check: boolean,
     },
     Setting {

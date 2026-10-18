@@ -19,7 +19,7 @@ GROUP BY 1, 2
 
 ### Time and series filters
 
-Filters are evaluated against each file’s Iceberg column bounds before any data is read, so a time range or a series key value skips whole files. Inside the sorted Parquet files, row-group statistics and page indexes skip the rest. That includes `IN` lists longer than the 20 values DataFusion prunes with, such as `tag IN (<50 machines>)`: Timelake skips the row groups and pages whose range holds none of the values (setting `in-list-pruning`). On the IIoT benchmark's compacted readings, a 100-tag list went from 54 to 31 ms on local disk.
+Filters are evaluated against each file’s Iceberg column bounds before any data is read, so a time range or a series key value skips whole files. Inside the sorted Parquet files, row-group statistics and page indexes skip the rest. That includes `IN` lists longer than the 20 values DataFusion prunes with, such as `tag IN (<50 machines>)`: Timelake skips the row groups and pages whose range holds none of the values (setting `in-list-pruning`). On the IIoT benchmark's compacted readings, a 100-tag list went from 54 to 31 ms on local disk. On object storage the same applies to a join's runtime filter, the list of keys a join to a filtered dimension table (`readings JOIN tags … WHERE t.area = …`) produces as the query runs.
 
 ### Latest row per series
 

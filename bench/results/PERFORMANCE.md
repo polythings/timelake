@@ -21,8 +21,27 @@ disk, release build, best of 7 (process start included):
 
 - In small files a 20,000-row page spans hundreds of tags and always holds one of the list, so only row groups and
   files whose range misses the list are skipped. In compacted files each tag fills pages of its own.
-- Not covered: a join's filter (`readings JOIN tags … WHERE t.area = 'A000'`) becomes an `IN` list only while the
-  query runs, after planning; it still prunes nothing above 20 values (#103).
+- **Joins.** A hash join's runtime filter on the probe side is an `IN` list of the build side's keys (up to 150),
+  known only once the scan runs. A predicate adapter takes it as each file is opened (the join has built its side by
+  then; a runtime filter only narrows) and adds to the list an OR of lists of at most 20, which DataFusion prunes
+  with. `readings JOIN tags … WHERE area = 'A000' AND signal = 'energy'` (100 tags), compacted, local disk, best of 7:
+  off 81 ms; the list replaced by the split 57 ms; the list kept and the split added 49 ms (rows are checked against
+  the one list first).
+- But with filters evaluated while decoding (local disk), the added lists are evaluated on every surviving row too.
+  On the IIoT suite (local, maintained, 2 runs each) `energy` went 64.5 → 32.7 ms but `daily-stats` 469 → 712 ms,
+  `shift-report` 39 → 56 ms, `alarm-window` 16 → 25 ms: those tags are contiguous in sort order, so the filter's own
+  bounds already pruned as well, and the extra lists only cost (opening 19 → 145 ms, scanning 4.5 → 6.2 s summed).
+  Geomean best 47.6 → 50.5 ms. So the adapter applies only to scans without filter pushdown (`filter-pushdown`
+  `auto`: object storage), where the predicate only prunes:
+
+| IIoT small, local S3 (20 ms, 50 MiB/s per request), 3 runs each | Off | On |
+|---|---:|---:|
+| Geomean, median first run / best repeat | 212.1 / 38.4 ms | 213.2 / 36.7 ms |
+| `energy` | 203.7 / 54.0 ms | 182.8 / 26.4 ms |
+| `daily-stats` | 711.1 / 461.3 ms | 701.1 / 481.0 ms |
+| Others | | within ±5% |
+
+  Locally with pushdown (adapter off) the suite is unchanged: 49.8 → 49.0 ms.
 
 ## Q4: no hidden `_series_id` column (2026-10-18)
 

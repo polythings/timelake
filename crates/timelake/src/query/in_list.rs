@@ -4,16 +4,28 @@
 //! values and prunes nothing for longer ones, such as `tag IN (<50 machines>)`. Here a list's
 //! values are sorted once, and a row group or page is kept when one of them lies within its
 //! `[min, max]`: a binary search per page. The result is handed to the scan as each file's access
-//! plan; DataFusion's own pruning still applies on top of it.
+//! plan; DataFusion's own pruning still applies on top of it. A join's runtime filter, an `IN` list
+//! of the build side's keys known only once the scan runs, is split into lists DataFusion prunes
+//! with as each file is opened ([`SplitInLists`]).
 
 use std::cmp::Ordering;
 
+use std::sync::Arc;
+
 use arrow::array::{Array, ArrayRef};
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::ScalarValue;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
+use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::Operator;
 use datafusion::logical_expr::utils::split_conjunction;
+use datafusion::physical_expr::expressions::{BinaryExpr, DynamicFilterPhysicalExpr, InListExpr, Literal, in_list};
+use datafusion::physical_expr_adapter::{
+    DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory,
+};
+use datafusion::physical_plan::PhysicalExpr;
 use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use parquet::file::metadata::ParquetMetaData;
@@ -159,6 +171,65 @@ fn values_as(values: &[ScalarValue], data_type: &arrow::datatypes::DataType) -> 
     Some(cast)
 }
 
+/// Adapts each file's scan predicate as DataFusion's default adapter does, and adds to each long
+/// `IN` list inside a join's runtime filter an OR of lists short enough for DataFusion to prune
+/// with. (Lists written in the query are pruned with by [`access_plan`] before the scan; a runtime
+/// filter exists only once the scan runs.) The runtime filter is taken as it stands when the file
+/// is opened: by then a hash join has built its side, and a runtime filter only ever narrows, so
+/// that value stays correct for the file.
+#[derive(Debug)]
+pub(super) struct SplitInLists;
+
+impl PhysicalExprAdapterFactory for SplitInLists {
+    fn create(&self, logical: SchemaRef, physical: SchemaRef) -> DfResult<Arc<dyn PhysicalExprAdapter>> {
+        let inner = DefaultPhysicalExprAdapterFactory.create(logical, physical.clone())?;
+        Ok(Arc::new(SplitAdapter { inner, schema: physical }))
+    }
+}
+
+#[derive(Debug)]
+struct SplitAdapter {
+    inner: Arc<dyn PhysicalExprAdapter>,
+    schema: SchemaRef,
+}
+
+impl PhysicalExprAdapter for SplitAdapter {
+    fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DfResult<Arc<dyn PhysicalExpr>> {
+        let expr = self.inner.rewrite(expr)?;
+        expr.transform_down(|e| {
+            let Some(dynamic) = e.downcast_ref::<DynamicFilterPhysicalExpr>() else { return Ok(Transformed::no(e)) };
+            let split = dynamic.current()?.transform_up(|e| self.split(e))?;
+            // Runtime filters stay live unless taking them as they stand helps pruning.
+            Ok(if split.transformed {
+                Transformed::new(split.data, true, TreeNodeRecursion::Jump)
+            } else {
+                Transformed::no(e)
+            })
+        })
+        .map(|t| t.data)
+    }
+}
+
+impl SplitAdapter {
+    fn split(&self, e: Arc<dyn PhysicalExpr>) -> DfResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        let Some(list) = e.downcast_ref::<InListExpr>() else { return Ok(Transformed::no(e)) };
+        let literals = list.list().iter().all(|v| v.downcast_ref::<Literal>().is_some());
+        if list.negated() || list.list().len() <= DATAFUSION_MAX_LIST || !literals {
+            return Ok(Transformed::no(e));
+        }
+        let mut parts = list
+            .list()
+            .chunks(DATAFUSION_MAX_LIST)
+            .map(|chunk| in_list(Arc::clone(list.expr()), chunk.to_vec(), &false, &self.schema));
+        let first = parts.next().expect("a list longer than a chunk")?;
+        let or = parts.try_fold(first, |acc, part| -> DfResult<Arc<dyn PhysicalExpr>> {
+            Ok(Arc::new(BinaryExpr::new(acc, Operator::Or, part?)))
+        })?;
+        // The list itself stays, for filtering rows (one lookup per row); the parts are for pruning.
+        Ok(Transformed::yes(Arc::new(BinaryExpr::new(Arc::clone(&e), Operator::And, or))))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -196,15 +267,15 @@ mod tests {
         (schema, metadata)
     }
 
-    fn in_list(values: impl IntoIterator<Item = i32>) -> Expr {
+    fn device_in(values: impl IntoIterator<Item = i32>) -> Expr {
         col("device").in_list(values.into_iter().map(lit).collect(), false)
     }
 
     #[test]
     fn only_long_literal_lists_are_taken() {
         let lists = long_in_lists(&[
-            in_list(0..21).and(col("value").gt(lit(1))),
-            in_list(0..20),
+            device_in(0..21).and(col("value").gt(lit(1))),
+            device_in(0..20),
             col("device").in_list((0..30).map(lit).collect(), true),
             col("device").in_list((0..30).map(|i| col("value") + lit(i)).collect(), false),
         ]);
@@ -216,7 +287,7 @@ mod tests {
     fn row_groups_and_pages_without_a_value_are_skipped() {
         let (schema, metadata) = file();
         // Devices 3 and 7 in the first row group, 60..83 in the second: 25 pages of 100 rows.
-        let lists = long_in_lists(&[in_list([3, 7].into_iter().chain(60..83))]);
+        let lists = long_in_lists(&[device_in([3, 7].into_iter().chain(60..83))]);
         let plan = access_plan(&metadata, &schema, &lists).unwrap();
         let rows: Vec<usize> = (0..2)
             .map(|rg| match &plan.inner()[rg] {
@@ -227,13 +298,36 @@ mod tests {
         assert_eq!(rows, [200, 2300]);
 
         // Only devices of the second row group: the first is skipped.
-        let plan = access_plan(&metadata, &schema, &long_in_lists(&[in_list(60..90)])).unwrap();
+        let plan = access_plan(&metadata, &schema, &long_in_lists(&[device_in(60..90)])).unwrap();
         assert!(!plan.should_scan(0) && plan.should_scan(1));
         // Values in every page prune nothing.
-        assert!(access_plan(&metadata, &schema, &long_in_lists(&[in_list(0..100)])).is_none());
+        assert!(access_plan(&metadata, &schema, &long_in_lists(&[device_in(0..100)])).is_none());
     }
 
-    /// The same rows with the setting on and off, on a table whose pages hold 10 rows.
+    #[test]
+    fn runtime_filters_get_lists_to_prune_with() {
+        use datafusion::physical_expr::expressions::{Column, lit as plit};
+        let schema = Arc::new(Schema::new(vec![Field::new("device", DataType::Int32, false)]));
+        let device: Arc<dyn PhysicalExpr> = Arc::new(Column::new("device", 0));
+        let list = |n: i32| in_list(Arc::clone(&device), (0..n).map(plit).collect(), &false, &schema).unwrap();
+        let adapter = SplitInLists.create(Arc::clone(&schema), Arc::clone(&schema)).unwrap();
+
+        let dynamic = Arc::new(DynamicFilterPhysicalExpr::new(vec![Arc::clone(&device)], plit(true)));
+        dynamic.update(list(45)).unwrap();
+        let rewritten = adapter.rewrite(dynamic).unwrap().to_string();
+        // The list, and three lists of at most 20 values.
+        assert_eq!(rewritten.matches(" IN (").count(), 4, "{rewritten}");
+        assert_eq!(rewritten.matches(" OR ").count(), 2, "{rewritten}");
+
+        // A list written in the query is left to the access plan; a short runtime list to DataFusion.
+        assert_eq!(adapter.rewrite(list(45)).unwrap().to_string(), list(45).to_string());
+        let short = Arc::new(DynamicFilterPhysicalExpr::new(vec![Arc::clone(&device)], plit(true)));
+        short.update(list(20)).unwrap();
+        assert!(adapter.rewrite(short).unwrap().downcast_ref::<DynamicFilterPhysicalExpr>().is_some());
+    }
+
+    /// The same rows with the setting on and off, on a table whose pages hold 10 rows: with a list
+    /// in the query, and with a join whose runtime filter lists 25 devices.
     #[tokio::test]
     async fn queries_give_the_same_rows_with_in_list_pruning() {
         let (lake, _) = faulty_lake();
@@ -242,17 +336,33 @@ mod tests {
         let t = lake.create_table("iot.r", &crate::testing::schema(), o).await.unwrap();
         let rows: Vec<(i64, i32, f64)> =
             (0..60).flat_map(|d| (0..30).map(move |i| (T0 + i, d, f64::from(d)))).collect();
-        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        let no_maintenance = AppendOptions { maintain: Some(false), ..Default::default() };
+        t.append(&[batch(&rows)], no_maintenance.clone()).await.unwrap();
+        let dims =
+            Schema::new(vec![Field::new("device", DataType::Int32, false), Field::new("grp", DataType::Int32, false)]);
+        let d = lake.create_table("iot.d", &dims, crate::TableOptions::default()).await.unwrap();
+        let grp = Int32Array::from_iter_values((0..60).map(|d| i32::from((10..35).contains(&d))));
+        let devices =
+            RecordBatch::try_new(Arc::new(dims), vec![Arc::new(Int32Array::from_iter_values(0..60)), Arc::new(grp)])
+                .unwrap();
+        d.append(&[devices], no_maintenance).await.unwrap();
+
         let list: Vec<String> = (10..35).map(|d| d.to_string()).collect();
-        let sql = format!("SELECT count(*) AS n, sum(value) AS s FROM iot.r WHERE device IN ({})", list.join(", "));
-        let mut answers = vec![];
-        for on in ["true", "false"] {
-            let session = Session::new(lake.clone());
-            session.sql(&format!("SET timelake.in_list_pruning = {on}")).await.unwrap();
-            let batches = session.sql(&sql).await.unwrap().collect().await.unwrap();
-            answers.push(arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string());
+        let queries = [
+            format!("SELECT count(*) AS n, sum(value) AS s FROM iot.r WHERE device IN ({})", list.join(", ")),
+            "SELECT count(*) AS n, sum(r.value) AS s FROM iot.r r JOIN iot.d d ON r.device = d.device WHERE d.grp = 1"
+                .to_string(),
+        ];
+        for sql in queries {
+            let mut answers = vec![];
+            for on in ["true", "false"] {
+                let session = Session::new(lake.clone());
+                session.sql(&format!("SET timelake.in_list_pruning = {on}")).await.unwrap();
+                let batches = session.sql(&sql).await.unwrap().collect().await.unwrap();
+                answers.push(arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string());
+            }
+            assert_eq!(answers[0], answers[1], "{sql}");
+            assert!(answers[0].contains("| 750 |"), "{sql}: {}", answers[0]);
         }
-        assert_eq!(answers[0], answers[1]);
-        assert!(answers[0].contains("| 750 |"), "{}", answers[0]);
     }
 }

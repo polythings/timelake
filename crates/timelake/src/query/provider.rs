@@ -23,6 +23,7 @@ use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -32,7 +33,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
-use super::in_list::{InList, access_plan, long_in_lists};
+use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
 use crate::property;
@@ -254,18 +255,32 @@ async fn scan_files(
     }
     let mut options = state.table_options().parquet.clone();
     let pushdown = filter_pushdown(table, state)?;
+    if !pushdown {
+        builder = builder.with_expr_adapter(split_adapter(table, state));
+    }
     options.global.pushdown_filters = pushdown;
     options.global.reorder_filters = pushdown;
     let format = ParquetFormat::default().with_options(options);
     format.create_physical_plan(state, builder.build()).await
 }
 
-/// The long `IN` lists among `filters` that the scan prunes with itself, unless the session's
-/// `timelake.in_list_pruning` (else the table's `timelake.in-list-pruning`) turns that off.
-fn in_lists(table: &Table, state: &dyn DfSession, filters: &[Expr]) -> Vec<InList> {
+/// The session's `timelake.in_list_pruning`, else the table's `timelake.in-list-pruning`.
+fn in_list_pruning(table: &Table, state: &dyn DfSession) -> bool {
     let settings = state.config().options().extensions.get::<SessionSettings>();
-    let on = settings.and_then(|s| s.flag(property::IN_LIST_PRUNING)).unwrap_or(table.contract().in_list_pruning);
-    if on { long_in_lists(filters) } else { vec![] }
+    settings.and_then(|s| s.flag(property::IN_LIST_PRUNING)).unwrap_or(table.contract().in_list_pruning)
+}
+
+/// The long `IN` lists among `filters` that the scan prunes with itself, if the setting is on.
+fn in_lists(table: &Table, state: &dyn DfSession, filters: &[Expr]) -> Vec<InList> {
+    if in_list_pruning(table, state) { long_in_lists(filters) } else { vec![] }
+}
+
+/// The predicate adapter that lets runtime filters' long `IN` lists prune, if the setting is on.
+/// Only for scans that don't filter rows while decoding: those would evaluate the added lists on
+/// every row too, which cost more than the pruning saved in the industrial benchmark
+/// (`daily-stats` 469 → 712 ms, where the filter's bounds already pruned as well).
+fn split_adapter(table: &Table, state: &dyn DfSession) -> Option<Arc<dyn PhysicalExprAdapterFactory>> {
+    in_list_pruning(table, state).then(|| Arc::new(SplitInLists) as _)
 }
 
 /// `file` with the row groups and pages `lists` leave to read as its access plan, from its footer
