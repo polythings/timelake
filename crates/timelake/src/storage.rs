@@ -94,11 +94,15 @@ pub const CACHE_MEMORY_BYTES_OPTION: &str = "timelake_cache_memory_bytes";
 pub const CACHE_DISK_BYTES_OPTION: &str = "timelake_cache_disk_bytes";
 /// Storage option: the cache's block size in bytes (default 1 MiB, at least 4 KiB).
 pub const CACHE_BLOCK_BYTES_OPTION: &str = "timelake_cache_block_bytes";
+/// Storage option: the cache's largest GET in bytes; longer runs of missing blocks are split into
+/// parts fetched at once (default 1 MiB; 0: no limit).
+pub const CACHE_REQUEST_BYTES_OPTION: &str = "timelake_cache_request_bytes";
 
 const DEFAULT_CACHE_MEMORY_BYTES: u64 = 256 << 20;
 const DEFAULT_CACHE_DISK_BYTES: u64 = 4 << 30;
 const DEFAULT_CACHE_BLOCK_BYTES: u64 = 1 << 20;
 const MIN_CACHE_BLOCK_BYTES: u64 = 4 << 10;
+const DEFAULT_CACHE_REQUEST_BYTES: u64 = 1 << 20;
 
 /// How [`Storage::check_exists`] asks whether an object exists. A HEAD request is the cheapest
 /// on most stores; on some (Tigris) a HEAD of a missing key is slow while a LIST of its exact
@@ -809,6 +813,7 @@ fn cache_config(options: &mut HashMap<String, String>, scheme: &str) -> Result<O
     if block < MIN_CACHE_BLOCK_BYTES {
         return Err(Error::config(format!("{CACHE_BLOCK_BYTES_OPTION} must be at least {MIN_CACHE_BLOCK_BYTES}")));
     }
+    let request = bytes(options, CACHE_REQUEST_BYTES_OPTION, DEFAULT_CACHE_REQUEST_BYTES)?;
     let dir = options.remove(CACHE_DIR_OPTION).map(PathBuf::from);
     let remote = !matches!(scheme, "file" | "memory");
     let mode = options.remove(CACHE_OPTION).map(|m| m.trim().to_ascii_lowercase());
@@ -827,7 +832,7 @@ fn cache_config(options: &mut HashMap<String, String>, scheme: &str) -> Result<O
     } else {
         None
     };
-    Ok(Some(CacheConfig { block, memory, disk }))
+    Ok(Some(CacheConfig { block, request, memory, disk }))
 }
 
 /// `timelake` in the OS cache directory: `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows,

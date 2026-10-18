@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct CacheConfig {
     /// Block size in bytes.
     pub block: u64,
+    /// The largest GET in bytes (rounded down to whole blocks, at least one); 0: no limit.
+    pub request: u64,
     /// Memory budget in bytes.
     pub memory: u64,
     /// The disk cache: its directory and budget in bytes.
@@ -222,7 +224,8 @@ impl CachedStore {
                 }
                 None => true,
             });
-            for run in runs(&missing) {
+            let max_blocks = if self.config.request == 0 { u64::MAX } else { (self.config.request / block).max(1) };
+            for run in runs(&missing, max_blocks) {
                 let fetch = self.clone().fetch_run(location.clone(), run.clone()).shared();
                 for (i, b) in run.clone().enumerate() {
                     let one: Fetch = fetch
@@ -332,12 +335,12 @@ impl CachedStore {
     }
 }
 
-/// Runs of consecutive block numbers.
-fn runs(sorted: &[u64]) -> Vec<Range<u64>> {
+/// Runs of consecutive block numbers, each at most `max_blocks` long.
+fn runs(sorted: &[u64], max_blocks: u64) -> Vec<Range<u64>> {
     let mut out: Vec<Range<u64>> = vec![];
     for &b in sorted {
         match out.last_mut() {
-            Some(r) if r.end == b => r.end += 1,
+            Some(r) if r.end == b && r.end - r.start < max_blocks => r.end += 1,
             _ => out.push(b..b + 1),
         }
     }
@@ -795,7 +798,8 @@ mod tests {
 
     /// A cache over `store`, with blocks of 4 KiB, and a disk cache in `dir` if given.
     fn cached(store: &Arc<Counting>, dir: Option<&std::path::Path>) -> Cached {
-        let config = CacheConfig { block: BLOCK, memory: 1 << 20, disk: dir.map(|d| (d.to_path_buf(), 1 << 20)) };
+        let config =
+            CacheConfig { block: BLOCK, request: 0, memory: 1 << 20, disk: dir.map(|d| (d.to_path_buf(), 1 << 20)) };
         Cached(Arc::new(CachedStore::new(store.clone(), "memory://".into(), config)))
     }
 
@@ -960,7 +964,8 @@ mod tests {
 
     #[test]
     fn runs_and_slices() {
-        assert_eq!(runs(&[1, 2, 3, 5, 7, 8]), vec![1..4, 5..6, 7..9]);
+        assert_eq!(runs(&[1, 2, 3, 5, 7, 8], u64::MAX), vec![1..4, 5..6, 7..9]);
+        assert_eq!(runs(&[1, 2, 3, 4, 5, 7], 2), vec![1..3, 3..5, 5..6, 7..8], "split at two blocks");
         let blocks: BTreeMap<u64, Bytes> =
             [(0, Bytes::from_static(b"abcd")), (1, Bytes::from_static(b"efgh")), (2, Bytes::from_static(b"ij"))].into();
         assert_eq!(slice(&blocks, 4, 2..9), "cdefghi");

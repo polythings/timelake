@@ -12,6 +12,7 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 | Version | Change | Commit | Effect |
 | --- | --- | --- | --- |
+| Unreleased | Block cache requests of at most 1 MiB | | First queries on S3 (20 ms and 50 MiB/s per request, TSBS IoT): 126 → 115 ms geomean, 47% more requests |
 | Unreleased | Block cache fetches separate runs at once | | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
 | Unreleased | Filter pushdown on local files | | TSBS repeat queries on local disk 4–5% faster (geomean), selective group-bys up to 40%; off on object storage |
 | Unreleased | Columns encoded in parallel | | The same compaction 2.37 → 1.17 s; importing 11.7M rows 6.0 → 4.7 s |
@@ -23,6 +24,11 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 | 0.2.0 | Two-step commit | `d2b80cd` | Commit p50 on S3: 483 → 243 ms; a 1,728-commit ingest 1,307 → 795 s |
 
 From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 240 ms, and on Tigris from about 810 ms to 210 ms. 0.1.0 is the baseline for 0.2.0’s commit numbers.
+
+## Unreleased: block cache requests of at most 1 MiB
+
+- **What changed:** the block cache splits a long run of missing blocks into GETs of at most `timelake_cache_request_bytes` (default 1 MiB), fetched at once. Before, a run was one GET however long.
+- **Measured** on RustFS with 20 ms per request and each response limited to 50 MiB/s, as S3 streams one request at roughly 50–90 MiB/s: first queries 126 → 115 ms (geomean), the heaviest up to 16% faster, with 247 → 364 requests across the 17 queries. Without the rate limit the part size made no difference. Parts of 2 MiB gained 2%, 4 and 8 MiB nothing; 512 KiB gained another 4%, but each extra request may need a new connection, which costs more on S3 than here.
 
 ## Unreleased: block cache fetches separate runs at once
 

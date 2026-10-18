@@ -35,6 +35,7 @@ Timelake’s own options work with every backend:
 | `timelake_cache_dir` | The disk cache's directory. Default `timelake` in the OS cache directory (`~/Library/Caches`, `$XDG_CACHE_HOME` or `~/.cache`, `%LOCALAPPDATA%`). |
 | `timelake_cache_memory_bytes`, `timelake_cache_disk_bytes` | The caches' budgets. Default 268435456 (256 MiB) and 4294967296 (4 GiB). |
 | `timelake_cache_block_bytes` | The block size. Default 1048576 (1 MiB). |
+| `timelake_cache_request_bytes` | The largest GET the cache sends: longer runs of missing blocks are split into parts fetched at once. Default 1048576 (1 MiB); `0` for no limit. More, smaller requests finish sooner when each request streams at a limited rate, as on S3 (about 50–90 MiB/s), at the price of more requests. |
 | `timelake_local_root` | Write objects under a local directory (see below). |
 
 ```bash

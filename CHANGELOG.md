@@ -16,6 +16,12 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Data files use the codec in Iceberg's `write.parquet.compression-codec` and `write.parquet.compression-level`
   (ZSTD 3 by default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Before, Timelake always wrote ZSTD 3.
 
+### Changed
+
+- The block cache sends GETs of at most 1 MiB (storage option `timelake_cache_request_bytes`; `0` for no limit),
+  longer runs split into parts fetched at once. With 20 ms per request and 50 MiB/s per request, TSBS IoT first
+  queries 126 → 115 ms (geomean), with 47% more requests.
+
 ### Fixed
 
 - The block cache fetched the runs of blocks one read needs one after another; it fetches them at once. First

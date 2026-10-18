@@ -3,6 +3,30 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: block cache requests of at most 1 MiB (2026-10-18, #65)
+
+Setup as in the next section (RustFS, 20 ms per request, 50 MiB/s per response; 3 runs each, interleaved). The cache
+fetched each run of missing blocks in one GET however long; storage option `timelake_cache_request_bytes` now splits
+longer runs into parts fetched at once.
+
+| Largest GET | First run, geomean (50 MiB/s) | No throughput cap | First-run requests, 17 queries |
+|---|---:|---:|---:|
+| No limit | 126 ms | 104 ms | 247 |
+| 8 MiB | 126 ms | | |
+| 4 MiB | 126 ms | | |
+| 2 MiB | 123 ms | 104 ms | 268 |
+| 1 MiB (one block) | 115 ms | 105 ms | 364 |
+| 512 KiB (blocks of 512 KiB) | 111 ms | | |
+
+- The gain is in the heavy queries: `daily-activity` 237 → 198 ms, `avg-vs-projected-fuel-consumption` 240 → 224 ms.
+  Point queries read one block per column and don't change; repeats come from the cache and don't change.
+- Without a throughput cap the size doesn't matter, so the gain is the parallel transfer of a long run.
+- Default 1 MiB, one block per GET. Smaller parts went on gaining here, but each extra parallel request may open a
+  connection, which on S3 costs TLS handshakes this plain-HTTP setup doesn't model; the AWS runs will check.
+- Column chunks in the TSBS IoT readings: 3 KiB (`tags_id`) to 5.7 MiB (`latitude`) per 1M-row row group, so most
+  scans read runs of 1–6 blocks. Merging nearby runs into larger requests (the issue's other half) would only add
+  bytes per request, which costs time at a per-request rate; not done.
+
 ## P8: block cache fetches separate runs at once (2026-10-18)
 
 The block cache answers a ranged read with one GET per run of missing blocks, and awaited them one after another, so
