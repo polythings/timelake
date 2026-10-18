@@ -98,6 +98,11 @@ export const NOW: RoadmapItem[] = [
 
 export const COMING_UP: RoadmapItem[] = [
   {
+    title: "Tuned on real data",
+    description:
+      "A beta on a production industrial dataset with parallel writers fed from Kinesis: throughput, latency, and cost measured, then tuned for.",
+  },
+  {
     title: "Side-by-side demos",
     description: "The same queries on Timelake and other engines, with time and a running cost counter.",
   },
