@@ -289,6 +289,17 @@ pub static SETTINGS: &[Setting] = &[
         check: auto_or_boolean,
     },
     Setting {
+        name: "newest-first",
+        kind: "boolean",
+        default: DefaultValue::Value("true"),
+        levels: &[Level::Table, Level::Session],
+        since: "0.7.0",
+        description: "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) \
+                      reads the newest time partition first and older ones only while they can still hold one of \
+                      the k newest rows.",
+        check: boolean,
+    },
+    Setting {
         name: "in-list-pruning",
         kind: "boolean",
         default: DefaultValue::Value("true"),
@@ -564,6 +575,7 @@ mod tests {
             property::READ_DEDUP_STRATEGY,
             property::FILTER_PUSHDOWN,
             property::IN_LIST_PRUNING,
+            property::NEWEST_FIRST,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -579,7 +591,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 30, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 31, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

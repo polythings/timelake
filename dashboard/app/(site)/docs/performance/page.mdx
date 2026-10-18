@@ -12,6 +12,7 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 | Version | Change | Commit | Effect |
 | --- | --- | --- | --- |
+| Unreleased | Newest-first scans | | 100 newest readings before a past time, 30 days of IIoT: 298 → 38 ms |
 | Unreleased | Pruning with long `IN` lists | | `tag IN (<100 tags>)` over compacted IIoT readings: 54 → 31 ms on local disk |
 | Unreleased | Block cache requests of at most 1 MiB | | First queries on S3 (20 ms and 50 MiB/s per request, TSBS IoT): 126 → 115 ms geomean, 47% more requests |
 | Unreleased | Block cache fetches separate runs at once | | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
@@ -25,6 +26,11 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 | 0.2.0 | Two-step commit | `d2b80cd` | Commit p50 on S3: 483 → 243 ms; a 1,728-commit ingest 1,307 → 795 s |
 
 From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 240 ms, and on Tigris from about 810 ms to 210 ms. 0.1.0 is the baseline for 0.2.0’s commit numbers.
+
+## Unreleased: newest-first scans
+
+- **What changed:** a query sorted by time, newest first, with a limit reads the newest time partition first, and older partitions only while they can still hold one of the rows it asks for. Setting `newest-first`.
+- **Measured** on a laptop: on 30 days of IIoT readings, the 100 newest before a past time 298 → 38 ms; on TSBS IoT (3 days), the 10 newest 102 → 80 ms on local disk and 392 → 320 ms on RustFS with 20 ms per request. Queries for one series' newest rows were already fast and stay the same.
 
 ## Unreleased: pruning with long `IN` lists
 

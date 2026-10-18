@@ -74,7 +74,7 @@ async fn append_query_latest_compact_expire() {
     assert_eq!(f64_column(&rows(&s, top1).await, 1), [7359.0]);
     // Filters on non-key columns must not use the index.
     let p = plan(&s, "SELECT time FROM iot.readings WHERE value < 5 ORDER BY time DESC LIMIT 1").await;
-    assert!(matches!(p.scans[..], [Scan::Files(_)]), "{p:?}");
+    assert!(!p.scans.is_empty() && p.scans.iter().all(|s| matches!(s, Scan::Files(_))), "{p:?}");
 
     // Duplicates + late data: readers see the newest write of each key at once (dedup on read),
     // then compaction removes the older copies (latest write wins).

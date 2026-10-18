@@ -169,6 +169,8 @@ pub struct Contract {
     pub filter_pushdown: String,
     /// The Timelake reader prunes row groups and pages with `IN` lists of more than 20 values.
     pub in_list_pruning: bool,
+    /// `ORDER BY time DESC LIMIT k` reads time partitions newest first and stops early.
+    pub newest_first: bool,
     /// Format of the head object, or `none` to not write one.
     pub head_format: String,
     /// Bytes the head may spend on optional sections (the last-value index).
@@ -235,6 +237,7 @@ impl Contract {
             read_dedup_strategy: p.get(property::READ_DEDUP_STRATEGY).unwrap_or("merge").to_ascii_lowercase(),
             filter_pushdown: p.get(property::FILTER_PUSHDOWN).unwrap_or("auto").to_ascii_lowercase(),
             in_list_pruning: p.flag(property::IN_LIST_PRUNING, true)?,
+            newest_first: p.flag(property::NEWEST_FIRST, true)?,
             head_format: p.get(property::HEAD_FORMAT).unwrap_or(Self::DEFAULT_HEAD_FORMAT).to_ascii_lowercase(),
             head_inline_bytes: p.number(property::HEAD_INLINE_BYTES, Self::DEFAULT_HEAD_INLINE_BYTES)?,
             format_version: p.get(property::FORMAT_VERSION).map_or(Ok(FormatVersion::UNVERSIONED), str::parse)?,

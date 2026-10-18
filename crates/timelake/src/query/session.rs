@@ -86,6 +86,7 @@ impl Session {
             .with_config(config)
             .with_default_features()
             .with_optimizer_rule(Arc::new(LatestRewrite))
+            .with_optimizer_rule(Arc::new(super::newest::NewestFirst))
             .with_optimizer_rule(Arc::new(RollupRewrite { routes: routes.clone() }))
             .build();
         let ctx = SessionContext::new_with_state(state);

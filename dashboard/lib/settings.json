@@ -147,6 +147,18 @@
     "default": {
       "value": "true"
     },
+    "description": "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) reads the newest time partition first and older ones only while they can still hold one of the k newest rows.",
+    "kind": "boolean",
+    "levels": ["table", "session"],
+    "name": "newest-first",
+    "property": "timelake.newest-first",
+    "since": "0.7.0",
+    "sql": "timelake.newest_first"
+  },
+  {
+    "default": {
+      "value": "true"
+    },
     "description": "The Timelake reader skips row groups and pages whose range of a column holds none of the values of a `column IN (…)` filter with more than 20 values, which DataFusion doesn't prune with: lists in the query, and, on scans that don't filter rows while decoding (object storage by default), the key lists of a join's runtime filter.",
     "kind": "boolean",
     "levels": ["table", "session"],

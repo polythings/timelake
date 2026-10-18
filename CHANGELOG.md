@@ -18,6 +18,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rollups answer coarser queries: a query whose `time_bucket` is a multiple of the rollup's width (daily from an
   hourly rollup), or that groups by fewer of its columns, is answered by aggregating the rollup's rows again. IIoT,
   30 days, a 1-minute rollup: daily statistics per tag 2.1 → 0.25 s, 6-hourly totals 1.1 → 0.11 s.
+- Setting `newest-first` (on by default): `ORDER BY time DESC LIMIT k` reads time partitions newest first and stops
+  once older ones can't hold any of the k newest rows (#72). IIoT, 30 days: the 100 newest readings before a past
+  time 298 → 38 ms; TSBS IoT on local S3: the 10 newest readings 392 → 320 ms.
 - Setting `in-list-pruning` (on by default): `column IN (…)` filters of more than 20 values skip row groups and pages
   whose range holds none of the values, which DataFusion's pruning leaves alone (#103). IIoT, compacted, local disk:
   a 100-tag list 54 → 31 ms, a 21-tag list 53 → 26 ms. On object storage it also prunes with a join's runtime

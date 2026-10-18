@@ -3,6 +3,27 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: newest-first scans (2026-10-18, #72)
+
+`ORDER BY time DESC LIMIT k` over a time-partitioned table: each partition's scan planned as usual, read newest first
+(in parallel within the partition), stopping once the k newest rows so far are newer than any older partition's
+newest time. Setting `newest-first`, on by default. Release build, best of 7, process start included:
+
+| Query | Off | On |
+|---|---:|---:|
+| IIoT small (30 days), 100 newest before 2026-01-20 | 298 ms | 38 ms |
+| IIoT small, 10 newest | 68 ms | 68 ms |
+| IIoT small, 100 newest of one tag | 32 ms | 33 ms |
+| TSBS IoT (3 days), 10 newest, local disk | 102 ms | 80 ms |
+| TSBS IoT, 10 newest, local S3 (20 ms, 50 MiB/s per request) | 392 ms | 320 ms |
+| TSBS IoT, 10 newest before a past time, local S3 | 349 ms | 312 ms |
+| TSBS IoT, newest row of one truck before a past time | 24 ms | 25 ms |
+
+- TSBS 10 newest: the scan reads 3.89 M rows (67 MB, the newest day) instead of 9.88 M (170 MB); its CPU 226 vs
+  675 ms summed over partitions.
+- The first version passed no filters into the partitions' scans (the operator stopped DataFusion's filter pushdown):
+  one truck's newest row took 87 ms instead of 27. It now passes them through, the sort's runtime filter included.
+
 ## P7: `m4` (2026-10-18, #73)
 
 IIoT small (30 days, 1,000 tags), local disk, release build, best of 7, hourly buckets:

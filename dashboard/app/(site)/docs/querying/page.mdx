@@ -21,6 +21,10 @@ GROUP BY 1, 2
 
 Filters are evaluated against each file’s Iceberg column bounds before any data is read, so a time range or a series key value skips whole files. Inside the sorted Parquet files, row-group statistics and page indexes skip the rest. That includes `IN` lists longer than the 20 values DataFusion prunes with, such as `tag IN (<50 machines>)`: Timelake skips the row groups and pages whose range holds none of the values (setting `in-list-pruning`). On the IIoT benchmark's compacted readings, a 100-tag list went from 54 to 31 ms on local disk. On object storage the same applies to a join's runtime filter, the list of keys a join to a filtered dimension table (`readings JOIN tags … WHERE t.area = …`) produces as the query runs.
 
+A query sorted by time, newest first, with a limit (`ORDER BY time DESC LIMIT 100`) reads the newest time partition
+first and older ones only while they can still hold one of the rows asked for (setting `newest-first`). On 30 days of
+the industrial benchmark, the 100 newest readings before a past time took 38 ms instead of 298 ms.
+
 ### Latest row per series
 
 This query shape is rewritten to read the last-value index instead of scanning the table:

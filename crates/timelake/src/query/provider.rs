@@ -1,5 +1,6 @@
 //! A Timelake table as a DataFusion table: pruned Parquet scans, or the last-value index.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -31,9 +32,11 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
+use iceberg::spec::{Datum, PrimitiveLiteral};
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
+use super::newest::NewestFirstExec;
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
 use crate::property;
@@ -48,6 +51,9 @@ pub(super) enum Kind {
     Data,
     /// The last-value index: the newest row of every series.
     Latest,
+    /// The data files for `ORDER BY time DESC LIMIT k`: time partitions newest first, stopping once
+    /// older ones can't hold any of the `k` newest rows ([`super::newest`]).
+    Newest(usize),
 }
 
 /// A Timelake table at the version loaded during planning.
@@ -66,6 +72,10 @@ impl TimelakeProvider {
 
     pub(super) fn latest(table: Table) -> Self {
         Self { table, kind: Kind::Latest, routed: false }
+    }
+
+    pub(super) fn newest(table: Table, k: usize) -> Self {
+        Self { table, kind: Kind::Newest(k), routed: false }
     }
 
     /// This scan, marked as dealt with by rollup routing.
@@ -97,7 +107,8 @@ impl TimelakeProvider {
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
         match self.kind {
             Kind::Latest => scan_latest(table, projection).await,
-            Kind::Data => scan_data(table, state, projection, filters, limit).await,
+            Kind::Data => scan_data(table, state, projection, filters, limit, table.files().await?).await,
+            Kind::Newest(k) => scan_newest(table, state, projection, filters, k).await,
         }
     }
 }
@@ -108,15 +119,17 @@ async fn scan_latest(table: &Table, projection: Option<&Vec<usize>>) -> DfResult
     Ok(MemorySourceConfig::try_new_exec(&[vec![batch]], table.schema(), projection.cloned())?)
 }
 
+/// A scan of `files`, data files of `table`.
 async fn scan_data(
     table: &Table,
     state: &dyn DfSession,
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
+    files: Vec<LiveEntry>,
 ) -> DfResult<Arc<dyn ExecutionPlan>> {
     let schema = table.schema();
-    let (files, groups, key_filters) = select_files(table, state, filters).await?;
+    let (files, groups, key_filters) = select_files(table, state, filters, files)?;
     let storage = table.lake().storage();
     let url = ObjectStoreUrl::parse(storage.url())?;
     let mut footers: Vec<PartitionedFile> = vec![];
@@ -155,6 +168,41 @@ async fn scan_data(
     }
 }
 
+/// A scan of each time partition, newest first, that stops once the `k` newest rows so far are
+/// newer than any row an older partition holds.
+async fn scan_newest(
+    table: &Table,
+    state: &dyn DfSession,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    k: usize,
+) -> DfResult<Arc<dyn ExecutionPlan>> {
+    let files = table.files().await?;
+    let time = table.contract().time_column.as_ref().and_then(|t| table.metadata().current_schema().field_by_name(t));
+    let newest = |f: &LiveEntry| match time.and_then(|t| f.data_file.upper_bounds().get(&t.id)).map(Datum::literal) {
+        Some(PrimitiveLiteral::Long(t)) => *t,
+        _ => i64::MAX,
+    };
+    let mut partitions: BTreeMap<Option<i32>, (i64, Vec<LiveEntry>)> = BTreeMap::new();
+    for f in files {
+        let entry = partitions.entry(crate::write::file_partition(&f.data_file)).or_insert((i64::MIN, vec![]));
+        entry.0 = entry.0.max(newest(&f));
+        entry.1.push(f);
+    }
+    let mut partitions: Vec<(i64, Vec<LiveEntry>)> = partitions.into_values().collect();
+    partitions.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
+    let mut waves = vec![];
+    for (newest, files) in partitions {
+        waves.push((scan_data(table, state, projection, filters, None, files).await?, newest));
+    }
+    let time = table.contract().time_column.clone().unwrap_or_default();
+    Ok(Arc::new(NewestFirstExec::try_new(waves, k, &time)?))
+}
+
+/// What [`select_files`] picks: the files to scan as they are, the groups of files to
+/// deduplicate together, and the filters on key columns only.
+type Selection = (Vec<LiveEntry>, Vec<Vec<LiveEntry>>, Vec<Expr>);
+
 /// The files a scan reads: those that can match `filters` and share no key with another file, and
 /// the groups of files that may share keys (dedup on), read together and deduplicated; and the
 /// filters on key columns only, which can apply before dedup.
@@ -162,12 +210,7 @@ async fn scan_data(
 /// Rows are deduplicated before the filters apply, so files that may share keys are only pruned
 /// by filters on the key columns: an older copy of a row must not outlive a newer one that a
 /// filter on another column would have pruned.
-async fn select_files(
-    table: &Table,
-    state: &dyn DfSession,
-    filters: &[Expr],
-) -> DfResult<(Vec<LiveEntry>, Vec<Vec<LiveEntry>>, Vec<Expr>)> {
-    let files = table.files().await?;
+fn select_files(table: &Table, state: &dyn DfSession, filters: &[Expr], files: Vec<LiveEntry>) -> DfResult<Selection> {
     let contract = table.contract();
     let keys = contract.sort_columns();
     let session =
@@ -631,7 +674,7 @@ impl TableProvider for TimelakeProvider {
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> DfResult<Vec<TableProviderFilterPushDown>> {
         let support = match self.kind {
-            Kind::Data => TableProviderFilterPushDown::Inexact,
+            Kind::Data | Kind::Newest(_) => TableProviderFilterPushDown::Inexact,
             Kind::Latest => TableProviderFilterPushDown::Unsupported,
         };
         Ok(vec![support; filters.len()])

@@ -97,6 +97,8 @@ pub mod property {
     pub const FILTER_PUSHDOWN: &str = "timelake.filter-pushdown";
     /// The Timelake reader prunes row groups and pages with `IN` lists of more than 20 values.
     pub const IN_LIST_PRUNING: &str = "timelake.in-list-pruning";
+    /// `ORDER BY time DESC LIMIT k` reads time partitions newest first and stops early.
+    pub const NEWEST_FIRST: &str = "timelake.newest-first";
     /// Format of the head object (`metadata/timelake-head`): `arrow` (default), `json`, another
     /// registered codec, or `none` to not write one.
     pub const HEAD_FORMAT: &str = "timelake.head-format";
