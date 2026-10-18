@@ -33,7 +33,7 @@ The query must have this shape:
 - It reads one Timelake time-series table, with no `WHERE`, join, or subquery.
 - It groups by one `time_bucket` (or `date_bin`) of the table's time column, with a fixed width (seconds to days, not months) and the default origin.
 - It also groups by any of the table's series-key columns, and selects each of them under its own name.
-- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, and `last_value(x ORDER BY time)`. Each bucket's rows give these exactly.
+- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, `last_value(x ORDER BY time)`, and `m4(time, x)` (below). Each bucket's rows give these exactly.
 
 Outputs the query doesn't name get names like `bucket`, `avg_temp`, and `count`. Grouping only by series-key columns keeps a reading in the same group when a newer write replaces it (see [Rows sent twice](/docs/querying#rows-sent-twice)), so a rollup only ever gains rows.
 
@@ -98,6 +98,24 @@ A refresh recomputes the buckets that the raw table's new data files cover since
 - **Now.** `REFRESH MATERIALIZED ROLLUP iot.readings_1h` brings one rollup up to date and returns the rows it took.
 
 Late data is handled the same way: a reading for last week makes its bucket count as changed until the next refresh recomputes it. A refresh that stops halfway leaves the rollup's record of what it reflects where it was, so the next one recomputes the same buckets. If the raw table is rolled back to an earlier snapshot, its rollups aren't used until the next refresh, which rebuilds them.
+
+## First, smallest, largest and last: `m4`
+
+`m4(time, value)` is an aggregate returning a group's first, smallest, largest and last points, as a list of
+`{time, value}` in time order without repeats (one to four points). Per `time_bucket`, a line drawn through every
+bucket's points keeps each bucket's extremes and ends:
+
+```sql
+SELECT tag, time_bucket(INTERVAL '1 hour', time) AS hour, m4(time, value) AS points
+FROM iiot.readings WHERE tag = 'M00000.temperature' GROUP BY 1, 2;
+-- unnest(points) gives one row per point
+```
+
+Ties go the same way however rows arrive: among equal times the smaller value comes first, and among equal values
+the earlier point. The points of several buckets merge (the `m4` of their points is the `m4` of their rows), so a
+rollup can store them, `m4(points)` merges stored lists, and routing answers wider buckets from a rollup's points. On
+the industrial benchmark (30 days, 1,000 tags), hourly points for every tag took 0.51 s from a 1-minute rollup and
+2.0 s from the readings. After Apache IoTDB's time-window M4 function.
 
 ## Rollups of rollups
 

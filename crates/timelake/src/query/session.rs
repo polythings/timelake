@@ -95,6 +95,7 @@ impl Session {
         // time_bucket(width, ts [, origin]) is the name time-series users know for date_bin.
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
+        ctx.register_udaf(super::m4::m4_udaf());
         Self { lake, ctx, catalog, routes }
     }
 

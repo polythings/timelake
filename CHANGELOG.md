@@ -10,6 +10,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Aggregate `m4(time, value)`: a group's first, smallest, largest and last points, as a list of `{time, value}`.
+  Rollups store it and answer wider buckets from it (hourly points of 1,000 tags over 30 days: 2.0 → 0.51 s from a
+  1-minute rollup). After Apache IoTDB's M4.
 - Rollups of rollups: a table's rollups are refreshed narrowest first, and each is computed from a narrower one where
   that is up to date (a daily rollup from the minute rollup: 5.2 → 1.8 s on 30 days of IIoT readings).
 - Rollups answer coarser queries: a query whose `time_bucket` is a multiple of the rollup's width (daily from an

@@ -15,13 +15,15 @@ const MINUTE: i64 = HOUR / 60;
 const CREATE: &str = "CREATE MATERIALIZED ROLLUP iot.r_1h AS
     SELECT device, time_bucket(INTERVAL '1 hour', time) AS bucket,
            avg(value) AS avg_value, min(value), max(value), sum(value), count(*) AS n, count(value),
-           first_value(value ORDER BY time) AS first, last_value(value ORDER BY time) AS last
+           first_value(value ORDER BY time) AS first, last_value(value ORDER BY time) AS last,
+           m4(time, value) AS points
     FROM iot.r GROUP BY device, bucket
     WITH (refresh_interval = 'off')";
 
 /// Queries the rollup can answer (all or part of), and one it can't.
 const QUERIES: &[(&str, bool)] = &[
     ("SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, avg(value), count(*) FROM iot.r GROUP BY 1, 2", true),
+    ("SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, m4(time, value) FROM iot.r GROUP BY 1, 2", true),
     (
         "SELECT time_bucket(INTERVAL '1 hour', time) AS h, device, max(value) AS m, sum(value) FROM iot.r
          WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND time < TIMESTAMP '2026-01-02 03:00:00' GROUP BY 1, 2",
@@ -46,7 +48,8 @@ const QUERIES: &[(&str, bool)] = &[
     // Wider buckets and fewer keys: the rollup's hours merged.
     (
         "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), min(value), max(value), count(*),
-                sum(value), count(value), first_value(value ORDER BY time), last_value(value ORDER BY time)
+                sum(value), count(value), first_value(value ORDER BY time), last_value(value ORDER BY time),
+                m4(time, value)
          FROM iot.r GROUP BY 1, 2",
         true,
     ),
@@ -117,7 +120,19 @@ async fn rollups_answer_like_the_raw_table() {
     let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
     assert_eq!(
         names,
-        ["device", "bucket", "avg_value", "min_value", "max_value", "sum_value", "n", "count_value", "first", "last"]
+        [
+            "device",
+            "bucket",
+            "avg_value",
+            "min_value",
+            "max_value",
+            "sum_value",
+            "n",
+            "count_value",
+            "first",
+            "last",
+            "points"
+        ]
     );
     check_answers(&lake).await;
 }

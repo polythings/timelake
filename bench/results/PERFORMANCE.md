@@ -3,6 +3,20 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: `m4` (2026-10-18, #73)
+
+IIoT small (30 days, 1,000 tags), local disk, release build, best of 7, hourly buckets:
+
+| | Time |
+|---|---:|
+| `m4(time, value)` per tag and hour from the readings, per-group accumulator | 3.50 s |
+| Same, columnar group accumulator | 2.05 s |
+| `min`, `max`, `first_value`, `last_value` per tag and hour (no times for min and max) | 1.76 s |
+| `m4` per tag and hour from a 1-minute `m4` rollup (30.4 M rows, 405 MB, created in 18 s) | 0.51 s |
+| `m4` of 20 tags: readings / rollup | 131 / 77 ms |
+
+The rollup gives the same points as the readings (2,081,619 for all tags).
+
 ## P7: coarser queries from a rollup (2026-10-18)
 
 IIoT small (30 days, 1,000 tags, 370 M readings), maintained, local disk, release build, a 1-minute rollup

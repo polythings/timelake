@@ -241,6 +241,8 @@ impl Candidate {
                 "max" => agg::max(ident(stored(function, column)?)),
                 "first_value" => agg::first_value(ident(stored(function, column)?), by_bucket()),
                 "last_value" => agg::last_value(ident(stored(function, column)?), by_bucket()),
+                // The stored points merge into the wider bucket's.
+                "m4" => super::m4::m4_udaf().call(vec![ident(stored(function, column)?)]),
                 // A mean of means weighted by the rows each counted.
                 "avg" => {
                     let n = self.count_of(column.as_deref()?, q)?;

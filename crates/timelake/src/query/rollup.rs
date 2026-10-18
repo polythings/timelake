@@ -92,7 +92,9 @@ pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<Strin
     }
     let function = func.name();
     let column = match params.args.as_slice() {
-        [Expr::Column(c)] => Some(c.name.clone()),
+        [Expr::Column(c)] if function != "m4" => Some(c.name.clone()),
+        // m4(time, value): the points of `value`.
+        [Expr::Column(t), Expr::Column(c)] if function == "m4" && t.name == time => Some(c.name.clone()),
         [Expr::Literal(ScalarValue::Int64(Some(1)), _)] if function == "count" => None,
         _ => return None,
     };
@@ -118,6 +120,7 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
         "avg" => agg::avg(column()?),
         "first_value" => agg::first_value(column()?, by_time()),
         "last_value" => agg::last_value(column()?, by_time()),
+        "m4" => super::m4::m4_udaf().call(vec![ident(time), column()?]),
         other => return Err(Error::invalid(format!("a rollup can't store {other}"))),
     })
 }

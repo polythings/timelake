@@ -699,6 +699,16 @@ The answer is exact, not a stale rollup:
 averages), answering a coarser query (hourly from minutes) or fewer keys from a rollup, calendar buckets (months),
 filters in the definition, routing in plain DuckDB, and recomputing buckets after a delete (§9.2).
 
+#### 11.1.3 `m4` (built 2026-10-18, #73)
+`m4(time, value)` is an aggregate returning a group's first, smallest, largest and last points as a list of
+`{time, value}` structs in time order, repeats removed (after Apache IoTDB's time-window `M4`). Ties are broken by fixed
+orders (time then value for first and last, value then time for the extremes), so the result doesn't depend on row
+order. The points merge: `m4` over several groups' points equals `m4` over their rows, so the list is also the
+aggregate's state, `m4(points)` merges lists, a rollup stores `m4` as a list column, and routing answers wider buckets
+by merging stored lists. Columnar group accumulator. IIoT small, hourly points per tag over 30 days: 2.03 s from the
+readings (3.5 s with a per-group accumulator), 0.51 s from a 1-minute rollup; `min`, `max`, `first_value` and
+`last_value` alone (no times for the extremes) take 1.76 s.
+
 #### 11.1.2 Coarser queries (built 2026-10-18)
 Routing also answers a query whose bucket is a whole multiple of the rollup's and whose keys are a subset of the
 rollup's. The rollup's rows in the query's buckets are aggregated again: `count` and `sum` by `sum`, `min` and `max` by
@@ -731,7 +741,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Time-weighted | `time_weighted_mean` (`forward_fill` or `linear`), `integral`. **Critical for IoT** because sampling is irregular |
 | States and uptime | `state_duration` (time spent in each state), `uptime`, `gaps` (silences longer than a threshold) |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) |
-| Downsampling for charts | `downsample` (`lttb`, or `minmax` per pixel) |
+| Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points (§11.1.3, built); `lttb` |
 | Rolling and anomalies | `rolling_mean`, `rolling_std` (`rolling(…).mean()`), `zscore`, flatline (stuck sensor) detection |
 
 **Availability by engine:**

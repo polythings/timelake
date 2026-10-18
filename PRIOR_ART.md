@@ -34,6 +34,8 @@ Methods we adopted or plan to, and implemented ourselves.
 | `quality` column (good / uncertain / bad) | OPC UA | Specification | SPEC §7 |
 | Tables of aggregates per time bucket, kept as data arrives (rollups) | [Apache Druid](https://druid.apache.org) (rollup) | Apache-2.0 | `rollup.rs`; SPEC §11.1 |
 | Answering an aggregate query from a materialized aggregate that matches it | [Apache Calcite](https://calcite.apache.org) (materialized view rewriting) | Apache-2.0 | `query/route.rs`; SPEC §11.1 |
+| A time window's first, smallest, largest and last points (`m4`) | [Apache IoTDB](https://iotdb.apache.org) (the time-window `M4` function) | Apache-2.0 | `query/m4.rs`; SPEC §11.1.3 |
+| Splitting object-store reads into parallel requests of a few MiB | Durner, Leis, Neumann, "Exploiting Cloud Object Storage for High-Performance Analytics" (VLDB 2023) | Paper | `block_cache.rs` (`timelake_cache_request_bytes`); #65 |
 | How commit operations work (rewrite, row delta, branches, expiry) | [Iceberg Java](https://github.com/apache/iceberg), [iceberg-cpp](https://github.com/apache/iceberg-cpp), [iceberg-go](https://github.com/apache/iceberg-go) | Apache-2.0 | References to learn from and test oracles (D13, `spikes/iceberg-write`); our commit layer is our own code |
 
 ### Third-party files

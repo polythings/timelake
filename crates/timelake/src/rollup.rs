@@ -46,7 +46,7 @@ pub(crate) struct Aggregate {
 }
 
 /// The aggregate functions a rollup can store: a bucket's rows give each exactly.
-pub(crate) const FUNCTIONS: &[&str] = &["count", "sum", "min", "max", "avg", "first_value", "last_value"];
+pub(crate) const FUNCTIONS: &[&str] = &["count", "sum", "min", "max", "avg", "first_value", "last_value", "m4"];
 
 /// What a rollup computes.
 #[derive(Clone, Debug, PartialEq, Eq)]

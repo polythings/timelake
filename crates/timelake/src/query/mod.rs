@@ -18,6 +18,7 @@
 mod catalog;
 mod dedup;
 mod in_list;
+mod m4;
 mod provider;
 mod rewrite;
 mod rollup;
