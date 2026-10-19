@@ -909,9 +909,17 @@ mod tests {
         let store = Arc::new(Counting::default());
         let path = Path::from("t/data/c.parquet");
         store.inner.put(&path, data(9000).into()).await.unwrap();
-        cached(&store, Some(dir.path())).get(&path).await.unwrap().bytes().await.unwrap();
-        // Disk writes run in the background.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let first = cached(&store, Some(dir.path()));
+        first.get(&path).await.unwrap().bytes().await.unwrap();
+        // Disk writes run in the background: wait for the three blocks (a slow runner took over 200 ms).
+        let blocks = first.0.disk.as_ref().unwrap().object_dir(&first.0.key(&path));
+        for _ in 0..200 {
+            let written = std::fs::read_dir(&blocks).into_iter().flatten().flatten();
+            if written.filter(|e| e.file_name().to_string_lossy().parse::<u64>().is_ok()).count() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
 
         let other = cached(&store, Some(dir.path()));
         let n = gets_for(&store, async {
