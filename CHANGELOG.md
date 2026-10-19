@@ -14,6 +14,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `counter_diff(time, value)` (how much a counter grew; a drop is a reset to zero) and `counter_rate(time, value)` (that
   growth per second), exact over irregular readings like `time_weighted_mean`, and about as fast (hourly values of
   1,000 tags over 30 days: 2.2 s, `avg` 2.0 s). Rollups answer them from a stored `time_weighted_mean`, or store them.
+- The signal aggregates take a condition as the value, 1 while true: `integral(time, pressure > 8.5)` is the seconds
+  above 8.5, `time_weighted_mean(time, state = 'running')` the share of time running. IIoT `time-above-limit` written
+  this way: 334 → 191 ms, same answers.
 - Gap filling: the table function `time_buckets(width, start, end [, origin])`, every bucket of a range to join
   readings against, and the window functions `forward_fill` (`ffill`), `backward_fill` (`bfill`) and
   `interpolate(x [, t])`. `forward_fill` over 10 M rows takes 0.26 s; `last_value(x) IGNORE NULLS` 3.6 s.

@@ -773,7 +773,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate` (per second); `counter_diff` and `counter_rate` also handle counter resets (§11.1.4, built) |
 | Time-weighted | `time_weighted_mean` (`forward_fill` or `linear`), `integral` (§11.1.4, built). **Critical for IoT** because sampling is irregular |
-| States and uptime | `state_duration` (time spent in each state), `uptime`, `gaps` (silences longer than a threshold) |
+| States and uptime | Time in a state and uptime: `integral(time, condition)` and `time_weighted_mean(time, condition)`, a condition counting 1 while true (built 2026-10-19 instead of `state_duration` and `uptime`; IIoT `time-above-limit` 334 → 191 ms against the `lead()` window form); `gaps` (silences longer than a threshold) |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) |
 | Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points (§11.1.3, built); `lttb` |
 | Rolling and anomalies | `rolling_mean`, `rolling_std` (`rolling(…).mean()`), `zscore`, flatline (stuck sensor) detection |

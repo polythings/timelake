@@ -13,3 +13,4 @@ builds, local disk, best of 7 runs of a fresh process (DataFusion from Python: b
 | Parquet files of TSBS DevOps | DevOps standard | Timelake's files rewritten without `sorting_columns`, with dictionary floats, hourly chunks | 843 → 303 → 212 ms (plain DataFusion), hourly 438 → 343 ms | (P8: float encoding) |
 | Float encoding | DevOps standard, IIoT last 5 days, 4 M random doubles | byte-stream-split, dictionary, plain, dictionary falling back to byte-stream-split | see the section | dictionary with fallback, setting `float-encoding` (same section) |
 | Gap-filling window functions | 10 M generated rows, 1,000 partitions | `forward_fill` vs `last_value IGNORE NULLS`, `backward_fill` vs `first_value IGNORE NULLS` | 0.26 vs 3.58 s, 0.27 vs 0.37 s | built (P7: gap filling) |
+| Time in a state | IIoT `time-above-limit`, `uptime` | `lead()` window, signal aggregate of a condition | 334 → 191 ms, 33 → 31 ms, same answers | conditions as values (P7: time in a state) |

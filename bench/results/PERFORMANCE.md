@@ -3,6 +3,18 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: time in a state from the signal aggregates (2026-10-19)
+
+A condition is a value of 1 while true, so the IIoT window queries for time in a state are signal aggregates. Same
+answers (IIoT small, release build, best of 7):
+
+| Query | `lead()` window | Signal aggregate |
+|---|---:|---:|
+| `time-above-limit`: seconds above the limit, 100 pressure tags, a day | 334 ms | 191 ms (`integral(time, value > hi_limit)`) |
+| `uptime`: share of 7 days running, 10 machines | 33 ms | 31 ms (`time_weighted_mean(time, value = 1)`) |
+
+`state_duration` and `uptime` in SPEC §11.2 are these instead of functions of their own.
+
 ## P7: gap filling (2026-10-19)
 
 `forward_fill`, `backward_fill` and `interpolate` are window functions that compute a partition's results at once

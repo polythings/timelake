@@ -51,6 +51,20 @@ dedup on read, together with the other files of the time they span (setting `ser
 all four take 2.1 s in the example above, not 3.5 s. [Rollups](/docs/rollups) store the runs and answer wider
 buckets from them.
 
+### Time in a state
+
+A condition counts as 1 while true and 0 while false, so the same aggregates measure time in a state:
+
+```sql
+SELECT device_id,
+       integral(time, pressure > 8.5) AS seconds_above_limit,      -- each reading holds until the next
+       time_weighted_mean(time, state = 'running') AS uptime_share
+FROM iot.readings WHERE time >= now() - INTERVAL '1 day' GROUP BY 1
+```
+
+On the industrial benchmark, the seconds each of 100 pressure tags spent above its limit over a day took 191 ms this
+way and 334 ms as the usual `lead()` window query, with the same answers.
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is

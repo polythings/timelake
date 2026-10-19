@@ -8,6 +8,10 @@
 //!   reading after it counts whole.
 //! - `counter_rate(time, value)`: that growth per second.
 //!
+//! A condition is a value of 1 while true and 0 while false: `integral(time, value > limit)` is
+//! the seconds spent above the limit, `time_weighted_mean(time, state = 'running')` the share of
+//! time running.
+//!
 //! Readings at the same time count as one, with the largest value.
 //!
 //! All share one state, a list of segments: runs of a group's readings in time order, each with
@@ -190,14 +194,16 @@ impl AggregateUDFImpl for SignalAggregate {
 
     fn coerce_types(&self, arg_types: &[DataType]) -> DfResult<Vec<DataType>> {
         let text = |t: &DataType| matches!(t, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View);
+        // A condition counts as 1 while true: `integral(time, value > limit)` is the seconds above it.
+        let value = |t: &DataType| t.is_numeric() || *t == DataType::Boolean;
         let method = self.output.takes_method();
         match arg_types {
             [DataType::List(_)] => Ok(vec![state_type()]),
             [DataType::List(_), m] if method && text(m) => Ok(vec![state_type(), DataType::Utf8]),
-            [DataType::Timestamp(_, tz), v] if v.is_numeric() => {
+            [DataType::Timestamp(_, tz), v] if value(v) => {
                 Ok(vec![DataType::Timestamp(TimeUnit::Microsecond, tz.clone()), DataType::Float64])
             }
-            [DataType::Timestamp(_, tz), v, m] if method && v.is_numeric() && text(m) => {
+            [DataType::Timestamp(_, tz), v, m] if method && value(v) && text(m) => {
                 Ok(vec![DataType::Timestamp(TimeUnit::Microsecond, tz.clone()), DataType::Float64, DataType::Utf8])
             }
             _ if method => plan_err!("{} takes (time, value [, method]), or a state [, method]", self.name()),
@@ -761,5 +767,19 @@ mod tests {
         update(&mut b, &[(5, 1.0), (15, 2.0)]);
         b.merge_batch(&[state]).unwrap();
         assert!(b.evaluate().unwrap_err().to_string().contains("overlap in time"));
+    }
+
+    /// Conditions count as 1 while true: seconds above a limit, and the share of time above it.
+    #[tokio::test]
+    async fn conditions_are_ones_while_true() {
+        let s = crate::Session::new(crate::testing::faulty_lake().0);
+        let sql = "SELECT integral(t, v > 10) AS above, time_weighted_mean(t, v > 10) AS share
+                   FROM (VALUES (TIMESTAMP '2026-01-01 00:00:00', 5.0), (TIMESTAMP '2026-01-01 00:00:10', 15.0),
+                                (TIMESTAMP '2026-01-01 00:00:40', 12.0), (TIMESTAMP '2026-01-01 00:01:00', 3.0),
+                                (TIMESTAMP '2026-01-01 00:01:40', 20.0)) AS r(t, v)";
+        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
+        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        // Above from 0:10 to 1:00 of 0:00 to 1:40: 50 of 100 seconds.
+        assert!(got.contains("| 50.0  | 0.5   |"), "{got}");
     }
 }
