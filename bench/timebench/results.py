@@ -42,6 +42,10 @@ class RunRecord(TypedDict, total=False):
     """``weekly`` for the regression runs; free text otherwise."""
     variant: str
     """A kind of run of the same workload and target (``bulk``: loaded in large commits); absent for the default."""
+    reader_settings: dict[str, str]
+    """Session settings of Timelake's reader (``TIMEBENCH_TIMELAKE_SETTINGS``), for comparing them; absent if unset."""
+    reader_options: dict[str, str]
+    """Storage options of Timelake's readers (``TIMEBENCH_TIMELAKE_OPTIONS``); absent if unset."""
     started: str
     readers: dict[str, list[str]]
     """The systems of the run -> their readers in it."""

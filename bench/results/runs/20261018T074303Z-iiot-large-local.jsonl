@@ -1,0 +1,3 @@
+{"kind": "run", "id": "20261018T074303Z-iiot-large-local", "workload": "iiot", "scale": "large", "params": {"days": 1, "tags": 400000, "seed": 20261015, "span_days": 1}, "target": "local", "storage": "local", "machine": "arm64 10 cores", "commit": "a4c066a53eec686bdc0981a3eb1bfce950024f39", "dirty": false, "label": "card-400k", "started": "2026-10-18T07:43:03+00:00", "readers": {"timelake": ["timelake"]}, "versions": {"timelake": "0.6.0", "duckdb": "1.5.6"}, "runs": 2}
+{"kind": "ingest", "system": "timelake", "status": "error", "error": "ArrowInvalid: offset overflow while concatenating arrays, consider casting input from `string` to `large_string` first.", "commits": 0}
+{"kind": "end", "finished": "2026-10-18T07:43:16+00:00", "seconds": 13.7, "mismatches": []}

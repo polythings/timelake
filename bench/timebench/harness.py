@@ -41,6 +41,7 @@ from timebench.results import (
 )
 from timebench.s3 import PROXY, ProxyStats
 from timebench.systems import System, systems
+from timebench.systems import timelake as timelake_system
 from timebench.targets import Place
 from timebench.worker import command, request_kinds
 
@@ -259,6 +260,11 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
         header["pace_s"] = spec.pace
     if spec.variant:
         header["variant"] = spec.variant
+    # What an A/B arm changed: the reader's session settings and storage options, if set.
+    if settings := timelake_system.reader_settings():
+        header["reader_settings"] = settings
+    if options := timelake_system.reader_options():
+        header["reader_options"] = options
     if spec.concurrency:
         header.update(concurrency=list(spec.concurrency), concurrency_seconds=spec.concurrency_seconds)
     return header
