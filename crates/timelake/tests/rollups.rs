@@ -35,6 +35,19 @@ const QUERIES: &[(&str, bool)] = &[
          FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 05:30:00' GROUP BY 1, 2",
         true,
     ),
+    // The other signal aggregates, from the time-weighted means' states.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, integral(time, value),
+                integral(time, value, 'linear'), counter_diff(time, value), counter_rate(time, value)
+         FROM iot.r GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, counter_diff(time, value),
+                integral(time, value, 'linear')
+         FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 05:30:00' GROUP BY 1, 2",
+        true,
+    ),
     (
         "SELECT time_bucket(INTERVAL '1 hour', time) AS h, device, max(value) AS m, sum(value) FROM iot.r
          WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND time < TIMESTAMP '2026-01-02 03:00:00' GROUP BY 1, 2",

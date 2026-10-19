@@ -27,9 +27,9 @@ mod route;
 mod series_order;
 mod session;
 mod settings;
+mod signal;
 mod statement;
 mod stats;
-mod twa;
 
 pub(crate) use rollup::{refresh_session, rollup_frame};
 pub use session::Session;

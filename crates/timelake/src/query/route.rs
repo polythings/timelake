@@ -21,16 +21,17 @@ use datafusion::logical_expr::{
     Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, LogicalPlan, LogicalPlanBuilder, Operator, Projection, Union,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
-use datafusion::prelude::{cast, ident};
+use datafusion::prelude::{cast, ident, lit};
 
 use super::PLANNING_REUSE;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
 use super::settings::SessionSettings;
+use super::signal::{Method, Output, of_rollup, state_type, udaf};
 use crate::lake::Lake;
 use crate::name::TableName;
 use crate::property;
-use crate::rollup::{Definition, Ranges, changed, floor, in_history, micros, recorded_sequence};
+use crate::rollup::{Definition, Ranges, changed, floor, in_history, layout, micros, recorded_sequence};
 use crate::table::Table;
 
 /// Stands for no bound: beyond any time a table holds (about ±73,000 years), with room to add a
@@ -229,8 +230,18 @@ impl Candidate {
         let stored = |function: &str, column: &Option<String>| {
             self.def.aggregates.iter().find(|a| a.function == function && a.column == *column).map(|a| a.name.clone())
         };
-        // A stored state (a time-weighted mean's segments) is turned into the answer by merging it.
-        let states = q.aggregates.iter().any(|(f, _)| f.starts_with("time_weighted_mean"));
+        // A signal aggregate's stored state (its segments) answers any signal aggregate of the same
+        // column and method (a counter's growth doesn't depend on the method), once merged. A state
+        // of another layout (an older version's) answers nothing.
+        let schema = self.rollup.schema();
+        let state = |(output, method): (Output, Method), column: &Option<String>| {
+            let fits = |(_, m): (Output, Method)| m == method || !output.takes_method();
+            let a =
+                self.def.aggregates.iter().find(|a| a.column == *column && of_rollup(&a.function).is_some_and(fits))?;
+            let current = schema.field_with_name(&a.name).is_ok_and(|f| layout(f.data_type()) == layout(&state_type()));
+            current.then(|| ident(&a.name))
+        };
+        let states = q.aggregates.iter().any(|(f, _)| of_rollup(f).is_some());
         if self.def.width == q.width && keys == q.keys && !states {
             let columns = q.aggregates.iter().map(|(f, c)| stored(f, c)).collect::<Option<_>>()?;
             return Some(Answer::Stored(columns));
@@ -245,11 +256,6 @@ impl Candidate {
                 "last_value" => agg::last_value(ident(stored(function, column)?), by_bucket()),
                 // The stored points merge into the wider bucket's.
                 "m4" => super::m4::m4_udaf().call(vec![ident(stored(function, column)?)]),
-                "time_weighted_mean" => {
-                    super::twa::time_weighted_mean_udaf().call(vec![ident(stored(function, column)?)])
-                }
-                "time_weighted_mean:linear" => super::twa::time_weighted_mean_udaf()
-                    .call(vec![ident(stored(function, column)?), datafusion::prelude::lit("linear")]),
                 // A mean of means weighted by the rows each counted.
                 "avg" => {
                     let n = self.count_of(column.as_deref()?, q)?;
@@ -260,7 +266,14 @@ impl Candidate {
                     };
                     cast(agg::sum(total), DataType::Float64) / cast(agg::sum(ident(n)), DataType::Float64)
                 }
-                _ => return None,
+                f => {
+                    let (output, method) = of_rollup(f)?;
+                    let mut args = vec![state((output, method), column)?];
+                    if method == Method::Linear {
+                        args.push(lit("linear"));
+                    }
+                    udaf(output).call(args)
+                }
             })
         });
         merged.collect::<Option<_>>().map(Answer::Merged)

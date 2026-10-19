@@ -21,8 +21,9 @@ export const NOW: RoadmapItem[] = [
     status: "next",
   },
   {
-    title: "Time-weighted averages",
-    description: "Means of irregular readings, each weighted by how long it held. Exact, from raw data or rollups.",
+    title: "Time-weighted averages and counters",
+    description:
+      "Means and integrals of irregular readings, each weighted by how long it held, and counters across resets. Exact, from raw data or rollups.",
     status: "done",
   },
   {

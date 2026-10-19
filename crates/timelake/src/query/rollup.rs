@@ -14,6 +14,7 @@ use datafusion::prelude::{DataFrame, SessionContext, ident, lit};
 
 use super::provider::{Kind, TimelakeProvider};
 use super::session::Session;
+use super::signal::{Method, Output, of_rollup, rollup_name, udaf};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
 use crate::rollup::{Aggregate, Definition, FUNCTIONS};
@@ -91,21 +92,15 @@ pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<Strin
         return None;
     }
     let mut function = func.name().to_string();
+    // m4 and the signal aggregates take `(time, value)`: they're of `value`.
+    let of_readings = function == "m4" || Output::of(&function).is_some();
     let column = match params.args.as_slice() {
-        [Expr::Column(c)] if function != "m4" && function != "time_weighted_mean" => Some(c.name.clone()),
-        // m4(time, value), time_weighted_mean(time, value): of `value`.
-        [Expr::Column(t), Expr::Column(c)]
-            if (function == "m4" || function == "time_weighted_mean") && t.name == time =>
-        {
-            Some(c.name.clone())
-        }
-        // time_weighted_mean(time, value, 'linear'): the method is part of what is stored.
-        [Expr::Column(t), Expr::Column(c), Expr::Literal(ScalarValue::Utf8(Some(m)), _)]
-            if function == "time_weighted_mean" && t.name == time =>
-        {
-            if super::twa::Method::parse(m).ok()? == super::twa::Method::Linear {
-                function = "time_weighted_mean:linear".to_string();
-            }
+        [Expr::Column(c)] if !of_readings => Some(c.name.clone()),
+        [Expr::Column(t), Expr::Column(c)] if of_readings && t.name == time => Some(c.name.clone()),
+        // A signal aggregate's method is part of what is stored: `integral(time, value, 'linear')`.
+        [Expr::Column(t), Expr::Column(c), Expr::Literal(ScalarValue::Utf8(Some(m)), _)] if t.name == time => {
+            let output = Output::of(&function).filter(|o| o.takes_method())?;
+            function = rollup_name(output, Method::parse(m).ok()?);
             Some(c.name.clone())
         }
         [Expr::Literal(ScalarValue::Int64(Some(1)), _)] if function == "count" => None,
@@ -135,11 +130,11 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
         "last_value" => agg::last_value(column()?, by_time()),
         "m4" => super::m4::m4_udaf().call(vec![ident(time), column()?]),
         // The state: a bucket's segment, which wider buckets merge.
-        "time_weighted_mean" => super::twa::time_weighted_state_udaf().call(vec![ident(time), column()?]),
-        "time_weighted_mean:linear" => {
-            super::twa::time_weighted_state_udaf().call(vec![ident(time), column()?, lit("linear")])
-        }
-        other => return Err(Error::invalid(format!("a rollup can't store {other}"))),
+        f => match of_rollup(f) {
+            Some((_, Method::Linear)) => udaf(Output::State).call(vec![ident(time), column()?, lit("linear")]),
+            Some(_) => udaf(Output::State).call(vec![ident(time), column()?]),
+            None => return Err(Error::invalid(format!("a rollup can't store {f}"))),
+        },
     })
 }
 

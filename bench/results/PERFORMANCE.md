@@ -3,6 +3,36 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: `integral`, `counter_diff`, `counter_rate` (2026-10-18)
+
+The three share `time_weighted_mean`'s segments, which gained the values of the readings next to the first and last
+and the counter's growth. IIoT small (30 days, 1,000 tags, 370 M readings), maintained, local disk, release build;
+hourly value per tag (719,554 groups), best of 7, routing off:
+
+| | Time |
+|---|---:|
+| `avg(value)` | 1.98 s |
+| `time_weighted_mean`, segments as in 0.7.0 (56 bytes) | 2.17 s |
+| `time_weighted_mean`, the neighbours as `Option<f64>` (96 bytes) | 2.30 s |
+| `time_weighted_mean`, the neighbours as `f64`, null in the state while one time (80 bytes) | 2.17 s |
+| The same, each group's open segment inline instead of behind the vector's pointer | 2.95 s |
+| `integral` / `counter_diff` / `counter_rate` | 2.20 / 2.18 / 2.20 s |
+| All four in one query | 3.74 s |
+
+Against the window form the IIoT benchmark uses (portable SQL, kept there), over all 30 days, answers equal to
+rounding: energy per machine from counters that reset, `lag` 1.66 s, `counter_diff` 1.09 s; time-weighted means of
+one line's temperatures, `lead` 166 ms, `time_weighted_mean` 87 ms.
+
+Those queries first failed with "runs that overlap in time", as did `time_weighted_mean` grouped by tag over the month
+in 0.7.0: the scan spread the 30 daily files over 10 partitions by size, so one partition's run of a tag went from
+day 5 to day 15 while another held day 10. Scans under these aggregates now give each partition a stretch of days,
+files in time order, and turn off DataFusion 54's file stealing between partitions (an idle partition took a file
+of another's stretch: day 1 and day 3 in one partition, day 2 in another). Same speed: hourly means 2.21 s.
+
+Kept: `f64` neighbours, segments behind the pointer. Inline segments double the group array (about 130 bytes a group),
+which DataFusion grows and moves. All four together cost 1.7× one, since each aggregate keeps its own state; computing
+the state once for several is open (SPEC §11.1.4). Peak memory of `counter_diff`: 605 MB.
+
 ## P7: `time_weighted_mean` (2026-10-18)
 
 IIoT small (30 days, 1,000 tags, 370 M readings), maintained, local disk, release build; hourly mean per tag

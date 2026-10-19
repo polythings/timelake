@@ -139,7 +139,7 @@ pub(super) enum Keep {
     Latest,
     /// The older copies of each key (strategy keys-first: what a later scan must leave out).
     Older,
-    /// Every row: only the series order (for `time_weighted_mean` without dedup).
+    /// Every row: only the series order (for the signal aggregates without dedup).
     All,
 }
 

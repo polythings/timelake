@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use arrow::array::RecordBatch;
+use arrow::datatypes::DataType;
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,10 @@ pub(crate) const FUNCTIONS: &[&str] = &[
     "m4",
     "time_weighted_mean",
     "time_weighted_mean:linear",
+    "integral",
+    "integral:linear",
+    "counter_diff",
+    "counter_rate",
 ];
 
 /// What a rollup computes.
@@ -311,7 +316,11 @@ async fn refresh_now(lake: &Lake, name: &TableName, raw: Option<&Table>, mode: R
     let (mut pending, mut rows): (Vec<RecordBatch>, u64) = (vec![], 0);
     for (i, &window) in windows.iter().enumerate() {
         let ranges = window.map(|w| vec![w]);
-        let batches = crate::query::rollup_frame(&session, &raw, &def, ranges.as_deref())?.collect().await?;
+        let frame = crate::query::rollup_frame(&session, &raw, &def, ranges.as_deref())?;
+        if i == 0 {
+            same_states(&rollup, frame.schema().as_arrow())?;
+        }
+        let batches = frame.collect().await?;
         pending.extend(batches.into_iter().filter(|b| b.num_rows() > 0));
         let last = i + 1 == windows.len();
         let pending_rows: usize = pending.iter().map(RecordBatch::num_rows).sum();
@@ -327,6 +336,34 @@ async fn refresh_now(lake: &Lake, name: &TableName, raw: Option<&Table>, mode: R
         rows += u64::try_from(result.rows).unwrap_or(u64::MAX);
     }
     Ok(rows)
+}
+
+/// Checks that `rollup` stores its states (`m4`, the signal aggregates) as `computed` gives them: a
+/// state's layout can change between versions, and a rollup with an older one can't take new rows.
+fn same_states(rollup: &Table, computed: &arrow::datatypes::Schema) -> Result<()> {
+    let stored = rollup.schema();
+    for field in computed.fields().iter().filter(|f| matches!(f.data_type(), DataType::List(_))) {
+        if stored.field_with_name(field.name()).is_ok_and(|s| layout(s.data_type()) != layout(field.data_type())) {
+            return Err(Error::invalid(format!(
+                "rollup {} stores {} in an older layout: drop the rollup and create it again",
+                rollup.name(),
+                field.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The struct field names in a state's type, nested: what tells its layouts apart. (Whole types
+/// differ after Iceberg's round trip, which renames list items and changes nullability.)
+pub(crate) fn layout(t: &DataType) -> Vec<&str> {
+    match t {
+        DataType::List(item) | DataType::LargeList(item) => layout(item.data_type()),
+        DataType::Struct(fields) => {
+            fields.iter().flat_map(|f| [vec![f.name().as_str()], layout(f.data_type())]).flatten().collect()
+        }
+        _ => vec![],
+    }
 }
 
 /// Creates rollup `name` of `raw` with `def` (`opts` for the rollup table), computes it, and adds
@@ -393,5 +430,28 @@ mod tests {
         // A bucket wider than a day is one window.
         assert_eq!(windows(&[(0, 4 * day)], 2 * day), vec![(0, 2 * day), (2 * day, 4 * day)]);
         assert_eq!(floor(-1, 60), -60);
+    }
+
+    /// A state's layout is its field names: Iceberg's round trip (list item names, nullability,
+    /// field ids) doesn't change it, a field more or less does.
+    #[test]
+    fn state_layouts() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use arrow::datatypes::Field;
+        let list = |item: &str, names: &[&str], nullable: bool| {
+            let fields: Vec<Field> = names
+                .iter()
+                .map(|n| {
+                    Field::new(*n, DataType::Float64, nullable)
+                        .with_metadata(HashMap::from([("id".into(), "1".into())]))
+                })
+                .collect();
+            DataType::List(Arc::new(Field::new(item, DataType::Struct(fields.into()), true)))
+        };
+        let names = ["first_time", "area", "growth"];
+        assert_eq!(layout(&list("item", &names, false)), layout(&list("element", &names, true)));
+        assert_ne!(layout(&list("item", &names, false)), layout(&list("item", &names[..2], false)));
     }
 }

@@ -147,13 +147,13 @@
     "default": {
       "value": "auto"
     },
-    "description": "How `time_weighted_mean` gets each series' readings in time order. It sums runs of readings in order and joins them; runs that overlap in time can't be joined. `segments`: as the files come (an overlap is an error). `merge`: files that overlap on the series and time, or aren't sorted, are merged in order first (as dedup on read does). `auto`: `merge` for tables with dedup off and such files, else `segments`.",
+    "description": "How the signal aggregates (`time_weighted_mean`, `integral`, `counter_diff`, `counter_rate`) get each series' readings in time order. They sum runs of readings in order and join them; runs that overlap in time can't be joined. Files are read in time order, each partition a stretch of time. `auto`: files that overlap another on the series and time, or aren't sorted, are merged in order first (as dedup on read does), with the other files of the time they span. `segments`: only copies are merged (with dedup on read); overlaps are an error. `merge`: every file is merged.",
     "kind": "auto, segments or merge",
     "levels": ["table", "session"],
-    "name": "time-weighted-mean",
-    "property": "timelake.time-weighted-mean",
-    "since": "0.7.0",
-    "sql": "timelake.time_weighted_mean"
+    "name": "series-order",
+    "property": "timelake.series-order",
+    "since": "0.8.0",
+    "sql": "timelake.series_order"
   },
   {
     "default": {

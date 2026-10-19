@@ -699,22 +699,38 @@ The answer is exact, not a stale rollup:
 averages), answering a coarser query (hourly from minutes) or fewer keys from a rollup, calendar buckets (months),
 filters in the definition, routing in plain DuckDB, and recomputing buckets after a delete (§9.2).
 
-#### 11.1.4 Time-weighted means (built 2026-10-18)
-`time_weighted_mean(time, value [, method])`, method `forward_fill` (default, alias `ffill`) or `linear`, over each
-group's first to last reading; readings at one time count once with the largest value; one reading time gives its
-value. Decided with the user on 2026-10-18 (exact always, both methods, first to last reading).
-- **State:** a list of segments, runs of a group's readings in time order: first and last reading, the time from the
-  first to the next and into the last, and the area. Segments that follow each other join exactly (the gap's area
-  added; a shared time takes the larger value, corrected through the stored spans); partial results emit their runs
-  unjoined, since another partition may hold readings between them. Overlapping segments are an error.
-- **Series order:** each partition's rows of a series must come in non-overlapping runs. With dedup on read they do
-  (the dedup merge); a table with dedup off and files that overlap on `(series…, time)` or aren't sorted may not, and
-  the scans under a time-weighted mean then merge those files in series order (the dedup operator keeping every row).
-  Setting `time-weighted-mean`: `auto` (merge for such tables, found before planning), `segments`, `merge`. Measured
-  alternative: rewriting to windows (`lead` per group in time order): hourly means of 370 M IIoT readings 550 s and
-  20 GB peak, against 2.0 s with segments.
-- **Rollups** store the state (`time_weighted_state`); routing merges it with `time_weighted_mean(state [, method])`,
-  at the rollup's width too.
+#### 11.1.4 Signal aggregates: time-weighted means, integrals, counters (built 2026-10-18)
+`time_weighted_mean(time, value [, method])` and `integral(time, value [, method])` (value × seconds), method
+`forward_fill` (default, alias `ffill`) or `linear`; `counter_diff(time, value)` and `counter_rate(time, value)` (per
+second), where a drop is a reset to zero, so the reading after it counts whole. All over each group's first to last
+reading; readings at one time count once with the largest value; one reading time gives its value as the mean, 0 as
+the integral and growth, and no rate. Decided with the user on 2026-10-18 (exact always, both methods, first to last
+reading).
+- **State:** a list of segments, runs of a group's readings in time order: first and last reading, the values of the
+  readings next to them, the time from the first to the next and into the last, the area and the counter's growth.
+  Segments that follow each other join exactly (the gap's area and growth added; a shared time takes the larger value,
+  corrected through the stored neighbours); partial results emit their runs unjoined, since another partition may
+  hold readings between them. Overlapping segments are an error. The four aggregates share the state and differ in
+  what they return from it. Layout measured on IIoT hourly means: neighbours as `Option<f64>` (96-byte segments)
+  2.30 s, as plain `f64`s (80 bytes) 2.17 s, the same as the mean alone before; the open segment kept inline in each
+  group instead of behind the vector's pointer 2.95 s (the group array doubles and DataFusion moves it as it grows).
+- **Series order:** no partition may have readings of a series inside another partition's run of it. Scans under a
+  signal aggregate over readings give that: files that must be merged (copies with dedup on read; without, files that
+  overlap on `(series…, time)` or aren't sorted) are merged in series order with every file of the time they span
+  (closed under overlap; the dedup operator, keeping every row without dedup), and the files before and after that
+  time are read as they are, files in time order, each partition a contiguous stretch (DataFusion 54's work stealing
+  between file partitions is turned off for these scans with `preserve_order`). Setting `series-order` (named
+  `time-weighted-mean` in 0.7.0): `auto`, `segments` (copies only; overlaps are an error), `merge` (every file).
+  0.7.0 spread files over partitions by size and merged only tables with dedup off, so a partition's run spanned days
+  other partitions held, and `GROUP BY tag` over a month failed. Measured alternative: rewriting to windows (`lead`
+  per group in time order): hourly means of 370 M IIoT readings 550 s and 20 GB peak, against 2.0 s with segments.
+- **Rollups** store the state (`time_weighted_state`); routing merges it with the query's aggregate
+  (`integral(state [, method])`), at the rollup's width too. One stored state answers all four for its column and
+  method; the counters from either method's state.
+- **Cost:** IIoT small, hourly per tag over 30 days: `avg` 1.98 s; each signal aggregate 2.18–2.20 s; all four in one
+  query 3.74 s, since each computes its own state. Against the window form of the IIoT queries over 30 days: energy
+  per machine (`lag`) 1.66 → 1.09 s, time-weighted means of a line's temperatures (`lead`) 166 → 87 ms. Open: one state for several signal aggregates of the same column
+  (an optimizer rule computing `time_weighted_state` once and the results from it).
 
 #### 11.1.3 `m4` (built 2026-10-18, #73)
 `m4(time, value)` is an aggregate returning a group's first, smallest, largest and last points as a list of
@@ -754,8 +770,8 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Selection | `first`, `last`, `value_at`, the latest value at or before a time (`asof`); ASOF JOIN |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` |
 | Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) |
-| Changes | `diff`, `percent_change` (`pct_change`), `rate` (per second); `counter_diff` and `counter_rate` also handle counter resets |
-| Time-weighted | `time_weighted_mean` (`forward_fill` or `linear`), `integral`. **Critical for IoT** because sampling is irregular |
+| Changes | `diff`, `percent_change` (`pct_change`), `rate` (per second); `counter_diff` and `counter_rate` also handle counter resets (§11.1.4, built) |
+| Time-weighted | `time_weighted_mean` (`forward_fill` or `linear`), `integral` (§11.1.4, built). **Critical for IoT** because sampling is irregular |
 | States and uptime | `state_duration` (time spent in each state), `uptime`, `gaps` (silences longer than a threshold) |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) |
 | Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points (§11.1.3, built); `lttb` |

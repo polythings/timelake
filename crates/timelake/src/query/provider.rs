@@ -37,6 +37,7 @@ use iceberg::spec::{Datum, PrimitiveLiteral};
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
 use super::newest::NewestFirstExec;
+use super::series_order::Order;
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
 use crate::property;
@@ -63,22 +64,21 @@ pub(crate) struct TimelakeProvider {
     kind: Kind,
     /// Rollup routing has dealt with this scan (SPEC §11.1).
     routed: bool,
-    /// Rows of one series come in time order: files that could give them out of order are merged
-    /// (for `time_weighted_mean`, [`super::series_order`]).
-    series_order: bool,
+    /// Under a signal aggregate: how each series' rows come in time order ([`super::series_order`]).
+    series_order: Option<Order>,
 }
 
 impl TimelakeProvider {
     pub(super) fn data(table: Table) -> Self {
-        Self { table, kind: Kind::Data, routed: false, series_order: false }
+        Self { table, kind: Kind::Data, routed: false, series_order: None }
     }
 
     pub(super) fn latest(table: Table) -> Self {
-        Self { table, kind: Kind::Latest, routed: false, series_order: false }
+        Self { table, kind: Kind::Latest, routed: false, series_order: None }
     }
 
     pub(super) fn newest(table: Table, k: usize) -> Self {
-        Self { table, kind: Kind::Newest(k), routed: false, series_order: false }
+        Self { table, kind: Kind::Newest(k), routed: false, series_order: None }
     }
 
     /// This scan, marked as dealt with by rollup routing.
@@ -86,13 +86,13 @@ impl TimelakeProvider {
         Self { routed: true, ..self.clone() }
     }
 
-    /// This scan, reading each series in time order.
-    pub(super) fn in_series_order(&self) -> Self {
-        Self { series_order: true, ..self.clone() }
+    /// This scan, reading each series in time order as `order` says.
+    pub(super) fn in_series_order(&self, order: Order) -> Self {
+        Self { series_order: Some(order), ..self.clone() }
     }
 
     pub(super) fn reads_in_series_order(&self) -> bool {
-        self.series_order
+        self.series_order.is_some()
     }
 
     pub(super) fn is_routed(&self) -> bool {
@@ -134,7 +134,7 @@ async fn scan_latest(table: &Table, projection: Option<&Vec<usize>>) -> DfResult
     Ok(MemorySourceConfig::try_new_exec(&[vec![batch]], table.schema(), projection.cloned())?)
 }
 
-/// A scan of `files`, data files of `table`; with `series_order`, each series' rows in time order.
+/// A scan of `files`, data files of `table`; with `series_order`, for a signal aggregate.
 async fn scan_data(
     table: &Table,
     state: &dyn DfSession,
@@ -142,17 +142,38 @@ async fn scan_data(
     filters: &[Expr],
     limit: Option<usize>,
     files: Vec<LiveEntry>,
-    series_order: bool,
+    series_order: Option<Order>,
 ) -> DfResult<Arc<dyn ExecutionPlan>> {
     let schema = table.schema();
-    let (files, groups, key_filters) = select_files(table, state, filters, files)?;
-    // Without dedup's merge, files that could give a series' rows out of order are merged here.
-    let (files, in_order) =
-        if series_order && groups.is_empty() { out_of_order(table, files)? } else { (files, vec![]) };
+    let (mut files, groups, key_filters) = select_files(table, state, filters, files)?;
+    // Keys never repeat across groups (different partitions or key ranges), so one scan serves all.
+    let mut merged: Vec<LiveEntry> = groups.into_iter().flatten().collect();
+    // A signal aggregate needs each partition's rows of a series to be a stretch of its readings
+    // that no other partition has readings inside. Files read as they are give that in time order,
+    // before and after the time of the files merged (to remove copies, or because they overlap or
+    // aren't sorted), which are merged with every file in that time.
+    let (mut stretches, mut in_order) = (vec![], vec![]);
+    if let Some(order) = series_order {
+        let dedup = !merged.is_empty();
+        if !dedup {
+            let merge = match order {
+                Order::Segments => vec![false; files.len()],
+                Order::Auto => out_of_order(table, &files)?,
+                Order::Merge => vec![true; files.len()],
+            };
+            let (now, alone): (Vec<_>, Vec<_>) = files.into_iter().zip(merge).partition(|(_, m)| *m);
+            (merged, files) = (now.into_iter().map(|(f, _)| f).collect(), alone.into_iter().map(|(f, _)| f).collect());
+        }
+        let (inside, before, after) = around(table, merged, files);
+        (merged, files, stretches) = (inside, vec![], vec![before, after]);
+        if !dedup {
+            in_order = std::mem::take(&mut merged);
+        }
+    }
     let storage = table.lake().storage();
     let url = ObjectStoreUrl::parse(storage.url())?;
     let mut footers: Vec<PartitionedFile> = vec![];
-    for f in files.iter().chain(groups.iter().flatten()).chain(&in_order) {
+    for f in files.iter().chain(stretches.iter().flatten()).chain(&merged).chain(&in_order) {
         footers.push(PartitionedFile::new(
             storage.path(f.data_file.file_path())?.to_string(),
             f.data_file.file_size_in_bytes(),
@@ -162,15 +183,18 @@ async fn scan_data(
 
     let mut plans = vec![];
     if !files.is_empty() {
-        plans.push(scan_files(table, state, &url, files, projection, filters, limit).await?);
+        plans.push(scan_files(table, state, &url, files, projection, filters, limit, false).await?);
+    }
+    for stretch in stretches.into_iter().filter(|s| !s.is_empty()) {
+        plans.push(scan_files(table, state, &url, stretch, projection, filters, limit, true).await?);
     }
     if !in_order.is_empty() {
         plans.push(scan_in_series_order(table, state, &url, in_order, projection, filters).await?);
     }
-    // Keys never repeat across groups (different partitions or key ranges), so one scan serves all.
-    let merged: Vec<LiveEntry> = groups.into_iter().flatten().collect();
     if !merged.is_empty() {
-        plans.push(match strategy(table, state)? {
+        // Keys-first doesn't read each series in order.
+        let strategy = if series_order.is_some() { Strategy::Merge } else { strategy(table, state)? };
+        plans.push(match strategy {
             Strategy::Merge => scan_deduplicated(table, state, &url, merged, projection, &key_filters).await?,
             Strategy::KeysFirst => {
                 scan_keys_first(table, state, &url, merged, projection, filters, &key_filters).await?
@@ -215,28 +239,68 @@ async fn scan_newest(
     partitions.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
     let mut waves = vec![];
     for (newest, files) in partitions {
-        waves.push((scan_data(table, state, projection, filters, None, files, false).await?, newest));
+        waves.push((scan_data(table, state, projection, filters, None, files, None).await?, newest));
     }
     let time = table.contract().time_column.clone().unwrap_or_default();
     Ok(Arc::new(NewestFirstExec::try_new(waves, k, &time)?))
 }
 
-/// `files` split into those whose series come in time order on their own, and those that overlap
-/// another on the series and time or aren't sorted.
-fn out_of_order(table: &Table, files: Vec<LiveEntry>) -> DfResult<(Vec<LiveEntry>, Vec<LiveEntry>)> {
+/// Which of `files` could give a series' rows out of time order: they overlap another on the series
+/// and time, or aren't sorted.
+fn out_of_order(table: &Table, files: &[LiveEntry]) -> DfResult<Vec<bool>> {
+    let sort_order = table_sort_order(table);
+    let mut merge: Vec<bool> = files.iter().map(|f| f.data_file.sort_order_id() != sort_order).collect();
     let schema = table.schema();
     let keys = table.contract().sort_columns();
     let key_indices = keys.iter().map(|k| schema.index_of(k)).collect::<Result<Vec<_>, _>>()?;
-    let mut merged = vec![false; files.len()];
-    for &i in overlapping_groups(&schema, &key_indices, &files).iter().flatten() {
-        merged[i] = true;
+    for &i in overlapping_groups(&schema, &key_indices, files).iter().flatten() {
+        merge[i] = true;
     }
-    let sort_order = table_sort_order(table);
-    for (i, f) in files.iter().enumerate() {
-        merged[i] |= f.data_file.sort_order_id() != sort_order;
+    Ok(merge)
+}
+
+/// `merged` and every file of `files` in the time it spans (which grows with each file added),
+/// then the files before that time and those after it.
+fn around(
+    table: &Table,
+    mut merged: Vec<LiveEntry>,
+    files: Vec<LiveEntry>,
+) -> (Vec<LiveEntry>, Vec<LiveEntry>, Vec<LiveEntry>) {
+    if merged.is_empty() {
+        return (merged, files, vec![]);
     }
-    let (merged, alone): (Vec<_>, Vec<_>) = files.into_iter().zip(merged).partition(|(_, m)| *m);
-    Ok((alone.into_iter().map(|(f, _)| f).collect(), merged.into_iter().map(|(f, _)| f).collect()))
+    let bounds = |f: &LiveEntry| time_bounds(table, f);
+    let (mut lo, mut hi) = merged.iter().map(bounds).fold((i64::MAX, i64::MIN), |(l, h), (a, b)| (l.min(a), h.max(b)));
+    let mut rest = files;
+    loop {
+        let (inside, outside): (Vec<_>, Vec<_>) = rest.into_iter().partition(|f| {
+            let (a, b) = bounds(f);
+            a <= hi && b >= lo
+        });
+        rest = outside;
+        if inside.is_empty() {
+            break;
+        }
+        for (a, b) in inside.iter().map(bounds) {
+            (lo, hi) = (lo.min(a), hi.max(b));
+        }
+        merged.extend(inside);
+    }
+    let (before, after) = rest.into_iter().partition(|f| bounds(f).1 < lo);
+    (merged, before, after)
+}
+
+/// The bounds of `f`'s time column (the widest if its metadata lacks them).
+fn time_bounds(table: &Table, f: &LiveEntry) -> (i64, i64) {
+    let time = table.contract().time_column.as_ref().and_then(|t| table.metadata().current_schema().field_by_name(t));
+    let bound = |bounds: &std::collections::HashMap<i32, Datum>, default| match time
+        .and_then(|t| bounds.get(&t.id))
+        .map(Datum::literal)
+    {
+        Some(PrimitiveLiteral::Long(t)) => *t,
+        _ => default,
+    };
+    (bound(f.data_file.lower_bounds(), i64::MIN), bound(f.data_file.upper_bounds(), i64::MAX))
 }
 
 /// Every row of `files`, each series in one slice and in `(series…, time)` order: the dedup scan's
@@ -316,7 +380,9 @@ fn select_files(table: &Table, state: &dyn DfSession, filters: &[Expr], files: V
     Ok((singles, groups, on_keys))
 }
 
-/// Scans files that share no key with each other: a plain pruned Parquet scan.
+/// Scans files that share no key with each other: a plain pruned Parquet scan. With `time_order`,
+/// each partition reads a stretch of time, files in time order.
+#[expect(clippy::too_many_arguments, reason = "the scan's inputs, all needed")]
 async fn scan_files(
     table: &Table,
     state: &dyn DfSession,
@@ -325,6 +391,7 @@ async fn scan_files(
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
+    time_order: bool,
 ) -> DfResult<Arc<dyn ExecutionPlan>> {
     let schema = table.schema();
     let storage = table.lake().storage();
@@ -332,16 +399,29 @@ async fn scan_files(
     let n_groups = files.len().min(target);
     let mut groups: Vec<Vec<PartitionedFile>> = vec![vec![]; n_groups];
     let lists = in_lists(table, state, filters);
-    // Biggest files first, round-robin: roughly balanced groups.
-    files.sort_by_key(|f| std::cmp::Reverse(f.data_file.file_size_in_bytes()));
-    let mut total_rows = 0u64;
+    // Biggest files first, round-robin: roughly balanced groups. In time order: consecutive files
+    // of about equal size per group (DataFusion's split into byte ranges keeps the order).
+    let size = |f: &LiveEntry| f.data_file.file_size_in_bytes();
+    let per_group = files.iter().map(size).sum::<u64>().div_ceil(n_groups.max(1) as u64).max(1);
+    if time_order {
+        files.sort_by_cached_key(|f| time_bounds(table, f));
+    } else {
+        files.sort_by_key(|f| std::cmp::Reverse(size(f)));
+    }
+    let (mut total_rows, mut before) = (0u64, 0u64);
     for (i, f) in files.iter().enumerate() {
         total_rows += f.data_file.record_count();
         let path = storage.path(f.data_file.file_path())?;
-        let pf = PartitionedFile::new(path.to_string(), f.data_file.file_size_in_bytes())
-            .with_statistics(Arc::new(file_statistics(&schema, f)));
-        groups[i % n_groups].push(with_access_plan(state, &schema, &lists, pf));
+        let pf = PartitionedFile::new(path.to_string(), size(f)).with_statistics(Arc::new(file_statistics(&schema, f)));
+        let group = if time_order {
+            usize::try_from(before / per_group).unwrap_or(usize::MAX).min(n_groups - 1)
+        } else {
+            i % n_groups
+        };
+        groups[group].push(with_access_plan(state, &schema, &lists, pf));
+        before += size(f);
     }
+    groups.retain(|g| !g.is_empty());
     let one_file_per_group = groups.iter().all(|g| g.len() == 1);
 
     let source = Arc::new(ParquetSource::new(schema.clone()));
@@ -351,7 +431,9 @@ async fn scan_files(
         .with_file_groups(groups.into_iter().map(FileGroup::new).collect())
         .with_statistics(stats)
         .with_projection_indices(projection.cloned())?
-        .with_limit(if filters.is_empty() { limit } else { None });
+        .with_limit(if filters.is_empty() { limit } else { None })
+        // DataFusion lets an idle partition take files from the others unless told the order matters.
+        .with_preserve_order(time_order);
     // Every file is sorted by (series…, time). Declaring it lets DataFusion skip sorts, but it also
     // keeps one partition per file (no byte-range splits), which costs more than it saves when a
     // few large compacted files hold the data. Only declare it when there are enough files.
