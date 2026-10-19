@@ -288,7 +288,7 @@ IoT tip: include a `quality` column (OPC-UA-style good/uncertain/bad flag). It i
 - **Tiered partition granularity:** Recent data is partitioned by `hour(ts)`. After compaction, older data moves to `day(ts)` or `month(ts)`. This uses Iceberg partition evolution plus a rewrite.
 - **Sort order:** `(series_key…, time_column)` within each file. This gives excellent compression (delta-encoded timestamps, similar adjacent values) and tight row-group statistics for series pruning.
 - **File sizing:** Target 128–512 MB files with row groups sized for selective reads. Tunable per table.
-- **Encodings:** Parquet `DELTA_BINARY_PACKED` for timestamps and integers, `BYTE_STREAM_SPLIT` for floats, and ZSTD.
+- **Encodings:** Parquet `DELTA_BINARY_PACKED` for the time column, dictionaries for the other columns (floats falling back to `BYTE_STREAM_SPLIT` once the dictionary outgrows its page; setting `float-encoding`), and ZSTD. Measured 2026-10-19 against `BYTE_STREAM_SPLIT` for floats: IIoT readings a third of the size (366 → 119 MB for 5 days) at equal or better speed, TSBS DevOps 38% larger but scans up to twice as fast (`high-cpu-all` 274 → 136 ms), random doubles +5% size and +6% scan time.
 
 
 ### 7.4 Supplemental timestamps (proposed 2026-10-16, for review)
@@ -1544,7 +1544,7 @@ The existing `timelake.*` properties become registry entries unchanged. Hard-cod
 
 **Design.**
 - **Who does what.** The WASM module builds every file and decides every step; it does no I/O. The TypeScript client (`@timelake/client`) sends the requests through a store: an R2 binding, a local directory (Node, tests), memory (tests), or one the application supplies (`get`, `getRange`, `put`, `putIfAbsent`, `delete`, `list`).
-- **Append.** The same path as the engine: rows (JavaScript objects, or Arrow IPC) are aligned to the table's schema, given `_ingest_ts`, sorted by `(partition, series…, time)`, deduplicated within the append, and written as Parquet with the engine's settings (ZSTD, page statistics, delta and byte-stream-split encodings, the sort order). Then the manifest, manifest list, updated last-value index and head.
+- **Append.** The same path as the engine: rows (JavaScript objects, or Arrow IPC) are aligned to the table's schema, given `_ingest_ts`, sorted by `(partition, series…, time)`, deduplicated within the append, and written as Parquet with the engine's settings (ZSTD, page statistics, delta and dictionary encodings, the sort order). Then the manifest, manifest list, updated last-value index and head.
 - **Commit.** The two-step commit (P4): upload everything in parallel, then make the one conditional write of `vN+1.metadata.json` (R2 and S3 support create-if-absent). On a conflict, the WASM side rebases onto the new version and retries, reusing the data files. The version hint and head are written after.
 - **Iceberg metadata in our own code.** iceberg-rust pulls in tokio, reqwest and ring and doesn't build for `wasm32-unknown-unknown`, so the shared core writes manifests, manifest lists and table metadata itself, as the WASM reader already reads them. Tests keep the two writers equivalent: the engine (iceberg-rust) loads tables the WASM writer wrote and the other way round, plain DuckDB reads them, and the same input gives the same rows.
 - **One core for both.** Writing files (sort, split, dedup, Parquet settings, last-value index, head) and the streaming merge (§10.1) move to a crate without I/O that the engine and `timelake-wasm` both use, so they can't drift.

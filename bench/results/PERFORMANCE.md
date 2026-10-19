@@ -3,6 +3,41 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: float encoding (2026-10-19)
+
+Plain DataFusion read the TSBS DevOps reference Parquet (dictionary floats, arrival order) 3–5× faster than Timelake's
+reader read its table: `double-groupby-all` 103 vs 444 ms, `high-cpu-all` 55 vs 270 ms. Bisected with the same rows
+rewritten (DataFusion 54 from Python, best of 7, `double-groupby-all`):
+
+| Files | Time |
+|---|---:|
+| Timelake's (byte-stream-split floats, `sorting_columns` recorded) | 843 ms |
+| The same without `sorting_columns` | 303 ms |
+| The same with dictionary floats | 212 ms |
+| Hourly files instead of daily, through Timelake's reader | 343 ms (daily: 438) |
+
+The `sorting_columns` metadata slows plain DataFusion down 2.8× (it plans with the files' order); Timelake's reader
+doesn't take orderings from files and is unaffected, so the metadata stays. Float encoding, tables written by
+Timelake (a scratch switch), Timelake's reader, best of 7:
+
+| | byte-stream-split | dictionary | plain |
+|---|---:|---:|---:|
+| TSBS DevOps size | 610 MB | 842 MB | 924 MB |
+| `double-groupby-all` | 436 ms | 279 ms | 576 ms |
+| `double-groupby-5` | 265 ms | 189 ms | 344 ms |
+| `high-cpu-all` | 274 ms | 136 ms | 399 ms |
+| `groupby-orderby-limit` | 244 ms | 190 ms | 269 ms |
+| other DevOps queries | 14–26 ms | the same or 1–3 ms less | |
+| IIoT, last 5 days, size | 366 MB | 119 MB | |
+| IIoT queries | 17–320 ms | the same or up to 6% less | |
+| 4 M random doubles, size | 28.6 MB | 31.8 MB (falling back to byte-stream-split: 30.0) | |
+| their `avg`, `max` per device | 25.5 ms | 32.2 ms (falling back: 27.1) | |
+
+Chosen: a dictionary, falling back to byte-stream-split once it outgrows its page (setting `float-encoding`,
+`byte-stream-split` for the old encoding). Hourly chunks cut the all-host DevOps queries 20–25% (12 of 24 files read
+whole instead of half of one file) and cost per-series queries little, but the chunk is fixed at creation; left at a
+day for now.
+
 ## P8: windows over each series read in series order (2026-10-19)
 
 The IIoT window queries (`lead`/`lag` partitioned by tag, ordered by time) had DataFusion repartition every row by tag

@@ -101,6 +101,8 @@ pub mod property {
     pub const NEWEST_FIRST: &str = "timelake.newest-first";
     /// How the signal aggregates get readings in time order: `auto` (default), `segments` or `merge`.
     pub const SERIES_ORDER: &str = "timelake.series-order";
+    /// How data files encode float columns: `dictionary` (default) or `byte-stream-split`.
+    pub const FLOAT_ENCODING: &str = "timelake.float-encoding";
     /// Windows over each series in time order read the series merged in order: `auto` (default), `true` or `false`.
     pub const WINDOW_SERIES_ORDER: &str = "timelake.window-series-order";
     /// Signal aggregates of the same readings in one query compute one state (default true).

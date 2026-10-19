@@ -61,8 +61,9 @@ pub fn compression(codec: &str, level: Option<i32>) -> Result<Compression, Parqu
 pub const DATA_PAGE_ROWS: usize = 20_000;
 
 /// Parquet settings for a table's data files: ZSTD, page statistics and page index (for row-group
-/// and page pruning), delta encoding for the time column, byte-stream-split for floats,
-/// dictionary encoding for everything else (series keys, tags), and the sort order recorded.
+/// and page pruning), delta encoding for the time column, dictionary encoding for everything else
+/// (floats falling back to byte-stream-split, or byte-stream-split only, by `float-encoding`), and
+/// the sort order recorded.
 /// Pages hold the table's `data-page-rows`, else `default_page_rows`.
 pub fn writer_properties(
     schema: &SchemaRef,
@@ -79,11 +80,13 @@ pub fn writer_properties(
     for f in schema.fields() {
         let path = ColumnPath::from(f.name().as_str());
         match f.data_type() {
-            DataType::Float32 | DataType::Float64 => {
+            // A dictionary falls back to byte-stream-split once it outgrows its page.
+            DataType::Float32 | DataType::Float64 if contract.float_encoding == "byte-stream-split" => {
                 b = b
                     .set_column_dictionary_enabled(path.clone(), false)
                     .set_column_encoding(path, Encoding::BYTE_STREAM_SPLIT);
             }
+            DataType::Float32 | DataType::Float64 => b = b.set_column_encoding(path, Encoding::BYTE_STREAM_SPLIT),
             DataType::Timestamp(_, _) if Some(f.name()) == contract.time_column.as_ref() => {
                 b = b
                     .set_column_dictionary_enabled(path.clone(), false)
@@ -605,5 +608,20 @@ mod tests {
         assert_eq!(minimal_be(-129), [0xff, 0x7f]);
         assert_eq!(be_value(&minimal_be(-129)), -129);
         assert_eq!(be_value(&minimal_be(1 << 40)), 1 << 40);
+    }
+
+    /// Floats get a dictionary falling back to byte-stream-split, or byte-stream-split alone.
+    #[test]
+    fn float_encodings() {
+        let schema = Arc::new(Schema::new(vec![field("v", DataType::Float64, 1)]));
+        let path = ColumnPath::from("v");
+        for (value, dictionary) in [(None, true), (Some("byte-stream-split"), false)] {
+            let properties: HashMap<String, String> =
+                value.map(|v| (crate::property::FLOAT_ENCODING.to_string(), v.to_string())).into_iter().collect();
+            let contract = Contract::from_properties(&properties).unwrap();
+            let props = writer_properties(&schema, &contract, "test", DATA_PAGE_ROWS).unwrap();
+            assert_eq!(props.dictionary_enabled(&path), dictionary, "{value:?}");
+            assert_eq!(props.encoding(&path), Some(Encoding::BYTE_STREAM_SPLIT), "{value:?}");
+        }
     }
 }

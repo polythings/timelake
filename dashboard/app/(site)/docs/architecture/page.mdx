@@ -66,7 +66,7 @@ So a cold “latest” query takes one round trip and a cold filtered scan two (
 
 1. Align each batch to the table schema by column name, casting types.
 2. Sort by `(partition, series key…, time)`, keeping input order for ties, and split by partition. An append larger than 1 GiB is sorted in groups of up to 1 GiB, which are then merged in that order, so no column grows past what one Arrow array holds (2 GiB of strings).
-3. Write each partition (eight at a time) with the codec the table's `write.parquet.compression-codec` names (ZSTD level 3 by default), page-level statistics and page indexes, 1M-row row groups, byte-stream-split encoding for floats, delta encoding for the time column, and the sort order recorded in the file. Files roll over at the target size.
+3. Write each partition (eight at a time) with the codec the table's `write.parquet.compression-codec` names (ZSTD level 3 by default), page-level statistics and page indexes, 1M-row row groups, dictionary encoding (floats fall back to byte-stream-split when a dictionary grows too large), delta encoding for the time column, and the sort order recorded in the file. Files roll over at the target size.
 
 ## Last-value index
 

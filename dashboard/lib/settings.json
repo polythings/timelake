@@ -325,6 +325,18 @@
   },
   {
     "default": {
+      "value": "dictionary"
+    },
+    "description": "How data files encode float columns. `dictionary`: a dictionary of each column chunk's values, falling back to byte-stream-split once it outgrows its page. Sensor readings repeat values: a third of the size on the IIoT benchmark and up to twice as fast to scan on TSBS DevOps; random doubles cost 5% more space and 6% more scan time. `byte-stream-split`: byte-stream-split only. Applies to files written from then on.",
+    "kind": "dictionary or byte-stream-split",
+    "levels": ["table"],
+    "name": "float-encoding",
+    "property": "timelake.float-encoding",
+    "since": "0.8.0",
+    "sql": "timelake.float_encoding"
+  },
+  {
+    "default": {
       "derived": "20,000; 8,192 when written from WebAssembly"
     },
     "description": "Rows per Parquet data page in the files written. Smaller pages make compaction from a Worker use less memory (it holds a page per column of each file it merges: 8,192 rows peaked at 77 MiB merging 24 TSBS files, 20,000 at 123 MiB) and page pruning finer, at a few percent more bytes (TSBS: +3.6%) and slower scans below about 8,000 rows.",

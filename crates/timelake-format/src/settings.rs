@@ -449,6 +449,19 @@ pub static SETTINGS: &[Setting] = &[
         check: duration_or_off,
     },
     Setting {
+        name: "float-encoding",
+        kind: "dictionary or byte-stream-split",
+        default: DefaultValue::Value("dictionary"),
+        levels: &[Level::Table],
+        since: "0.8.0",
+        description: "How data files encode float columns. `dictionary`: a dictionary of each column chunk's values, \
+                      falling back to byte-stream-split once it outgrows its page. Sensor readings repeat values: \
+                      a third of the size on the IIoT benchmark and up to twice as fast to scan on TSBS DevOps; \
+                      random doubles cost 5% more space and 6% more scan time. `byte-stream-split`: byte-stream-split \
+                      only. Applies to files written from then on.",
+        check: float_encoding,
+    },
+    Setting {
         name: "data-page-rows",
         kind: "count",
         default: DefaultValue::Derived("20,000; 8,192 when written from WebAssembly"),
@@ -538,6 +551,13 @@ fn series_order(s: &str) -> Result<()> {
     match s.to_ascii_lowercase().as_str() {
         "auto" | "segments" | "merge" => Ok(()),
         _ => Err(FormatError::new(format!("must be auto, segments or merge, got {s:?}"))),
+    }
+}
+
+fn float_encoding(s: &str) -> Result<()> {
+    match s.to_ascii_lowercase().as_str() {
+        "dictionary" | "byte-stream-split" => Ok(()),
+        _ => Err(FormatError::new(format!("must be dictionary or byte-stream-split, got {s:?}"))),
     }
 }
 
@@ -637,10 +657,11 @@ mod tests {
             property::ROLLUP_REFRESH_INTERVAL,
             property::VERSION_CHECK_INTERVAL,
             property::DATA_PAGE_ROWS,
+            property::FLOAT_ENCODING,
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 34, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 35, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

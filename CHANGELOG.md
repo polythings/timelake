@@ -29,6 +29,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Float columns are written with a dictionary, falling back to byte-stream-split once it outgrows its page, instead
+  of byte-stream-split alone (setting `float-encoding`). IIoT readings take a third of the space (5 days: 366 → 119
+  MB) and TSBS DevOps scans run up to twice as fast (`high-cpu-all` 274 → 136 ms, 38% more space); random doubles cost
+  5% more space and 6% more scan time. Files already written keep their encoding until compaction rewrites them.
 - **Breaking:** setting `time-weighted-mean` is now `series-order` (SQL `timelake.series_order`), since it applies to
   all four aggregates over a signal. The state a rollup stores for `time_weighted_mean` gained fields: a rollup with
   `time_weighted_mean` created by 0.7.0 is no longer used to answer queries, and its refresh fails until it is dropped
