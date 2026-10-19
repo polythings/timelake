@@ -11,7 +11,7 @@ issues: [115]
 
 # 34. Snowflake connection
 
-**Planned** · updated 2026-10-13 · milestone: [Any engine can attach](milestones/any-engine.md)
+**Planned** · updated 2026-10-13 · milestones: [Any engine can attach](milestones/any-engine.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 3](0003-object-store-catalog.md), [spec 27](0027-rollups.md), [spec 28](0028-function-library.md)
 
 ## Summary

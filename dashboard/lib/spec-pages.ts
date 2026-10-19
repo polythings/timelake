@@ -72,6 +72,7 @@ export const MILESTONE_PAGES: Record<string, () => Promise<{ default: MDXContent
   "any-engine": () => import("@spec/milestones/any-engine.md"),
   "data-lifecycle": () => import("@spec/milestones/data-lifecycle.md"),
   "fresh-data": () => import("@spec/milestones/fresh-data.md"),
+  "technical-preview": () => import("@spec/milestones/technical-preview.md"),
   agents: () => import("@spec/milestones/agents.md"),
   apps: () => import("@spec/milestones/apps.md"),
   edge: () => import("@spec/milestones/edge.md"),

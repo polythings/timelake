@@ -54,6 +54,12 @@ Specs: [Import and migration](../0016-import.md) (in progress), [Backfill](../00
 
 Specs: [Hot tier and seconds-fresh reads](../0014-hot-tier.md) (planned), [Ingestion and rules](../0036-ingest-and-rules.md) (planned), [Data to events](../0037-data-to-events.md) (planned).
 
+### [Technical preview](technical-preview.md)
+
+**Planned**. Timelake open for anyone to try on real workloads, labelled a technical preview, once tuning on real data, the engine connections, the data lifecycle and seconds-fresh ingestion are in.
+
+Specs: [Commits](../0002-commits.md) (done), [Appends](../0011-appends.md) (done), [Maintenance runs, retention and expiry](../0020-maintenance.md) (in progress), [REST catalog](../0032-rest-catalog.md) (planned), [DuckDB extension](../0033-duckdb-extension.md) (planned), [Snowflake connection](../0034-snowflake.md) (planned), [Multitenancy](../0035-multitenancy.md) (planned), [Time-series table contract](../0004-table-contract.md) (in progress), [Supplemental timestamps](../0010-supplemental-timestamps.md) (planned), [Backfill](../0015-backfill.md) (planned), [Import and migration](../0016-import.md) (in progress), [Deletes](../0017-deletes.md) (planned), [GDPR erasure](../0018-gdpr-erasure.md) (planned), [Hot tier and seconds-fresh reads](../0014-hot-tier.md) (planned), [Ingestion and rules](../0036-ingest-and-rules.md) (planned), [Data to events](../0037-data-to-events.md) (planned).
+
 ## Exploring
 
 ### [AI agents](agents.md)

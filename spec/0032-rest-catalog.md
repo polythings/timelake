@@ -10,7 +10,7 @@ issues: [105, 108, 129]
 
 # 32. REST catalog
 
-**Planned** · updated 2026-10-12 · milestone: [Any engine can attach](milestones/any-engine.md)
+**Planned** · updated 2026-10-12 · milestones: [Any engine can attach](milestones/any-engine.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 3](0003-object-store-catalog.md), [spec 34](0034-snowflake.md), [spec 35](0035-multitenancy.md)
 
 ## Summary

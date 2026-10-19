@@ -11,7 +11,7 @@ issues: [13, 18, 46, 50]
 
 # 20. Maintenance runs, retention and expiry
 
-**In progress** · updated 2026-10-17 · versions 0.1.0, 0.3.0, 0.5.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Tuned on real data](milestones/real-data.md)
+**In progress** · updated 2026-10-17 · versions 0.1.0, 0.3.0, 0.5.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 13](0013-wasm-writes.md), [spec 19](0019-compaction.md), [spec 27](0027-rollups.md)
 
 ## Summary

@@ -11,7 +11,7 @@ issues: [118]
 
 # 10. Supplemental timestamps
 
-**Planned** · updated 2026-10-16 · milestone: [Data lifecycle](milestones/data-lifecycle.md)
+**Planned** · updated 2026-10-16 · milestones: [Data lifecycle](milestones/data-lifecycle.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 4](0004-table-contract.md), [spec 12](0012-late-data-and-dedup.md)
 
 ## Summary

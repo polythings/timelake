@@ -11,7 +11,7 @@ issues: [54, 67]
 
 # 11. Appends
 
-**Done** · updated 2026-10-18 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Writes from JavaScript](milestones/javascript-writes.md), [Tuned on real data](milestones/real-data.md)
+**Done** · updated 2026-10-18 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Writes from JavaScript](milestones/javascript-writes.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 2](0002-commits.md), [spec 5](0005-file-layout.md), [spec 12](0012-late-data-and-dedup.md), [spec 14](0014-hot-tier.md), [spec 15](0015-backfill.md), [spec 19](0019-compaction.md)
 
 ## Summary

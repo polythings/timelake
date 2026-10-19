@@ -11,7 +11,7 @@ issues: [113]
 
 # 37. Data to events
 
-**Planned** · updated 2026-10-13 · milestone: [Seconds-fresh data and ingestion](milestones/fresh-data.md)
+**Planned** · updated 2026-10-13 · milestones: [Seconds-fresh data and ingestion](milestones/fresh-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 36](0036-ingest-and-rules.md), [spec 39](0039-computed-metrics.md)
 
 ## Summary

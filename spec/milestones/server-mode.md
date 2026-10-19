@@ -1,5 +1,5 @@
 ---
-number: 16
+number: 17
 title: Server mode
 status: exploring
 updated: 2026-10-19

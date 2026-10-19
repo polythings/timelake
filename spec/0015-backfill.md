@@ -10,7 +10,7 @@ related: [14, 16, 19]
 
 # 15. Backfill
 
-**Planned** · updated 2026-10-11 · milestone: [Data lifecycle](milestones/data-lifecycle.md)
+**Planned** · updated 2026-10-11 · milestones: [Data lifecycle](milestones/data-lifecycle.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 14](0014-hot-tier.md), [spec 16](0016-import.md), [spec 19](0019-compaction.md)
 
 ## Summary

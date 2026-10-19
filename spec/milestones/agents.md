@@ -1,5 +1,5 @@
 ---
-number: 13
+number: 14
 title: AI agents
 status: exploring
 updated: 2026-10-19

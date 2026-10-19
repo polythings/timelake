@@ -11,7 +11,7 @@ issues: [130]
 
 # 4. Time-series table contract
 
-**In progress** · updated 2026-10-18 · versions 0.1.0, 0.5.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Data lifecycle](milestones/data-lifecycle.md)
+**In progress** · updated 2026-10-18 · versions 0.1.0, 0.5.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Data lifecycle](milestones/data-lifecycle.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 5](0005-file-layout.md), [spec 9](0009-settings.md), [spec 10](0010-supplemental-timestamps.md), [spec 12](0012-late-data-and-dedup.md)
 
 ## Summary

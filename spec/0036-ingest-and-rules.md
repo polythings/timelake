@@ -11,7 +11,7 @@ issues: [109, 110]
 
 # 36. Ingestion and rules
 
-**Planned** · updated 2026-10-11 · milestone: [Seconds-fresh data and ingestion](milestones/fresh-data.md)
+**Planned** · updated 2026-10-11 · milestones: [Seconds-fresh data and ingestion](milestones/fresh-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 14](0014-hot-tier.md), [spec 37](0037-data-to-events.md), [spec 42](0042-edge-gateway.md)
 
 ## Summary

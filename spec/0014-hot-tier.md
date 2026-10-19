@@ -10,7 +10,7 @@ issues: [40, 53, 86, 107]
 
 # 14. Hot tier and seconds-fresh reads
 
-**Planned** · updated 2026-10-12 · milestone: [Seconds-fresh data and ingestion](milestones/fresh-data.md)
+**Planned** · updated 2026-10-12 · milestones: [Seconds-fresh data and ingestion](milestones/fresh-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 11](0011-appends.md), [spec 21](0021-reader.md), [spec 36](0036-ingest-and-rules.md)
 
 ## Summary

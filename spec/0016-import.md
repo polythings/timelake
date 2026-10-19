@@ -10,7 +10,7 @@ related: [4, 15]
 
 # 16. Import and migration
 
-**In progress** · updated 2026-10-12 · versions 0.1.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Data lifecycle](milestones/data-lifecycle.md)
+**In progress** · updated 2026-10-12 · versions 0.1.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Data lifecycle](milestones/data-lifecycle.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 4](0004-table-contract.md), [spec 15](0015-backfill.md)
 
 ## Summary

@@ -1,5 +1,5 @@
 ---
-number: 14
+number: 15
 title: Apps and dashboards
 status: exploring
 updated: 2026-10-19

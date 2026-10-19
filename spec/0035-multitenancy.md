@@ -11,7 +11,7 @@ issues: [141, 142]
 
 # 35. Multitenancy
 
-**Planned** · updated 2026-10-16 · milestone: [Any engine can attach](milestones/any-engine.md)
+**Planned** · updated 2026-10-16 · milestones: [Any engine can attach](milestones/any-engine.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 18](0018-gdpr-erasure.md), [spec 40](0040-agent-access.md)
 
 ## Summary

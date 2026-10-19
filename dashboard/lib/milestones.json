@@ -145,6 +145,18 @@
   },
   {
     "number": 13,
+    "slug": "technical-preview",
+    "title": "Technical preview",
+    "status": "planned",
+    "versions": "",
+    "updated": "2026-10-19",
+    "description": "Timelake open for anyone to try on real workloads, labelled a technical preview, once tuning on real data, the engine connections, the data lifecycle and seconds-fresh ingestion are in.",
+    "summary": "A technical preview open to anyone: Timelake installed from the usual registries and run on real workloads, labelled a preview, with its limits and what may still change written down. It opens once most of what a team needs is in: the milestones before it on the roadmap (tuned on real data, any engine can attach, data lifecycle, seconds-fresh data and ingestion). Its specs are theirs, so its progress is theirs.",
+    "specs": [2, 11, 20, 32, 33, 34, 35, 4, 10, 15, 16, 17, 18, 14, 36, 37],
+    "issues": [145, 146]
+  },
+  {
+    "number": 14,
     "slug": "agents",
     "title": "AI agents",
     "status": "exploring",
@@ -156,7 +168,7 @@
     "issues": []
   },
   {
-    "number": 14,
+    "number": 15,
     "slug": "apps",
     "title": "Apps and dashboards",
     "status": "exploring",
@@ -168,7 +180,7 @@
     "issues": []
   },
   {
-    "number": 15,
+    "number": 16,
     "slug": "edge",
     "title": "Edge and devices",
     "status": "exploring",
@@ -180,7 +192,7 @@
     "issues": []
   },
   {
-    "number": 16,
+    "number": 17,
     "slug": "server-mode",
     "title": "Server mode",
     "status": "exploring",

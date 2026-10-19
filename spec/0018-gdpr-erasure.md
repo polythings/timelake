@@ -10,7 +10,7 @@ related: [17, 35]
 
 # 18. GDPR erasure
 
-**Planned** · updated 2026-10-11 · milestone: [Data lifecycle](milestones/data-lifecycle.md)
+**Planned** · updated 2026-10-11 · milestones: [Data lifecycle](milestones/data-lifecycle.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 17](0017-deletes.md), [spec 35](0035-multitenancy.md)
 
 ## Summary

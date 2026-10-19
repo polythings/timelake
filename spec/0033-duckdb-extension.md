@@ -10,7 +10,7 @@ issues: [128]
 
 # 33. DuckDB extension
 
-**Planned** · updated 2026-10-12 · milestone: [Any engine can attach](milestones/any-engine.md)
+**Planned** · updated 2026-10-12 · milestones: [Any engine can attach](milestones/any-engine.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 1](0001-iceberg-tables.md), [spec 12](0012-late-data-and-dedup.md), [spec 14](0014-hot-tier.md), [spec 21](0021-reader.md), [spec 28](0028-function-library.md)
 
 ## Summary

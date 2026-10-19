@@ -11,7 +11,7 @@ issues: [21, 26, 39, 47, 48, 51]
 
 # 2. Commits
 
-**Done** · updated 2026-10-13 · versions 0.1.0, 0.2.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md), [Tuned on real data](milestones/real-data.md)
+**Done** · updated 2026-10-13 · versions 0.1.0, 0.2.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 1](0001-iceberg-tables.md), [spec 3](0003-object-store-catalog.md), [spec 11](0011-appends.md)
 
 ## Summary

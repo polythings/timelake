@@ -1,5 +1,5 @@
 ---
-number: 15
+number: 16
 title: Edge and devices
 status: exploring
 updated: 2026-10-19
