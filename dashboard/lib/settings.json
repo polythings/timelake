@@ -159,6 +159,18 @@
     "default": {
       "value": "true"
     },
+    "description": "Signal aggregates of the same readings in one query (`time_weighted_mean`, `integral`, `counter_diff`, `counter_rate` of one column, by one method) compute their runs of readings once and each result from them, instead of each computing its own.",
+    "kind": "boolean",
+    "levels": ["session"],
+    "name": "shared-signal-state",
+    "property": "timelake.shared-signal-state",
+    "since": "0.8.0",
+    "sql": "timelake.shared_signal_state"
+  },
+  {
+    "default": {
+      "value": "true"
+    },
     "description": "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) reads the newest time partition first and older ones only while they can still hold one of the k newest rows.",
     "kind": "boolean",
     "levels": ["table", "session"],

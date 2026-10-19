@@ -304,6 +304,17 @@ pub static SETTINGS: &[Setting] = &[
         check: series_order,
     },
     Setting {
+        name: "shared-signal-state",
+        kind: "boolean",
+        default: DefaultValue::Value("true"),
+        levels: &[Level::Session],
+        since: "0.8.0",
+        description: "Signal aggregates of the same readings in one query (`time_weighted_mean`, `integral`, \
+                      `counter_diff`, `counter_rate` of one column, by one method) compute their runs of readings \
+                      once and each result from them, instead of each computing its own.",
+        check: boolean,
+    },
+    Setting {
         name: "newest-first",
         kind: "boolean",
         default: DefaultValue::Value("true"),
@@ -599,6 +610,7 @@ mod tests {
             property::IN_LIST_PRUNING,
             property::NEWEST_FIRST,
             property::SERIES_ORDER,
+            property::SHARED_SIGNAL_STATE,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -614,7 +626,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 32, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 33, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.

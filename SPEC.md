@@ -728,9 +728,10 @@ reading).
   (`integral(state [, method])`), at the rollup's width too. One stored state answers all four for its column and
   method; the counters from either method's state.
 - **Cost:** IIoT small, hourly per tag over 30 days: `avg` 1.98 s; each signal aggregate 2.18–2.20 s; all four in one
-  query 3.74 s, since each computes its own state. Against the window form of the IIoT queries over 30 days: energy
-  per machine (`lag`) 1.66 → 1.09 s, time-weighted means of a line's temperatures (`lead`) 166 → 87 ms. Open: one state for several signal aggregates of the same column
-  (an optimizer rule computing `time_weighted_state` once and the results from it).
+  query 3.47 s with a state each, 2.11 s sharing one: an optimizer rule after routing replaces the signal aggregates
+  of the same readings and method (the counters join either method's) with one `time_weighted_state` and computes
+  each result from it in a projection (`integral_of_state(state)`); setting `shared-signal-state`. Against the window form of the IIoT queries over 30 days: energy
+  per machine (`lag`) 1.66 → 1.09 s, time-weighted means of a line's temperatures (`lead`) 166 → 87 ms.
 
 #### 11.1.3 `m4` (built 2026-10-18, #73)
 `m4(time, value)` is an aggregate returning a group's first, smallest, largest and last points as a list of

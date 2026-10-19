@@ -27,12 +27,13 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array, Int64Array, ListArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType};
-use datafusion::common::{ScalarValue, exec_err, plan_err};
+use datafusion::common::{ScalarValue, exec_err, plan_datafusion_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{
-    Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
+    Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, EmitTo, GroupsAccumulator, ScalarFunctionArgs,
+    ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::physical_expr::expressions::Literal;
 
@@ -77,8 +78,15 @@ pub(crate) fn udaf(output: Output) -> AggregateUDF {
     AggregateUDF::from(SignalAggregate { output, signature: Signature::user_defined(Volatility::Immutable) })
 }
 
+/// The scalar function giving what `output` returns for a column of states (`integral_of_state`),
+/// so that several signal aggregates of the same readings compute one state ([`super::shared_state`]).
+pub(crate) fn of_state_udf(output: Output, method: Method) -> ScalarUDF {
+    let name = format!("{}_of_state", output.name());
+    ScalarUDF::from(OfState { name, output, method, signature: Signature::any(1, Volatility::Immutable) })
+}
+
 /// How the signal moves between readings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Method {
     ForwardFill,
     Linear,
@@ -215,6 +223,38 @@ impl AggregateUDFImpl for SignalAggregate {
 
     fn create_groups_accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(AllGroups { groups: vec![], method: method_of(&args)?, output: self.output }))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct OfState {
+    name: String,
+    output: Output,
+    method: Method,
+    signature: Signature,
+}
+
+impl ScalarUDFImpl for OfState {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DfResult<DataType> {
+        Ok(DataType::Float64)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
+        let [state] =
+            ColumnarValue::values_to_arrays(&args.args)?.try_into().map_err(|_| plan_datafusion_err!("one state"))?;
+        let mut groups = vec![Runs::default(); state.len()];
+        for_each_segment(&state, |row, s| groups[row].0.push(s))?;
+        let values: Vec<Option<f64>> =
+            groups.iter().map(|r| r.value(self.output, self.method)).collect::<DfResult<_>>()?;
+        Ok(ColumnarValue::Array(Arc::new(Float64Array::from(values))))
     }
 }
 

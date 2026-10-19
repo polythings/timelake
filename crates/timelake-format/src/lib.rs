@@ -101,6 +101,8 @@ pub mod property {
     pub const NEWEST_FIRST: &str = "timelake.newest-first";
     /// How the signal aggregates get readings in time order: `auto` (default), `segments` or `merge`.
     pub const SERIES_ORDER: &str = "timelake.series-order";
+    /// Signal aggregates of the same readings in one query compute one state (default true).
+    pub const SHARED_SIGNAL_STATE: &str = "timelake.shared-signal-state";
     /// Format of the head object (`metadata/timelake-head`): `arrow` (default), `json`, another
     /// registered codec, or `none` to not write one.
     pub const HEAD_FORMAT: &str = "timelake.head-format";

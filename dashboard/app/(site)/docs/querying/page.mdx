@@ -47,7 +47,9 @@ on a laptop (`avg`: 2.0 s), and they beat the same calculation written with `lag
 energy counters per machine 1.1 s against 1.7 s). Files that could give a series' readings out of order (copies not
 yet compacted away, or with dedup off, files that overlap or aren't sorted) are merged in series order first, like
 dedup on read, together with the other files of the time they span (setting `series-order`: `auto`, `segments`,
-`merge`). [Rollups](/docs/rollups) store the runs and answer wider buckets from them.
+`merge`). Several of them over the same column in one query compute the runs once (setting `shared-signal-state`):
+all four take 2.1 s in the example above, not 3.5 s. [Rollups](/docs/rollups) store the runs and answer wider
+buckets from them.
 
 ## What the reader accelerates
 

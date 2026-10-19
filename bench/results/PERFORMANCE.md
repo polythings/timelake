@@ -17,7 +17,7 @@ hourly value per tag (719,554 groups), best of 7, routing off:
 | `time_weighted_mean`, the neighbours as `f64`, null in the state while one time (80 bytes) | 2.17 s |
 | The same, each group's open segment inline instead of behind the vector's pointer | 2.95 s |
 | `integral` / `counter_diff` / `counter_rate` | 2.20 / 2.18 / 2.20 s |
-| All four in one query | 3.74 s |
+| All four in one query, a state each | 3.74 s |
 
 Against the window form the IIoT benchmark uses (portable SQL, kept there), over all 30 days, answers equal to
 rounding: energy per machine from counters that reset, `lag` 1.66 s, `counter_diff` 1.09 s; time-weighted means of
@@ -29,9 +29,18 @@ day 5 to day 15 while another held day 10. Scans under these aggregates now give
 files in time order, and turn off DataFusion 54's file stealing between partitions (an idle partition took a file
 of another's stretch: day 1 and day 3 in one partition, day 2 in another). Same speed: hourly means 2.21 s.
 
-Kept: `f64` neighbours, segments behind the pointer. Inline segments double the group array (about 130 bytes a group),
-which DataFusion grows and moves. All four together cost 1.7× one, since each aggregate keeps its own state; computing
-the state once for several is open (SPEC §11.1.4). Peak memory of `counter_diff`: 605 MB.
+Kept: `f64` neighbours, segments behind the pointer.
+
+One state for several (setting `shared-signal-state`): an optimizer rule computes `time_weighted_state` once per
+column and method and each result from it. Same answers:
+
+| Hourly per tag, 30 days | A state each | One state |
+|---|---:|---:|
+| `time_weighted_mean`, `counter_diff` | 2.47 s | 2.08 s |
+| All four | 3.47 s | 2.11 s |
+| `time_weighted_mean` alone | 2.03 s | | Inline segments double the group array (about 130 bytes a group),
+which DataFusion grows and moves. All four together cost 1.7× one, since each aggregate keeps its own state (one state
+for several: below). Peak memory of `counter_diff`: 605 MB.
 
 ## P7: `time_weighted_mean` (2026-10-18)
 

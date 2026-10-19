@@ -27,6 +27,7 @@ mod route;
 mod series_order;
 mod session;
 mod settings;
+mod shared_state;
 mod signal;
 mod statement;
 mod stats;

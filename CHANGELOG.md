@@ -14,6 +14,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `counter_diff(time, value)` (how much a counter grew; a drop is a reset to zero) and `counter_rate(time, value)` (that
   growth per second), exact over irregular readings like `time_weighted_mean`, and about as fast (hourly values of
   1,000 tags over 30 days: 2.2 s, `avg` 2.0 s). Rollups answer them from a stored `time_weighted_mean`, or store them.
+- Setting `shared-signal-state` (on by default): signal aggregates of the same column in one query compute their runs
+  of readings once. All four, hourly for 1,000 tags over 30 days: 3.5 → 2.1 s.
 
 ### Fixed
 

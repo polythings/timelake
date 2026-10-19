@@ -89,6 +89,7 @@ impl Session {
             .with_optimizer_rule(Arc::new(super::newest::NewestFirst))
             .with_optimizer_rule(Arc::new(super::series_order::SeriesOrder))
             .with_optimizer_rule(Arc::new(RollupRewrite { routes: routes.clone() }))
+            .with_optimizer_rule(Arc::new(super::shared_state::SharedState))
             .build();
         let ctx = SessionContext::new_with_state(state);
         ctx.register_object_store(lake.storage().url(), lake.storage().object_store());
