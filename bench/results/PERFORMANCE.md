@@ -1,6 +1,6 @@
 # Performance plan results
 
-Measurements for the steps of the performance plan ([spec 27](../../spec/0027-performance-plan.md)), newest first. Each step is
+Measurements for the steps of the performance plan ([the milestone "Fast first queries on object storage"](../../spec/milestones/fast-first-queries.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
 ## P8: newest-first for the newest buckets (2026-10-19)
@@ -37,7 +37,7 @@ local disk, release build:
 Both inputs are sorted by the write order with one row per series, so the merge (compaction's, deduplicating on the
 series key) replaces the sort. Encoding costs about as much uncompressed, so ZSTD 3 stays. What remains grows with
 the number of series: at 10 M about 1.5 s a commit. Avoiding it needs a different format: small index deltas per
-commit, merged by readers and folded into the base now and then ([spec 26](../../spec/0026-series-cardinality.md), #119).
+commit, merged by readers and folded into the base now and then ([spec 6](../../spec/0006-last-value-index.md), #119).
 
 ## P7: time in a state from the signal aggregates (2026-10-19)
 
@@ -49,7 +49,7 @@ answers (IIoT small, release build, best of 7):
 | `time-above-limit`: seconds above the limit, 100 pressure tags, a day | 334 ms | 191 ms (`integral(time, value > hi_limit)`) |
 | `uptime`: share of 7 days running, 10 machines | 33 ms | 31 ms (`time_weighted_mean(time, value = 1)`) |
 
-`state_duration` and `uptime` in [spec 24](../../spec/0024-function-library.md) are these instead of functions of their own.
+`state_duration` and `uptime` in [spec 28](../../spec/0028-function-library.md) are these instead of functions of their own.
 
 ## P7: gap filling (2026-10-19)
 
@@ -512,7 +512,7 @@ encodes each row group's columns on scoped threads; files are byte-identical to 
 
 User CPU for `maintain` stays about 3.2 s: the same work on more cores.
 
-## Streaming compaction (2026-10-17, [spec 15](../../spec/0015-maintenance.md))
+## Streaming compaction (2026-10-17, [spec 19](../../spec/0019-compaction.md))
 
 Laptop (M1 Pro), local disk, release build. TSBS IoT readings (11,671,497 rows, 2026-01-01 to 01-03) split into 72
 hourly Parquet files and imported with `timelake import --no-maintain` (one file per commit, day partitions), then
@@ -679,4 +679,4 @@ Tigris is faster for every request that finds its object, as it claims. Its own 
 San Jose next to a Tigris region, YCSB) measures exactly those. A key that doesn't exist costs about 285 ms, likely
 because a global bucket has to check beyond the nearest region. Timelake's reader looks up `vN+1.metadata.json`
 (normally missing) on every table load, so each cold query on Tigris pays it once or twice. Checking with a LIST of the
-`vN+1` prefix instead would take about 40 ms there ([spec 32](../../spec/0032-timebench.md), [spec 18](../../spec/0018-table-head.md)).
+`vN+1` prefix instead would take about 40 ms there ([spec 44](../../spec/0044-timebench.md), [spec 7](../../spec/0007-table-head.md)).

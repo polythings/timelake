@@ -1,4 +1,4 @@
-"""Write the TSBS IoT Parquet tables as Iceberg tables (plain-lake baseline, spec 32).
+"""Write the TSBS IoT Parquet tables as Iceberg tables (plain-lake baseline, spec 44).
 
 Layout: readings/diagnostics partitioned by day(time) and sorted by (tags_id, time). This is the layout a team
 would get from S3 Tables + a sort-compaction Glue job. Writes data/tsbs/iceberg[-s3]/metadata.json mapping

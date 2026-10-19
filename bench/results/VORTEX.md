@@ -101,7 +101,7 @@ DuckDB is only one integration. Timelake's reader will be Rust + DataFusion, so 
   - possibly the last-value / recent-data store
 
   That is where the 3.5× single-device speedup lands, and where compatibility doesn't matter.
-- **Keep the file-format abstraction** ([spec 6](../../spec/0006-table-contract.md)).
+- **Keep the file-format abstraction** ([spec 5](../../spec/0005-file-layout.md)).
 - **Re-test when:**
   - (a) Iceberg supports Vortex data files
   - (b) Vortex's object-store I/O adds caching and request coalescing

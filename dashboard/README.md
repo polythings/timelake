@@ -5,7 +5,9 @@ One Next.js app with the Timelake website, docs, benchmark results and the Explo
 | Route | What |
 |---|---|
 | `/` | Landing page: what Timelake is, how it works, quick start, benchmark highlights |
-| `/docs/**` | Documentation (quick start, how it works, concepts, glossary, CLI, Python, TypeScript, querying, properties, storage, architecture, codebase tour, development, benchmarks, roadmap) |
+| `/docs/**` | Documentation (quick start, how it works, concepts, glossary, CLI, Python, TypeScript, querying, properties, storage, architecture, codebase tour, development, benchmarks) |
+| `/spec`, `/spec/<slug>` | The specs and background pages from `spec/` at the repository root, rendered from their Markdown |
+| `/roadmap`, `/roadmap/<slug>` | The milestones from `spec/milestones/`, each with its specs |
 | `/benchmarks` | Benchmark results on AWS S3 (Timelake vs Lance, naive Iceberg and S3 Tables) and local disk; TimescaleDB on Tiger Cloud |
 | `/explore` | Explorer: tables, freshness, partitions, snapshots, latest values, a series chart, read-only SQL console |
 
@@ -51,7 +53,9 @@ bun run sync-results
 | `app/api/sql`, `app/api/series` | Route handlers used by the SQL console and the series chart |
 | `lib/lake/` | Explorer data layer: `types.ts` (the `LakeBackend` interface), `wasm.ts` (hosted, `@timelake/client`), `cli.ts` (local, the CLI), `index.ts` (picks the backend, checks series queries), `error-response.ts` (errors → API responses) |
 | `lib/benchmarks.ts` | Loads the benchmark runs for `/benchmarks` (geometric means as in `bench/timebench/report.py`) |
-| `lib/benchmark-catalog.ts` | The benchmarks on `/benchmarks`: status, why, and each methodology page's text ([spec 32](../spec/0032-timebench.md)) |
+| `lib/benchmark-catalog.ts` | The benchmarks on `/benchmarks`: status, why, and each methodology page's text ([spec 44](../spec/0044-timebench.md)) |
+| `lib/specs.ts` | The specs, milestones and background pages, from `specs.json`, `milestones.json`, `background.json` and `spec-pages.ts`, which `scripts/spec_index.py` (repository root) generates |
+| `lib/remark-spec.mjs` | Renders `spec/` Markdown on the site: links between pages stay on the site, the generated headers are left out |
 | `scripts/sync-results.ts` | Copies the benchmark runs into `data/runs/` |
 | `scripts/upload-demo-to-blob.ts` | Uploads the demo warehouse to Vercel Blob (`bun run upload-demo`) |
 

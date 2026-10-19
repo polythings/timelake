@@ -96,6 +96,16 @@ def changelog(version: str) -> None:
     CHANGELOG.write_text(f"{head}## Unreleased\n\n{section}" + (f"\n## {older}" if older else ""))
 
 
+def specs(version: str) -> None:
+    """Names the release in the specs whose `versions` say `unreleased`, then regenerates the indexes."""
+    for path in (ROOT / "spec").glob("[0-9][0-9][0-9][0-9]-*.md"):
+        text = path.read_text()
+        new = re.sub(r"^(versions: \[.*)\bunreleased\b", rf"\g<1>{version}", text, count=1, flags=re.MULTILINE)
+        if new != text:
+            path.write_text(new)
+    run("uv", "run", "python", "scripts/spec_index.py")
+
+
 def main() -> None:
     """Checks, bumps, commits and tags; with `--push`, pushes the commit and the tag."""
     parser = argparse.ArgumentParser(description="Cut a Timelake release.")
@@ -129,6 +139,7 @@ def main() -> None:
 
     bump(args.version)
     changelog(args.version)
+    specs(args.version)
     run("cargo", "update", "--workspace")
     run("cargo", "update", "--manifest-path", "crates/timelake-wasm/Cargo.toml", "-p", "timelake-wasm")
     run("uv", "lock")

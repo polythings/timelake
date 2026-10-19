@@ -1,6 +1,6 @@
 # timebench
 
-Benchmarks for time-series storage ([spec 32](../spec/0032-timebench.md)): Timelake against the table formats and databases a team would
+Benchmarks for time-series storage ([spec 44](../spec/0044-timebench.md)): Timelake against the table formats and databases a team would
 otherwise use. Results, their history and the methodology of each benchmark are on
 [timelake.dev/benchmarks](https://timelake.dev/benchmarks); how timebench runs them is on
 [timelake.dev/benchmarks/timebench](https://timelake.dev/benchmarks/timebench).
@@ -37,11 +37,11 @@ uv run timebench history --workload tsbs-iot                  # one line per run
 - **Workloads** (`timebench/workloads/`): data at a named scale, the order its rows arrive in, and the queries. The
   data is generated on first use into `data/workloads/<workload>-<scale>/`. Both stream in 5-minute windows
   (`--param window_minutes=…`; `--param max_windows=N` for a quick check):
-  - `tsbs-iot` ([spec 32](../spec/0032-timebench.md)): `small` (50 trucks), `standard` (500 trucks, the published runs), `large` (5,000).
+  - `tsbs-iot` ([spec 44](../spec/0044-timebench.md)): `small` (50 trucks), `standard` (500 trucks, the published runs), `large` (5,000).
   - `tsbs-devops`, TSBS's cpu-only use case and its 15 query types: `small` (100 hosts), `standard` (4,000 hosts,
     104M rows, the size published TSBS results use). Its file is in time order, so it streams without being held in
     memory.
-  - `iiot` ([spec 33](../spec/0033-iiot-benchmark.md)): a plant's process historian from our own generator (`timebench/workloads/plant.py`), arriving
+  - `iiot` ([spec 45](../spec/0045-iiot-benchmark.md)): a plant's process historian from our own generator (`timebench/workloads/plant.py`), arriving
     through gateways that go offline and send some rows twice. `small` (1,000 tags, 30 days), `standard` (10,000),
     `large` (100,000), `xlarge` (1,000,000, 7 days); `--param machines=N --param days=D` for a quick check. It
     arrives in stages: history in bulk (an hour per commit) with checkpoints `1d` and `7d`, then the last day live (a

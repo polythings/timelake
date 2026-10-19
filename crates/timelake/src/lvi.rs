@@ -1,7 +1,7 @@
 //! Last-value index: one small Parquet file per snapshot holding the latest row of every series.
 //!
 //! "Current state of every device" is the most common IoT query and the one where lakes lose to
-//! TimescaleDB by ~100× (spec 32): a generic engine has to scan everything to find each
+//! TimescaleDB by ~100× (spec 44): a generic engine has to scan everything to find each
 //! series' newest row. The index makes it a single small read. It is maintained incrementally on
 //! every append (previous index ⊕ newest rows of the appended data), referenced from the snapshot
 //! summary (`timelake.last-value-index`), and plain Parquet, so `DuckDB` can read it too.

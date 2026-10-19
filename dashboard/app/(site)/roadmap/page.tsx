@@ -1,68 +1,57 @@
-import { Check } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 
 import { GithubIcon } from "@/components/github-icon"
-import { Badge } from "@/components/ui/badge"
+import { MilestoneCard } from "@/components/spec/milestone-card"
 import { Button } from "@/components/ui/button"
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { COMING_UP, EXPLORING, NOW, ROADMAP_UPDATED, type RoadmapItem } from "@/lib/roadmap"
 import { REPO_URL } from "@/lib/site"
-import { cn } from "@/lib/utils"
+import { MILESTONE_STATUS_LABEL, MILESTONE_STATUS_MEANING, MILESTONES, type MilestoneStatus } from "@/lib/specs"
 
-export const metadata: Metadata = { title: "Roadmap" }
-
-function StatusBadge({ status }: { status: NonNullable<RoadmapItem["status"]> }) {
-  return status === "done" ? (
-    <Badge variant="secondary">
-      <Check data-icon="inline-start" />
-      Done
-    </Badge>
-  ) : (
-    <Badge variant="outline">Next</Badge>
-  )
+export const metadata: Metadata = {
+  title: "Roadmap",
+  description: "Timelake's milestones: what is being built now, what comes next, and what is done, each made of specs.",
 }
 
-function ItemCard({ item, exploring = false }: { item: RoadmapItem; exploring?: boolean }) {
-  return (
-    <Card
-      className={cn(exploring && "bg-transparent ring-0 outline-1 -outline-offset-1 outline-border outline-dashed")}
-    >
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <CardTitle>{item.title}</CardTitle>
-          {item.status && <StatusBadge status={item.status} />}
-        </div>
-        <CardDescription>{item.description}</CardDescription>
-      </CardHeader>
-    </Card>
-  )
-}
-
-function Section({ title, items, exploring }: { title: string; items: RoadmapItem[]; exploring?: boolean }) {
-  return (
-    <section className="space-y-4">
-      <h2 className="text-xl font-medium tracking-tight">{title}</h2>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item) => (
-          <ItemCard key={item.title} item={item} exploring={exploring} />
-        ))}
-      </div>
-    </section>
-  )
-}
+const UPDATED = MILESTONES.map((m) => m.updated)
+  .toSorted()
+  .at(-1)
 
 export default function RoadmapPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-14 px-4 py-12">
       <header className="max-w-3xl space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Roadmap</h1>
-        <p className="text-muted-foreground">What we&apos;re building next. Updated {ROADMAP_UPDATED}.</p>
+        <p className="text-muted-foreground">
+          What we&apos;re building, as milestones made of{" "}
+          <Link className="underline underline-offset-4" href="/spec">
+            specs
+          </Link>
+          , one per feature. Each milestone links its specs, and each spec the releases that changed it. Updated{" "}
+          {UPDATED}.
+        </p>
       </header>
 
-      <Section title="Now" items={NOW} />
-      <Section title="Coming up" items={COMING_UP} />
-      <Section title="Exploring" items={EXPLORING} exploring />
+      {(Object.keys(MILESTONE_STATUS_LABEL) as MilestoneStatus[]).map((status) => {
+        // Done milestones newest first; the others in order of priority.
+        const listed = MILESTONES.filter((m) => m.status === status).toSorted((x, y) =>
+          status === "done" ? y.number - x.number : x.number - y.number,
+        )
+        return (
+          listed.length > 0 && (
+            <section key={status} className="space-y-4">
+              <div className="space-y-1">
+                <h2 className="text-xl font-medium tracking-tight">{MILESTONE_STATUS_LABEL[status]}</h2>
+                <p className="text-sm text-muted-foreground">{MILESTONE_STATUS_MEANING[status]}</p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {listed.map((m) => (
+                  <MilestoneCard key={m.slug} milestone={m} />
+                ))}
+              </div>
+            </section>
+          )
+        )
+      })}
 
       <section className="max-w-3xl space-y-4 border-t pt-10">
         <h2 className="text-xl font-medium tracking-tight">Build it with us</h2>

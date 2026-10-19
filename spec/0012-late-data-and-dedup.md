@@ -1,17 +1,18 @@
 ---
 number: 12
-title: Late data and dedup
+title: Late data and dedup on read
 area: Writing
 status: done
 updated: 2026-10-16
-related: [6, 15, 21, 22]
+versions: [0.5.0]
+related: [4, 19, 27, 30]
 issues: [38, 66, 106]
 ---
 
-# 12. Late data and dedup
+# 12. Late data and dedup on read
 
-**Done** · updated 2026-10-16
-· related: [spec 6](0006-table-contract.md), [spec 15](0015-maintenance.md), [spec 21](0021-rollups.md), [spec 22](0022-signal-aggregates.md)
+**Done** · updated 2026-10-16 · versions 0.5.0 · milestone: [Exact answers before compaction](milestones/exact-before-compaction.md)
+· related: [spec 4](0004-table-contract.md), [spec 19](0019-compaction.md), [spec 27](0027-rollups.md), [spec 30](0030-signal-aggregates.md)
 
 ## Summary
 
@@ -23,13 +24,13 @@ Late data is normal: it lands in its time partition and each commit records the 
 
 - **Late data is normal**, not an error. It is written to its correct time partition. Each commit records the **time ranges it touched** (per partition, optionally per series bucket) in the snapshot summary.
 - **Small-file control:** Late data scattered across old partitions creates small files. The compactor prioritizes partitions by *small-file count × query heat*.
-- **Rollup invalidation:** The rollup refresher diffs snapshots since its last processed snapshot and recomputes only the affected buckets ([spec 21](0021-rollups.md)). No separate change log is needed.
+- **Rollup invalidation:** The rollup refresher diffs snapshots since its last processed snapshot and recomputes only the affected buckets ([spec 27](0027-rollups.md)). No separate change log is needed.
 - **Duplicates and corrections:** IoT devices resend data. Per-table policy:
   - `append` (default for raw): Duplicates are removed at compaction and at read time by the Timelake reader, using `dedup_key` and keeping the latest `_ingest_ts`.
   - `upsert`: Same as `append`, but exposed as a first-class semantic for corrections.
 - **Trade-off:** Plain DuckDB may see duplicates in recently written, not-yet-compacted partitions. The Timelake DuckDB extension removes them on read. *Open question Q3 ([#106](https://github.com/polythings/timelake/issues/106)).*
 
-**Built so far (2026-10-16).** The key is `(series…, time)`. The latest write wins: the higher Iceberg data sequence number (commit order), and within one append the later row. An append keeps only the last of equal keys, so every file is free of duplicates on its own. The Timelake reader removes copies on read (*merge* below); compaction merges only runs of files next to each other in commit order, and a merged file keeps the newest data sequence number it replaces. The first version cost 1–4.6× on not-yet-compacted IIoT data ([spec 33](0033-iiot-benchmark.md)), because there nearly every file of a day overlaps every other; see the measurements below for where it stands now.
+**Built so far (2026-10-16).** The key is `(series…, time)`. The latest write wins: the higher Iceberg data sequence number (commit order), and within one append the later row. An append keeps only the last of equal keys, so every file is free of duplicates on its own. The Timelake reader removes copies on read (*merge* below); compaction merges only runs of files next to each other in commit order, and a merged file keeps the newest data sequence number it replaces. The first version cost 1–4.6× on not-yet-compacted IIoT data ([spec 45](0045-iiot-benchmark.md)), because there nearly every file of a day overlaps every other; see the measurements below for where it stands now.
 
 **Insertion time, `_ingest_ts` (built 2026-10-16, table format 0.3.0).**
 - Tables created with a time column get a `_ingest_ts` column (timestamp with time zone, µs, not null) unless created with `ingest_time = false` (`--no-ingest-time`). The table records it in `timelake.ingest-time-column`.
@@ -38,7 +39,7 @@ Late data is normal: it lands in its time partition and each commit records the 
 - Other engines can dedup with it: `QUALIFY row_number() OVER (PARTITION BY <series…>, <time> ORDER BY _ingest_ts DESC) = 1`. Arrival delay (`_ingest_ts - time`) measures store-and-forward lateness per row.
 - It costs little storage (one value per append, run-length encoded). Adding it needs table format 0.3.0: older Timelakes can't open such tables. Existing tables can't gain the column until schema evolution exists.
 
-**Dedup on read strategies** (setting `read-dedup-strategy`, [spec 25](0025-settings.md)):
+**Dedup on read strategies** (setting `read-dedup-strategy`, [spec 9](0009-settings.md)):
 - **merge** (built): files that may share a key are read with their commit rank, split by a hash of the key, merged in key order per slice, and the last row of each key kept. Only filters on key columns may apply before the merge, so filters on other columns can't prune those files.
 - **keys-first** (built 2026-10-16): pass 1 reads only the key columns (and `_ingest_ts` or the rank) of the files that may share keys, restricted by key filters, merges them and lists the older copies as `(file rank, key)`. Pass 2 is the normal parallel scan with every filter pushed down, anti-joined against that list. Pass 1 reads two or three columns instead of every projected one; pass 2 prunes as freely as a scan without dedup, because the list was built from all rows.
 - **Measured (2026-10-16, IIoT 50 machines × 9 days, before maintenance, laptop):** keys-first was slower on every query (1.3–6×; pass 2's anti-join probe costs more than merging the value columns), so merge is the default and keys-first stays a setting.
@@ -56,3 +57,4 @@ Late data is normal: it lands in its time partition and each commit records the 
 
 - 2026-10-16: dedup on read (merge and keys-first), `_ingest_ts`, cold-partition compaction built
 - 2026-10-19: moved from SPEC.md into its own spec.
+- 2026-10-19: specs regrouped one per feature, with milestones on the roadmap.

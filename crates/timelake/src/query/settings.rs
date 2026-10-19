@@ -1,7 +1,7 @@
 //! Timelake's session settings, under the `timelake.` prefix of DataFusion's configuration:
 //! `SET timelake.read_dedup = false` in SQL, `--set timelake.read_dedup=false` on the CLI. Every
 //! setting the registry allows at the session level can be set; a session setting overrides the
-//! table's property for that session (spec 25).
+//! table's property for that session (spec 9).
 
 use std::any::Any;
 use std::collections::BTreeMap;

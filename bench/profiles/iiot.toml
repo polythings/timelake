@@ -1,4 +1,4 @@
-# The industrial IoT workload (spec 33) on the benchmark instance, every Thursday: every system on the instance's
+# The industrial IoT workload (spec 45) on the benchmark instance, every Thursday: every system on the instance's
 # disk, the database servers in Docker (infra/servers.sh). By hand: `bench/infra/weekly.sh start <commit> iiot`.
 label = "iiot"
 runs = 2

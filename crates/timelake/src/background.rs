@@ -1,6 +1,6 @@
 //! Writes that finish after the call that started them returns. A commit is done once its
 //! metadata is written; updating the version hint and the head after that are only shortcuts for
-//! readers, so a commit doesn't wait for them (spec 27, P4).
+//! readers, so a commit doesn't wait for them (spec 2, P4).
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};

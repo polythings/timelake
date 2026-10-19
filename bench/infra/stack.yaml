@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  timelake-bench (spec 32): an S3 Standard bucket, an S3 Express One Zone bucket and an S3 Tables table bucket,
+  timelake-bench (spec 44): an S3 Standard bucket, an S3 Express One Zone bucket and an S3 Tables table bucket,
   plus (Instance=true) one benchmark instance in the same zone. Access via SSM only (no SSH, no inbound ports).
   The instance stops itself after AutoStopMinutes. Delete with bench/infra/down.sh. With GitHubSubject set (the
   weekly stack, bench/infra/weekly.sh), a role GitHub Actions of that repository's main branch can assume to start

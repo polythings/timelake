@@ -1,4 +1,4 @@
-//! Writing Timelake data files without I/O, shared by the engine and the WASM writer (spec 16):
+//! Writing Timelake data files without I/O, shared by the engine and the WASM writer (spec 13):
 //! the Parquet settings for time series, a file writer whose bytes the caller drains and uploads,
 //! and the Iceberg statistics of a written file, as iceberg-rust's writer computes them.
 //!
@@ -393,7 +393,7 @@ pub struct FileStats {
     pub upper_bounds: BTreeMap<i32, Vec<u8>>,
     /// Offsets of the row groups.
     pub split_offsets: Vec<i64>,
-    /// The footer, for readers that take footers from elsewhere (the head, spec 18).
+    /// The footer, for readers that take footers from elsewhere (the head, spec 7).
     pub metadata: Arc<ParquetMetaData>,
 }
 

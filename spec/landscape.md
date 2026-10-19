@@ -1,3 +1,8 @@
+---
+title: Landscape and positioning
+updated: 2026-10-15
+---
+
 # Landscape and positioning
 
 This section compares products. What we learned from them, and how we credit it, is in [PRIOR_ART.md](../PRIOR_ART.md).
@@ -31,7 +36,7 @@ This section compares products. What we learned from them, and how we credit it,
 **Also watch:** IceGate (Apache-2.0, Rust, prototype) is an OpenTelemetry observability lake on Iceberg + Parquet with a DataFusion engine and an object-store Parquet WAL. It shares our stack, not our use case; notes and ideas to adopt are in PRIOR_ART.md.
 
 ## Time-series databases (baselines, not lakes)
-TimescaleDB, InfluxDB 3, QuestDB, TDengine, GreptimeDB. They are fast and feature-rich, but they own the storage. Long retention is expensive, and the data is not an open table that other engines can read. They are the **performance and ergonomics bar** Timelake is measured against ([spec 32](0032-timebench.md)).
+TimescaleDB, InfluxDB 3, QuestDB, TDengine, GreptimeDB. They are fast and feature-rich, but they own the storage. Long retention is expensive, and the data is not an open table that other engines can read. They are the **performance and ergonomics bar** Timelake is measured against ([spec 44](0044-timebench.md)).
 
 **TimescaleDB on Tiger Cloud is the closest managed alternative.**
 - **Tiered storage** (`timescaledb_osm`) moves older chunks to S3, and they stay queryable through the database. It has to be enabled per service in the Console; it can't be enabled over SQL.
@@ -39,4 +44,4 @@ TimescaleDB, InfluxDB 3, QuestDB, TDengine, GreptimeDB. They are fast and featur
 
 Both keep the database as the entry point, which is the trade-off Timelake avoids. The benchmark of tiered storage was `bench/v0/tsdb_cloud.py` (in git history at `b99aae9`; results in `bench/results/TIMESCALE.md`).
 
-*All Timelake columns are design targets until measured by `timebench` ([spec 32](0032-timebench.md)).*
+*All Timelake columns are design targets until measured by `timebench` ([spec 44](0044-timebench.md)).*

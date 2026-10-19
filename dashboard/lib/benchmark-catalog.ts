@@ -1,6 +1,6 @@
 /**
- * Every benchmark we run, plan to run, or decided not to run, with how we run it (spec 32, spec 34). Keep in sync
- * with spec 32 (spec/0032-timebench.md). A benchmark with a `workload` has results from timebench (bench/timebench/workloads).
+ * Every benchmark we run, plan to run, or decided not to run, with how we run it (spec 44, spec 46). Keep in sync
+ * with spec 44 (spec/0044-timebench.md). A benchmark with a `workload` has results from timebench (bench/timebench/workloads).
  */
 
 export type Status = "running" | "planned" | "not planned"

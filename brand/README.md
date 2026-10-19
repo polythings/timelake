@@ -13,7 +13,7 @@ The source of truth for how Timelake looks and talks. The site, README, docs and
 - **Supporting row:** open format · any object store · Apache 2.0.
 - **Use:** time-series lakehouse, object store, series, open table format, nothing to run, maintains itself, latest value.
 - **Avoid:** serverless; "on Apache Iceberg" in headlines (Iceberg is named under "how it works" and in the docs); time-series store; private preview.
-- **Benchmarks are honest and in context** ([D21](../spec/0032-timebench.md)): every claim comes with its cost and scale, and we publish where Timelake is slower.
+- **Benchmarks are honest and in context** ([D21](../spec/0044-timebench.md)): every claim comes with its cost and scale, and we publish where Timelake is slower.
 
 ## Mark
 

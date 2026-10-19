@@ -1,6 +1,6 @@
 import { dotPaper } from "@/components/dot-paper"
 import { DotGrid, DotText } from "@/components/dots"
-import { COMING_UP, EXPLORING, NOW, type RoadmapItem } from "@/lib/roadmap"
+import { type Milestone, MILESTONES } from "@/lib/specs"
 import { cn } from "@/lib/utils"
 
 /** A number in the dot-matrix font, with what it measures under it. */
@@ -54,14 +54,22 @@ export function Waffle({
   )
 }
 
-const KINDS: { title: string; items: RoadmapItem[]; square: string }[] = [
-  { title: "Done", items: NOW.filter((i) => i.status === "done"), square: "bg-primary" },
-  { title: "Next", items: NOW.filter((i) => i.status === "next"), square: "border border-primary bg-primary/25" },
-  { title: "Coming up", items: COMING_UP, square: "bg-muted-foreground/45" },
-  { title: "Exploring", items: EXPLORING, square: "border border-dashed border-muted-foreground/60" },
+const KINDS: { title: string; items: Milestone[]; square: string }[] = [
+  { title: "Done", items: MILESTONES.filter((m) => m.status === "done"), square: "bg-primary" },
+  {
+    title: "In progress",
+    items: MILESTONES.filter((m) => m.status === "in-progress"),
+    square: "border border-primary bg-primary/25",
+  },
+  { title: "Planned", items: MILESTONES.filter((m) => m.status === "planned"), square: "bg-muted-foreground/45" },
+  {
+    title: "Exploring",
+    items: MILESTONES.filter((m) => m.status === "exploring"),
+    square: "border border-dashed border-muted-foreground/60",
+  },
 ]
 
-/** The roadmap as squares: one per item, filled as far as it has come. */
+/** The roadmap as squares: one per milestone, filled as far as it has come. */
 export function RoadmapDots() {
   return (
     <div className="cells">
@@ -73,7 +81,7 @@ export function RoadmapDots() {
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-2">
             {k.items.map((i) => (
-              <span key={i.title} className="flex items-center gap-2 text-sm" title={i.description}>
+              <span key={i.slug} className="flex items-center gap-2 text-sm" title={i.description}>
                 <span className={cn("size-2.5 shrink-0", k.square)} />
                 {i.title}
               </span>

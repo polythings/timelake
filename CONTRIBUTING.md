@@ -5,7 +5,8 @@ type checkers enforce the mechanical rules (see [Checks](#checks)). This guide c
 read.
 
 New here? Read [How it works](https://timelake.dev/docs/how-it-works) and the
-[Codebase tour](https://timelake.dev/docs/codebase) first. The [specs](spec/README.md) hold the design, one numbered spec per part, with its status.
+[Codebase tour](https://timelake.dev/docs/codebase) first. The [specs](spec/README.md) hold the design, one numbered spec per feature, with its status;
+milestones made of specs are the [roadmap](spec/milestones/README.md).
 
 Found a security problem? Don't open an issue: report it privately as [SECURITY.md](SECURITY.md) describes.
 

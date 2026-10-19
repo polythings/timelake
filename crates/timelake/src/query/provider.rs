@@ -62,7 +62,7 @@ pub(super) enum Kind {
 pub(crate) struct TimelakeProvider {
     table: Table,
     kind: Kind,
-    /// Rollup routing has dealt with this scan (spec 21).
+    /// Rollup routing has dealt with this scan (spec 27).
     routed: bool,
     /// Under a signal aggregate: how each series' rows come in time order ([`super::series_order`]).
     series_order: Option<Order>,

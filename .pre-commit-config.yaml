@@ -47,12 +47,12 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      # Specs: the index in spec/README.md and the website's list follow each spec's front matter.
+      # Specs: the indexes, the roadmap and the website's lists follow the specs' and milestones' front matter.
       - id: spec-index
         name: spec index
         entry: uv run --no-sync python scripts/spec_index.py --check
         language: system
-        files: ^(spec/|scripts/spec_index\.py|dashboard/lib/spec)
+        files: ^(spec/|scripts/spec_index\.py|dashboard/lib/(spec|milestones|background))
         pass_filenames: false
 
       # Python

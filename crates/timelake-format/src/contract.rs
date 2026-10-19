@@ -1,4 +1,4 @@
-//! The Timelake table contract (spec 6): which column is time, which columns identify a series,
+//! The Timelake table contract (spec 4): which column is time, which columns identify a series,
 //! and the layout/maintenance policy derived from them. Stored as `timelake.*` Iceberg table
 //! properties (see [`property`]), so the contract travels with the table and other
 //! engines simply ignore it.

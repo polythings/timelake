@@ -50,8 +50,8 @@
    | `avg-load` | 28 requests, 0.23 s | 32 requests, 0.42 s |
 
    - The extra requests are metadata.json, manifest list, and manifests per table. Locally (BASELINE) Iceberg was *faster* thanks to sorting; on object storage the metadata round trips eat that gain on the TSBS geomean: 0.413 s vs 0.328 s.
-   - → Supports caching metadata in `timelake-catalog` and server-side scan planning ([spec 4](../../spec/0004-catalog.md)): the reader should get its file list in **one** round trip, not 3+ per table.
-4. **"Latest value" is the most expensive IoT query on a lake.** `last-loc` downloads **~165 MB** (the full time/lat/long columns) on every engine, 0.4–0.7 s on the first run. TimescaleDB answers it in 2 ms. This is the strongest evidence yet for the **last-value index / hot store** ([spec 9](../../spec/0009-write-path.md), [spec 17](../../spec/0017-read-paths.md)).
+   - → Supports caching metadata in `timelake-catalog` and server-side scan planning ([spec 32](../../spec/0032-rest-catalog.md)): the reader should get its file list in **one** round trip, not 3+ per table.
+4. **"Latest value" is the most expensive IoT query on a lake.** `last-loc` downloads **~165 MB** (the full time/lat/long columns) on every engine, 0.4–0.7 s on the first run. TimescaleDB answers it in 2 ms. This is the strongest evidence yet for the **last-value index / hot store** ([spec 14](../../spec/0014-hot-tier.md), [spec 21](../../spec/0021-reader.md)).
 
 ## Per-query results
 Full per-query tables, including request counts:

@@ -1,4 +1,4 @@
-//! The head object's container (spec 18): a fixed header naming the table version and the
+//! The head object's container (spec 7): a fixed header naming the table version and the
 //! codec, then a format-neutral [`HeadDoc`] (string properties plus named Arrow tables) encoded by
 //! that codec. Shared by the engine, which writes heads, and the WebAssembly reader.
 //!

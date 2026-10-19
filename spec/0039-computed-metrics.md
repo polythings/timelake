@@ -1,17 +1,18 @@
 ---
 number: 39
 title: Computed metrics
-area: Services and planned features
+area: Services
 status: planned
 updated: 2026-10-13
-related: [21, 37, 38]
+versions: []
+related: [27, 37, 38]
 issues: [114]
 ---
 
 # 39. Computed metrics
 
-**Planned** · updated 2026-10-13
-· related: [spec 21](0021-rollups.md), [spec 37](0037-read-models.md), [spec 38](0038-data-to-events.md)
+**Planned** · updated 2026-10-13 · milestone: [Apps and dashboards](milestones/apps.md)
+· related: [spec 27](0027-rollups.md), [spec 37](0037-data-to-events.md), [spec 38](0038-read-models.md)
 
 ## Summary
 
@@ -40,3 +41,4 @@ Let users define a Python function and the result it produces, for example a com
 
 - 2026-10-13: planned for later (F4, SPEC.md §21.4)
 - 2026-10-19: moved from SPEC.md into its own spec.
+- 2026-10-19: specs regrouped one per feature, with milestones on the roadmap.

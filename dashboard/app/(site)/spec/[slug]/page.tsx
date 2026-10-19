@@ -8,14 +8,11 @@ import { SpecSidebar } from "@/components/spec/spec-sidebar"
 import { StatusBadge } from "@/components/spec/status-badge"
 import { REPO_URL } from "@/lib/site"
 import { SPEC_PAGES } from "@/lib/spec-pages"
-import { SPECS, specByNumber } from "@/lib/specs"
+import { BACKGROUND, milestoneBySlug, SPECS, specByNumber, versionsText } from "@/lib/specs"
 
 type Props = { params: Promise<{ slug: string }> }
 
-const LANDSCAPE = {
-  title: "Landscape and positioning",
-  summary: "Table formats, managed catalogs and time-series databases compared.",
-}
+const LINK = "underline underline-offset-4 hover:text-foreground"
 
 export function generateStaticParams() {
   return Object.keys(SPEC_PAGES).map((slug) => ({ slug }))
@@ -25,7 +22,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params
   const spec = SPECS.find((s) => s.slug === slug)
   if (spec) return { title: `${spec.number}. ${spec.title}`, description: spec.summary }
-  return slug === "landscape" ? { title: LANDSCAPE.title, description: LANDSCAPE.summary } : { title: "Specs" }
+  const page = BACKGROUND.find((b) => b.slug === slug)
+  return page ? { title: page.title, description: page.summary || undefined } : { title: "Specs" }
 }
 
 export default function SpecPage({ params }: Props) {
@@ -41,13 +39,14 @@ export default function SpecPage({ params }: Props) {
   )
 }
 
-/** The spec's header and its Markdown. */
+/** A spec's or background page's header and its Markdown. */
 async function SpecBody({ params }: Props) {
   const { slug } = await params
   const load = SPEC_PAGES[slug]
   if (!load) notFound()
   const { default: Content } = await load()
   const spec = SPECS.find((s) => s.slug === slug)
+  const page = BACKGROUND.find((b) => b.slug === slug)
   return (
     <div className="max-w-3xl min-w-0 flex-1 space-y-8">
       <header className="space-y-3">
@@ -72,27 +71,60 @@ async function SpecBody({ params }: Props) {
                 <ArrowUpRight className="size-3.5" />
               </a>
             </div>
-            {spec.related.length > 0 && (
-              <p className="text-sm text-muted-foreground">
-                Related:{" "}
-                {spec.related.map((n, i) => {
-                  const r = specByNumber(n)
+            <dl className="grid gap-x-4 gap-y-1 text-sm text-muted-foreground sm:grid-cols-[6rem_1fr]">
+              <dt className="font-medium text-foreground">Versions</dt>
+              <dd className="tabular-nums">
+                {spec.versions.length > 0 ? (
+                  <Link className={LINK} href="/docs/changelog">
+                    {versionsText(spec.versions)}
+                  </Link>
+                ) : (
+                  "Not released yet"
+                )}
+              </dd>
+              <dt className="font-medium text-foreground">Roadmap</dt>
+              <dd>
+                {spec.milestones.map((name, i) => {
+                  const m = milestoneBySlug(name)
                   return (
-                    r && (
-                      <span key={n}>
+                    m && (
+                      <span key={name}>
                         {i > 0 && ", "}
-                        <Link className="underline underline-offset-4 hover:text-foreground" href={`/spec/${r.slug}`}>
-                          {r.number}. {r.title}
+                        <Link className={LINK} href={`/roadmap/${m.slug}`}>
+                          {m.title}
                         </Link>
                       </span>
                     )
                   )
                 })}
-              </p>
-            )}
+              </dd>
+              {spec.related.length > 0 && (
+                <>
+                  <dt className="font-medium text-foreground">Related</dt>
+                  <dd>
+                    {spec.related.map((n, i) => {
+                      const r = specByNumber(n)
+                      return (
+                        r && (
+                          <span key={n}>
+                            {i > 0 && ", "}
+                            <Link className={LINK} href={`/spec/${r.slug}`}>
+                              {r.number}. {r.title}
+                            </Link>
+                          </span>
+                        )
+                      )
+                    })}
+                  </dd>
+                </>
+              )}
+            </dl>
           </>
         ) : (
-          <h1 className="text-3xl font-semibold tracking-tight">{LANDSCAPE.title}</h1>
+          <>
+            <p className="text-sm text-muted-foreground">Background</p>
+            <h1 className="text-3xl font-semibold tracking-tight">{page?.title}</h1>
+          </>
         )}
       </header>
       <article className="prose-docs min-w-0">

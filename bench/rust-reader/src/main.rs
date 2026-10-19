@@ -1,4 +1,4 @@
-//! Benchmark reader for spec 32: DataFusion over Parquet or Vortex, on local disk or S3 (RustFS via
+//! Benchmark reader for spec 44: DataFusion over Parquet or Vortex, on local disk or S3 (RustFS via
 //! tools/s3proxy). Invoked by run.py (engines `datafusion-rs*`): reads one query from stdin, runs it
 //! 1 + `--runs` times in this process, and prints one JSON line in run.py's worker format.
 //!

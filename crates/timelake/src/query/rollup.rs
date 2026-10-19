@@ -1,4 +1,4 @@
-//! Rollups in DataFusion terms (spec 21): a rollup's definition read from a planned `SELECT`,
+//! Rollups in DataFusion terms (spec 27): a rollup's definition read from a planned `SELECT`,
 //! the query that computes its buckets, and the expressions routing matches against it.
 
 use std::any::Any;

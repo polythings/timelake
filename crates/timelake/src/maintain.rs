@@ -1,5 +1,5 @@
 //! Maintenance: retention, compaction with dedup, and snapshot expiry with file cleanup. This
-//! replaces the "custom Glue jobs" (spec 15): appends run it inline as thresholds are crossed,
+//! replaces the "custom Glue jobs" (spec 20): appends run it inline as thresholds are crossed,
 //! or [`Table::maintain`] runs it as one stateless command.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -68,7 +68,7 @@ pub struct MaintainOptions {
     /// are rewritten whole once they have two small files, touched by the append or not: data
     /// stops arriving there, and one sorted, duplicate-free file reads fastest.
     pub cold_after: Option<Duration>,
-    /// Which of the table's rollups to bring up to date, after compaction (spec 21).
+    /// Which of the table's rollups to bring up to date, after compaction (spec 27).
     pub rollups: RollupRefresh,
 }
 
@@ -221,7 +221,7 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
 }
 
 /// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files, as
-/// streams (spec 15): memory is a few batches per file and the row group being written,
+/// streams (spec 19): memory is a few batches per file and the row group being written,
 /// however large the partition.
 async fn rewrite_partition(
     table: &Table,

@@ -1,17 +1,18 @@
 ---
 number: 41
 title: Device sync
-area: Services and planned features
+area: Services
 status: planned
 updated: 2026-10-13
-related: [42, 9]
+versions: []
+related: [14, 42]
 issues: [116, 117]
 ---
 
 # 41. Device sync
 
-**Planned** · updated 2026-10-13
-· related: [spec 42](0042-edge-gateway.md), [spec 9](0009-write-path.md)
+**Planned** · updated 2026-10-13 · milestone: [Edge and devices](milestones/edge.md)
+· related: [spec 14](0014-hot-tier.md), [spec 42](0042-edge-gateway.md)
 
 ## Summary
 
@@ -42,3 +43,4 @@ Devices write to local storage and Timelake moves the data to the lake behind th
 
 - 2026-10-13: planned (F6, SPEC.md §21.6)
 - 2026-10-19: moved from SPEC.md into its own spec.
+- 2026-10-19: specs regrouped one per feature, with milestones on the roadmap.

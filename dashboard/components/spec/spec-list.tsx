@@ -5,7 +5,7 @@ import { useState } from "react"
 
 import { StatusBadge } from "@/components/spec/status-badge"
 import { Button } from "@/components/ui/button"
-import { AREAS, SPECS, STATUS_LABEL, type SpecStatus } from "@/lib/specs"
+import { AREAS, SPECS, STATUS_LABEL, type SpecStatus, versionsText } from "@/lib/specs"
 
 const STATUSES = (Object.keys(STATUS_LABEL) as SpecStatus[]).filter((s) => SPECS.some((spec) => spec.status === s))
 
@@ -43,9 +43,11 @@ export function SpecList() {
                       <span className="block font-medium">{s.title}</span>
                       <span className="block text-sm text-muted-foreground">{s.summary}</span>
                     </span>
-                    <span className="flex items-start gap-3 sm:flex-col sm:items-end">
+                    <span className="flex flex-wrap items-start gap-x-3 gap-y-1 sm:flex-col sm:items-end">
                       <StatusBadge status={s.status} />
-                      <span className="text-xs text-muted-foreground tabular-nums">{s.updated}</span>
+                      {s.versions.length > 0 && (
+                        <span className="text-xs text-muted-foreground tabular-nums">{versionsText(s.versions)}</span>
+                      )}
                     </span>
                   </Link>
                 </li>

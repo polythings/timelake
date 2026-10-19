@@ -3,7 +3,7 @@
 //! in `timelake.*` properties, time partition math, and Iceberg bound decoding. With the `write`
 //! feature, also the write path: preparing rows, writing Parquet with Iceberg statistics,
 //! manifests and table metadata, and appending and committing over a [`host::Host`] that the
-//! caller implements (spec 16).
+//! caller implements (spec 13).
 //!
 //! ```
 //! use std::collections::HashMap;
@@ -117,7 +117,7 @@ pub mod property {
     pub const KEEP_SNAPSHOTS_UNTIL: &str = "timelake.keep-snapshots-until";
     /// The table format version (see [`crate::FORMAT_VERSION`]); absent means 0.1.0.
     pub const FORMAT_VERSION: &str = "timelake.format-version";
-    /// On a raw table: its rollups, comma-separated table names (spec 21).
+    /// On a raw table: its rollups, comma-separated table names (spec 27).
     pub const ROLLUPS: &str = "timelake.rollups";
     /// `false` to stop the Timelake reader answering queries on this table from its rollups.
     pub const ROLLUP_ROUTING: &str = "timelake.rollup-routing";

@@ -1,4 +1,4 @@
-//! Changing a table's settings after creation (`timelake alter`, spec 25).
+//! Changing a table's settings after creation (`timelake alter`, spec 9).
 
 use std::collections::HashMap;
 

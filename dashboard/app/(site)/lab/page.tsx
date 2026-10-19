@@ -365,7 +365,7 @@ async function Kit() {
       <Idea
         n="K4"
         title="Roadmap in squares"
-        note="Each roadmap item as a square, filled as far as it has come: done, next, coming up, exploring. Hover for the description."
+        note="Each milestone as a square, filled as far as it has come: done, in progress, planned, exploring. Hover for the description."
       >
         <RoadmapDots />
       </Idea>

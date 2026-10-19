@@ -1,4 +1,4 @@
-//! Timelake's own Iceberg commit layer (D13, spec 3), built on iceberg-rust's public spec types.
+//! Timelake's own Iceberg commit layer (D13, spec 2), built on iceberg-rust's public spec types.
 //!
 //! iceberg-rust 0.10 only exposes fast-append transactions; compaction and retention need
 //! "replace" and "delete" snapshots, and frequent appends need manifest merging so that planning a

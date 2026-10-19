@@ -1,6 +1,6 @@
 # Spike: are S3 request and byte counts stable enough for a regression gate?
 
-**Question ([spec 32](../../spec/0032-timebench.md)).** Request and byte counts don't depend on the machine's speed, so CI could catch
+**Question ([spec 44](../../spec/0044-timebench.md)).** Request and byte counts don't depend on the machine's speed, so CI could catch
 regressions on every push: an extra metadata read, a lost pruning step, a commit that writes more objects. That only
 works if identical runs give (nearly) identical counts.
 

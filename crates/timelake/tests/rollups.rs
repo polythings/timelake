@@ -1,4 +1,4 @@
-//! Materialized rollups end to end (spec 21): created from SQL, refreshed, and routed to,
+//! Materialized rollups end to end (spec 27): created from SQL, refreshed, and routed to,
 //! always giving the answer the raw table gives.
 
 #![allow(clippy::unwrap_used, reason = "test code")]

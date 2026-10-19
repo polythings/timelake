@@ -30,11 +30,11 @@ Methods we adopted or plan to, and implemented ourselves.
 |---|---|---|---|
 | Size-tiered compaction (D19) | [Apache Cassandra](https://cassandra.apache.org) (SizeTieredCompactionStrategy) | Apache-2.0 | `maintain.rs` |
 | Table layout readable with no catalog service (D17) | Iceberg's Hadoop catalog | Apache-2.0 | `lake.rs`; docs Architecture |
-| Stage on a branch, check, then publish (backfill, planned) | Iceberg branches (write-audit-publish) | Apache-2.0 | [spec 10](spec/0010-backfill.md) |
+| Stage on a branch, check, then publish (backfill, planned) | Iceberg branches (write-audit-publish) | Apache-2.0 | [spec 15](spec/0015-backfill.md) |
 | `quality` column (good / uncertain / bad) | OPC UA | Specification |  |
-| Tables of aggregates per time bucket, kept as data arrives (rollups) | [Apache Druid](https://druid.apache.org) (rollup) | Apache-2.0 | `rollup.rs`; [spec 21](spec/0021-rollups.md) |
-| Answering an aggregate query from a materialized aggregate that matches it | [Apache Calcite](https://calcite.apache.org) (materialized view rewriting) | Apache-2.0 | `query/route.rs`; [spec 21](spec/0021-rollups.md) |
-| A time window's first, smallest, largest and last points (`m4`) | [Apache IoTDB](https://iotdb.apache.org) (the time-window `M4` function) | Apache-2.0 | `query/m4.rs`; [spec 23](spec/0023-m4.md) |
+| Tables of aggregates per time bucket, kept as data arrives (rollups) | [Apache Druid](https://druid.apache.org) (rollup) | Apache-2.0 | `rollup.rs`; [spec 27](spec/0027-rollups.md) |
+| Answering an aggregate query from a materialized aggregate that matches it | [Apache Calcite](https://calcite.apache.org) (materialized view rewriting) | Apache-2.0 | `query/route.rs`; [spec 27](spec/0027-rollups.md) |
+| A time window's first, smallest, largest and last points (`m4`) | [Apache IoTDB](https://iotdb.apache.org) (the time-window `M4` function) | Apache-2.0 | `query/m4.rs`; [spec 31](spec/0031-m4.md) |
 | Splitting object-store reads into parallel requests of a few MiB | Durner, Leis, Neumann, "Exploiting Cloud Object Storage for High-Performance Analytics" (VLDB 2023) | Paper | `block_cache.rs` (`timelake_cache_request_bytes`); #65 |
 | How commit operations work (rewrite, row delta, branches, expiry) | [Iceberg Java](https://github.com/apache/iceberg), [iceberg-cpp](https://github.com/apache/iceberg-cpp), [iceberg-go](https://github.com/apache/iceberg-go) | Apache-2.0 | References to learn from and test oracles (D13, `spikes/iceberg-write`); our commit layer is our own code |
 
@@ -71,7 +71,7 @@ table's directory; multi-table atomicity is what the optional REST catalog (D2) 
 lost-acknowledgement case (a commit that landed but whose reply was lost gets applied again) is worth remembering for
 any commit path without a batch id.
 
-**Fresh data: a Parquet WAL on object storage.** This is [spec 9](spec/0009-write-path.md) mode B, working:
+**Fresh data: a Parquet WAL on object storage.** This is [spec 14](spec/0014-hot-tier.md) mode B, working:
 1. Ingest buffers for up to 200 ms, writes one Parquet segment per topic with `If-None-Match` under an increasing
    offset, and replies only once the segment is stored.
 2. A "shifter" turns segments into one Iceberg file per (tenant, day), commits, and records the committed offset.
@@ -82,7 +82,7 @@ any commit path without a batch id.
 columns such as `trace_id`, which aren't in the sort order.
 
 **Ideas to adopt:**
-- [ ] WAL rules for mode B ([spec 9](spec/0009-write-path.md)): delete segments by offset, never by age; size the kept margin to the longest
+- [ ] WAL rules for mode B ([spec 14](spec/0014-hot-tier.md)): delete segments by offset, never by age; size the kept margin to the longest
   query that may still be reading; a reader that meets a missing segment fails instead of returning fewer rows;
   recover offsets on restart with a search that still works across missing segments.
 - [ ] One WAL object per request across all series and tenants, read with fan-out: on S3 a write costs about 10× a

@@ -1,5 +1,5 @@
 //! Appending data, with inline auto-maintenance: the writer keeps the table healthy as it goes
-//! (spec 15), so no separate compaction job is needed.
+//! (spec 20), so no separate compaction job is needed.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

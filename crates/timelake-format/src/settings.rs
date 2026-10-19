@@ -1,4 +1,4 @@
-//! The registry of Timelake's settings (spec 25): every switch is declared once here, with its
+//! The registry of Timelake's settings (spec 9): every switch is declared once here, with its
 //! type, default, the levels it may be set at, and the version that added it. Table properties,
 //! SQL `SET`, the CLI's `timelake settings` and the docs all come from [`SETTINGS`].
 //!

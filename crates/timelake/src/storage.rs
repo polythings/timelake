@@ -83,7 +83,7 @@ pub const VERSION_LOOKUP_OPTION: &str = "timelake_version_lookup";
 /// about 20 ms on cold scans and nothing on point queries.
 pub const WARM_CONNECTIONS_OPTION: &str = "timelake_warm_connections";
 
-/// Storage option choosing the block cache (spec 19): `off`, `memory` (the default for object
+/// Storage option choosing the block cache (spec 22): `off`, `memory` (the default for object
 /// stores and HTTPS) or `disk` (memory and a directory shared by every process on the machine).
 pub const CACHE_OPTION: &str = "timelake_cache";
 /// Storage option: the disk cache's directory (default: `timelake` in the OS cache directory).
@@ -106,7 +106,7 @@ const DEFAULT_CACHE_REQUEST_BYTES: u64 = 1 << 20;
 
 /// How [`Storage::check_exists`] asks whether an object exists. A HEAD request is the cheapest
 /// on most stores; on some (Tigris) a HEAD of a missing key is slow while a LIST of its exact
-/// name is fast (spec 32).
+/// name is fast (spec 44).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FreshnessCheck {
     Head,
@@ -363,7 +363,7 @@ impl Storage {
     }
 
     /// Opens connections ahead of the requests that will follow, by sending small HEAD requests
-    /// for `uri` in the background (spec 18, P3). Does nothing on local stores.
+    /// for `uri` in the background (spec 7, P3). Does nothing on local stores.
     pub(crate) fn warm_up(&self, uri: &str) {
         let Ok(path) = self.path(uri) else { return };
         for _ in 0..self.warm_connections {
@@ -518,7 +518,7 @@ pub struct ListedObject {
 
 /// Uploads prepared now and sent later, all at once. A commit encodes its data files, manifests,
 /// manifest list and index first, then waits for one round of concurrent uploads instead of one
-/// round per stage (spec 27, P4). A large file's earlier parts are uploaded while it is written;
+/// round per stage (spec 2, P4). A large file's earlier parts are uploaded while it is written;
 /// only its last part waits here. Cheap to clone; clones share the queue.
 #[derive(Clone, Default)]
 pub(crate) struct Uploads(Arc<Mutex<Vec<Pending>>>);

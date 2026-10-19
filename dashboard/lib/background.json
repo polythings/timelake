@@ -1,0 +1,44 @@
+[
+  {
+    "slug": "architecture",
+    "title": "Architecture",
+    "updated": "2026-10-17",
+    "summary": "How the pieces fit: Parquet on object storage, Iceberg tables, Arrow in memory, DataFusion embedded as the engine. The components (core library, catalog, functions, reader, ingest, maintenance, CLI, Python, DuckDB extension) and which of them run where. No component is a mandatory always-on server."
+  },
+  {
+    "slug": "deployment-and-cost",
+    "title": "Deployment and cost model",
+    "updated": "2026-10-11",
+    "summary": "The minimum deployment is a bucket, a catalog and the library in the user's app, plus scheduled maintenance; no always-on Timelake server. Cost comes down through fewer, bigger files, rollups and tiered retention."
+  },
+  {
+    "slug": "engine",
+    "title": "Embedded engine: DataFusion",
+    "updated": "2026-10-12",
+    "summary": "Compaction, rollup refresh, ingest rules and the reader all run queries inside Timelake's own Rust processes, so Timelake embeds a query engine: Apache DataFusion, extended with table providers, optimizer rules and functions. DuckDB stays the main external SQL path; a DuckDB extension is planned."
+  },
+  {
+    "slug": "landscape",
+    "title": "Landscape and positioning",
+    "updated": "2026-10-15",
+    "summary": ""
+  },
+  {
+    "slug": "license",
+    "title": "License and open core",
+    "updated": "2026-10-12",
+    "summary": "Everything in this repository is Apache 2.0 (decided). What is open source and what could be premium (industrial historian connectors, a managed control plane, enterprise features) is a draft."
+  },
+  {
+    "slug": "purpose",
+    "title": "Purpose and requirements",
+    "updated": "2026-10-18",
+    "summary": "Timelake is an open-source, serverless time-series lake on Apache Iceberg: frequent small writes, late data, rollups and retention, with every byte readable by DuckDB, Spark, Trino or Snowflake. This page holds the vision, the requirements R1–R27 as stated, and the goals and non-goals the other specs refer to."
+  },
+  {
+    "slug": "releases",
+    "title": "Releases",
+    "updated": "2026-10-14",
+    "summary": "One version for every package, following Cargo's semver rules, cut by a script with a changelog section and a tag, and published by tag to crates.io, PyPI and npm with trusted publishing. Table format versions and `timelake upgrade` are a feature of their own ([spec 8](0008-format-versions.md))."
+  }
+]
