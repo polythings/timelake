@@ -335,7 +335,8 @@ pub static SETTINGS: &[Setting] = &[
         since: "0.7.0",
         description: "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) \
                       reads the newest time partition first and older ones only while they can still hold one of \
-                      the k newest rows.",
+                      the k newest rows. The same for the k newest buckets of a `GROUP BY time_bucket(…)` sorted by \
+                      the bucket, newest first.",
         check: boolean,
     },
     Setting {

@@ -35,6 +35,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Setting `newest-first` also covers the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket with a
+  limit: older time partitions are skipped once they can't hold a row of those buckets. TSBS DevOps
+  `groupby-orderby-limit`: 254 → 115 ms.
 - Appends to tables with many series extend the last-value index by merging it with the append's newest rows instead
   of sorting both: a 100,000-row append to a table of 1,000,000 series takes 171 ms instead of 264 ms.
 - Float columns are written with a dictionary, falling back to byte-stream-split once it outgrows its page, instead

@@ -15,3 +15,4 @@ builds, local disk, best of 7 runs of a fresh process (DataFusion from Python: b
 | Gap-filling window functions | 10 M generated rows, 1,000 partitions | `forward_fill` vs `last_value IGNORE NULLS`, `backward_fill` vs `first_value IGNORE NULLS` | 0.26 vs 3.58 s, 0.27 vs 0.37 s | built (P7: gap filling) |
 | Time in a state | IIoT `time-above-limit`, `uptime` | `lead()` window, signal aggregate of a condition | 334 → 191 ms, 33 → 31 ms, same answers | conditions as values (P7: time in a state) |
 | Last-value index per commit | 100k and 1M series, 100k-row appends | sort vs k-way merge of the indexes; ZSTD 3, ZSTD 1, LZ4, none | append 264 → 171 ms at 1M; codecs 50–78 ms | merge, ZSTD 3 (P10: extending the last-value index) |
+| Newest-first buckets | DevOps `groupby-orderby-limit`, IIoT newest rows | one or many output partitions, skipping old rows | 254 → 115 ms; rows 70 → 61 ms | many partitions for buckets, one for rows (P8: newest-first for the newest buckets) |

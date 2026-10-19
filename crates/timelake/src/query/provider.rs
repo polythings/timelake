@@ -36,7 +36,7 @@ use iceberg::spec::{Datum, PrimitiveLiteral};
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
-use super::newest::NewestFirstExec;
+use super::newest::{Newest, NewestFirstExec};
 use super::series_order::Order;
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
@@ -54,7 +54,7 @@ pub(super) enum Kind {
     Latest,
     /// The data files for `ORDER BY time DESC LIMIT k`: time partitions newest first, stopping once
     /// older ones can't hold any of the `k` newest rows ([`super::newest`]).
-    Newest(usize),
+    Newest(Newest),
 }
 
 /// A Timelake table at the version loaded during planning.
@@ -77,8 +77,8 @@ impl TimelakeProvider {
         Self { table, kind: Kind::Latest, routed: false, series_order: None }
     }
 
-    pub(super) fn newest(table: Table, k: usize) -> Self {
-        Self { table, kind: Kind::Newest(k), routed: false, series_order: None }
+    pub(super) fn newest(table: Table, newest: Newest) -> Self {
+        Self { table, kind: Kind::Newest(newest), routed: false, series_order: None }
     }
 
     /// This scan, marked as dealt with by rollup routing.
@@ -123,7 +123,7 @@ impl TimelakeProvider {
                 let files = table.files().await?;
                 scan_data(table, state, projection, filters, limit, files, self.series_order).await
             }
-            Kind::Newest(k) => scan_newest(table, state, projection, filters, k).await,
+            Kind::Newest(newest) => scan_newest(table, state, projection, filters, newest).await,
         }
     }
 }
@@ -227,28 +227,23 @@ async fn scan_newest(
     state: &dyn DfSession,
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
-    k: usize,
+    newest: Newest,
 ) -> DfResult<Arc<dyn ExecutionPlan>> {
     let files = table.files().await?;
-    let time = table.contract().time_column.as_ref().and_then(|t| table.metadata().current_schema().field_by_name(t));
-    let newest = |f: &LiveEntry| match time.and_then(|t| f.data_file.upper_bounds().get(&t.id)).map(Datum::literal) {
-        Some(PrimitiveLiteral::Long(t)) => *t,
-        _ => i64::MAX,
-    };
     let mut partitions: BTreeMap<Option<i32>, (i64, Vec<LiveEntry>)> = BTreeMap::new();
     for f in files {
         let entry = partitions.entry(crate::write::file_partition(&f.data_file)).or_insert((i64::MIN, vec![]));
-        entry.0 = entry.0.max(newest(&f));
+        entry.0 = entry.0.max(time_bounds(table, &f).1);
         entry.1.push(f);
     }
     let mut partitions: Vec<(i64, Vec<LiveEntry>)> = partitions.into_values().collect();
     partitions.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
     let mut waves = vec![];
-    for (newest, files) in partitions {
-        waves.push((scan_data(table, state, projection, filters, None, files, None).await?, newest));
+    for (last, files) in partitions {
+        waves.push((scan_data(table, state, projection, filters, None, files, None).await?, last));
     }
     let time = table.contract().time_column.clone().unwrap_or_default();
-    Ok(Arc::new(NewestFirstExec::try_new(waves, k, &time)?))
+    Ok(Arc::new(NewestFirstExec::try_new(waves, newest, &time)?))
 }
 
 /// Which of `files` could give a series' rows out of time order: they overlap another on the series

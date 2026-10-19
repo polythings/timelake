@@ -183,7 +183,7 @@
     "default": {
       "value": "true"
     },
-    "description": "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) reads the newest time partition first and older ones only while they can still hold one of the k newest rows.",
+    "description": "A query sorted by the time column, newest first, with a limit (`ORDER BY time DESC LIMIT k`) reads the newest time partition first and older ones only while they can still hold one of the k newest rows. The same for the k newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket, newest first.",
     "kind": "boolean",
     "levels": ["table", "session"],
     "name": "newest-first",

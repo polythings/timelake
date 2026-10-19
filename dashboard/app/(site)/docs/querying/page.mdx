@@ -99,7 +99,9 @@ Filters are evaluated against each file’s Iceberg column bounds before any dat
 
 A query sorted by time, newest first, with a limit (`ORDER BY time DESC LIMIT 100`) reads the newest time partition
 first and older ones only while they can still hold one of the rows asked for (setting `newest-first`). On 30 days of
-the industrial benchmark, the 100 newest readings before a past time took 38 ms instead of 298 ms.
+the industrial benchmark, the 100 newest readings before a past time took 38 ms instead of 298 ms. The newest buckets
+of a `GROUP BY time_bucket(…)` sorted by the bucket (`ORDER BY bucket DESC LIMIT 5`) work the same way: the
+TSBS DevOps query for the last five minutes' maximum took 115 ms instead of 254 ms.
 
 ### Windows over each series
 

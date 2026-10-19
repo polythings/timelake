@@ -3,6 +3,23 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: newest-first for the newest buckets (2026-10-19)
+
+`GROUP BY time_bucket(…) ORDER BY bucket DESC LIMIT k` (TSBS DevOps `groupby-orderby-limit`, the five newest
+minutes' maximum: TimescaleDB 19 ms, Timelake 254 ms) reads time partitions newest first and stops once k buckets
+start after an older partition's newest time. Release build, local disk, best of 7, same answers:
+
+| | Time |
+|---|---:|
+| Off | 254 ms |
+| First version: one output partition, so the aggregate above ran on one thread | 705 ms |
+| Each output partition reads its share of each time partition, what's seen shared | 135 ms |
+| … rows no newer than the k-th seen skipped before the bookkeeping | 115 ms |
+| IIoT 10 newest readings: before / several output partitions / one | 70 / 76 / 61 ms |
+
+Rows (`ORDER BY time DESC LIMIT k`) keep one output partition: the top-k above is cheap and several partitions
+measured 8% slower. What's left is reading the newest day whole: the file is sorted by series, not time.
+
 ## P10: extending the last-value index at a million series (2026-10-19)
 
 Each append rewrites the last-value index: the base index merged with the newest rows of the append, encoded and
