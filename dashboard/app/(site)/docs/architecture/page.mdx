@@ -65,8 +65,8 @@ So a cold “latest” query takes one round trip and a cold filtered scan two (
 ## Writer
 
 1. Align each batch to the table schema by column name, casting types.
-2. Sort by `(partition, series key…, time)`, keeping input order for ties, and split by partition.
-3. Write each partition (eight at a time) with ZSTD level 3, page-level statistics and page indexes, 1M-row row groups, byte-stream-split encoding for floats, delta encoding for the time column, and the sort order recorded in the file. Files roll over at the target size.
+2. Sort by `(partition, series key…, time)`, keeping input order for ties, and split by partition. An append larger than 1 GiB is sorted in groups of up to 1 GiB, which are then merged in that order, so no column grows past what one Arrow array holds (2 GiB of strings).
+3. Write each partition (eight at a time) with the codec the table's `write.parquet.compression-codec` names (ZSTD level 3 by default), page-level statistics and page indexes, 1M-row row groups, byte-stream-split encoding for floats, delta encoding for the time column, and the sort order recorded in the file. Files roll over at the target size.
 
 ## Last-value index
 
@@ -80,7 +80,7 @@ On each append, the newest row of every series in the new data is merged with th
 
 **Full (maintain).** A partition with at least two small files, or any file not in the table’s sort order, is rewritten. If it has an unsorted file or holds less than twice the target size, all its files are rewritten into sorted files; otherwise only runs of small files next to each other in commit order. Rows are merged in commit order and, with dedup on, the last row of each `(series key, time)` group wins. A merged file keeps the data sequence number of the newest file it replaces, so a file committed later still overrides its rows.
 
-**Streaming.** Every file Timelake writes is already sorted, so compaction merges its input files as streams: it reads a few thousand rows of each at a time, emits rows in order, drops older copies as they meet, and writes row groups as they fill. Memory depends on how many files are merged and their row groups, not on the size of the partition. Where one file's rows come before the next row of every other file, the whole run is taken at once instead of row by row. A file not in the table's sort order (written by another engine) is sorted on its own before the merge.
+**Streaming.** Every file Timelake writes is already sorted, so compaction merges its input files as streams: it reads a few thousand rows of each at a time, emits rows in order, drops older copies as they meet, and writes row groups as they fill. Memory depends on how many files are merged and their row groups, not on the size of the partition. Where one file's rows come before the next row of every other file, the whole run is taken at once instead of row by row: the run's end is found by probing 1, 2, 4… rows ahead, then searching, and the rows of each output batch are gathered from their files in one pass. Files that each hold every series (5-minute batches) alternate series by series, so most runs are a single row. A file not in the table's sort order (written by another engine) is sorted on its own before the merge.
 
 ## Snapshot expiry
 

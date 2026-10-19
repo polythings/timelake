@@ -12,14 +12,17 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 | Version | Change | Commit | Effect |
 | --- | --- | --- | --- |
-| Unreleased | Newest-first scans | | 100 newest readings before a past time, 30 days of IIoT: 298 → 38 ms |
-| Unreleased | Pruning with long `IN` lists | | `tag IN (<100 tags>)` over compacted IIoT readings: 54 → 31 ms on local disk |
-| Unreleased | Block cache requests of at most 1 MiB | | First queries on S3 (20 ms and 50 MiB/s per request, TSBS IoT): 126 → 115 ms geomean, 47% more requests |
-| Unreleased | Block cache fetches separate runs at once | | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
-| Unreleased | Filter pushdown on local files | | TSBS repeat queries on local disk 4–5% faster (geomean), selective group-bys up to 40%; off on object storage |
-| Unreleased | Columns encoded in parallel | | The same compaction 2.37 → 1.17 s; importing 11.7M rows 6.0 → 4.7 s |
-| Unreleased | Streaming compaction | | Full compaction of 72 hourly files (11.7M rows) into 3 days: 3.65 → 2.37 s, peak memory 1.95 → 0.53 GB |
-| Unreleased | Version check interval | | Queries within `version-check-interval` send no request: one round trip less per query (unit test) |
+| 0.7.0 | Rollups answer coarser queries | `ccc78d1` | Daily statistics per tag over 30 days of IIoT from a 1-minute rollup: 2.07 → 0.25 s |
+| 0.7.0 | Rollups computed from finer rollups | `6929b99` | A daily rollup created from a 1-minute one instead of the readings: 5.2 → 1.8 s |
+| 0.7.0 | Faster merge of files that alternate series | `6f4964c` | Two inputs of 10M rows that alternate series by series: 13.9 → 2.6 s (compaction, large appends) |
+| 0.7.0 | Newest-first scans | `724b5d6` | 100 newest readings before a past time, 30 days of IIoT: 298 → 38 ms |
+| 0.7.0 | Pruning with long `IN` lists | `eb7ecc9` | `tag IN (<100 tags>)` over compacted IIoT readings: 54 → 31 ms on local disk |
+| 0.7.0 | Block cache requests of at most 1 MiB | `f8c9b22` | First queries on S3 (20 ms and 50 MiB/s per request, TSBS IoT): 126 → 115 ms geomean, 47% more requests |
+| 0.7.0 | Block cache fetches separate runs at once | `780b874` | First queries on S3 (20 ms per request, TSBS IoT): 162 → 125 ms geomean; one truck's history 233 → 109 ms |
+| 0.7.0 | Filter pushdown on local files | `284d89c` | TSBS repeat queries on local disk 4–5% faster (geomean), selective group-bys up to 40%; off on object storage |
+| 0.6.0 | Columns encoded in parallel |  | The same compaction 2.37 → 1.17 s; importing 11.7M rows 6.0 → 4.7 s |
+| 0.6.0 | Streaming compaction |  | Full compaction of 72 hourly files (11.7M rows) into 3 days: 3.65 → 2.37 s, peak memory 1.95 → 0.53 GB |
+| 0.6.0 | Version check interval |  | Queries within `version-check-interval` send no request: one round trip less per query (unit test) |
 | 0.5.0 | Block cache | `69c6ca5` | Repeat queries on S3 (TSBS IoT): 54 → 16 ms, no requests; 16 clients 288 → 398 queries/s |
 | 0.3.0 | Footers in the head, cold loads in one round trip | `4e8a1fa` | First query on S3: `latest` 314 → 240 ms, a filtered scan of one truck 823 → 560 ms |
 | 0.3.0 | Table state in one object (the head) | `cbe7e3a` | First `latest` query on S3: 502 → 314 ms; on Tigris 868 → 318 ms |
@@ -27,39 +30,49 @@ Each version is a [tag on GitHub](https://github.com/polythings/timelake/tags): 
 
 From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 240 ms, and on Tigris from about 810 ms to 210 ms. 0.1.0 is the baseline for 0.2.0’s commit numbers.
 
-## Unreleased: newest-first scans
+## 0.7.0: rollups answer coarser queries and are computed from finer ones
+
+- **What changed:** a query whose bucket is a multiple of a rollup's (daily from a 1-minute rollup), or that groups by fewer of its columns, aggregates the rollup's buckets again instead of reading the raw data. A table's rollups are refreshed from the narrowest to the widest, each computed from a finer one where that is up to date.
+- **Measured** on 30 days of IIoT readings (1,000 tags) with a 1-minute rollup: daily statistics per tag 2.07 → 0.25 s, 6-hourly totals over all tags 1.10 → 0.11 s, hourly values of 20 tags 144 → 66 ms; creating a daily rollup 5.2 → 1.8 s. Answers equal the raw data's, up to the rounding of sums added in another order.
+
+## 0.7.0: faster merge of files that alternate series
+
+- **What changed:** compaction's merge (also used for appends larger than 1 GiB) gathers each output batch in one pass and finds where each run of rows ends by probing ahead (1, 2, 4… rows) before searching. Files that hold every series, such as 5-minute batches, alternate series by series, so most runs are one row.
+- **Measured:** two inputs of 10M rows that alternate: 13.9 → 2.6 s; of 400,000 rows: 532 → 124 ms. Compaction of hourly files with long runs is unchanged.
+
+## 0.7.0: newest-first scans
 
 - **What changed:** a query sorted by time, newest first, with a limit reads the newest time partition first, and older partitions only while they can still hold one of the rows it asks for. Setting `newest-first`.
 - **Measured** on a laptop: on 30 days of IIoT readings, the 100 newest before a past time 298 → 38 ms; on TSBS IoT (3 days), the 10 newest 102 → 80 ms on local disk and 392 → 320 ms on RustFS with 20 ms per request. Queries for one series' newest rows were already fast and stay the same.
 
-## Unreleased: pruning with long `IN` lists
+## 0.7.0: pruning with long `IN` lists
 
 - **What changed:** DataFusion skips row groups and pages with `IN` lists of up to 20 values only. For longer lists of literals, Timelake works out from the file footers which row groups and pages hold one of the values and has the scan read only those. Setting `in-list-pruning`, on by default.
 - **Measured** on the IIoT benchmark's readings, one day, local disk, best of 7: with compacted files, 100 tags 54 → 31 ms and 21 tags 53 → 26 ms; with the small files inline maintenance leaves, 21 tags 74 → 36 ms and 100 tags 93 → 88 ms (their pages each span hundreds of tags).
 - **Joins:** a join's runtime filter, the list of keys of the dimension rows that matched, is used the same way on object storage. IIoT `energy` (readings joined to 100 tags) on RustFS with 20 ms per request: 54 → 26 ms repeated, 204 → 183 ms first run. On local disk, where filters run while pages are decoded, the extra checks cost more than they saved on other queries (`daily-stats` 469 → 712 ms), so joins aren't pruned this way there.
 
-## Unreleased: block cache requests of at most 1 MiB
+## 0.7.0: block cache requests of at most 1 MiB
 
 - **What changed:** the block cache splits a long run of missing blocks into GETs of at most `timelake_cache_request_bytes` (default 1 MiB), fetched at once. Before, a run was one GET however long.
 - **Measured** on RustFS with 20 ms per request and each response limited to 50 MiB/s, as S3 streams one request at roughly 50–90 MiB/s: first queries 126 → 115 ms (geomean), the heaviest up to 16% faster, with 247 → 364 requests across the 17 queries. Without the rate limit the part size made no difference. Parts of 2 MiB gained 2%, 4 and 8 MiB nothing; 512 KiB gained another 4%, but each extra request may need a new connection, which costs more on S3 than here.
 
-## Unreleased: block cache fetches separate runs at once
+## 0.7.0: block cache fetches separate runs at once
 
 - **What changed:** a read that needs several runs of uncached blocks, such as three column chunks of a row group, sends their GETs together. Before, it waited for each before sending the next.
 - **Measured** on RustFS on the same laptop with 20 ms per request and 50 MiB/s per response, TSBS IoT standard, four runs each: first queries 162 → 125 ms (geomean), one truck's history 233 → 109 ms, its hourly averages 170 → 89 ms. Repeat queries, served from the cache, are unchanged.
 
-## Unreleased: filter pushdown on local files
+## 0.7.0: filter pushdown on local files
 
 - **What changed:** the setting `filter-pushdown` (`auto`, `true`, `false`). With it on, a scan decodes a row group's filter columns, evaluates the filters, and decodes the other columns only for rows that pass. `auto` turns it on for local files and off on object storage. Before, it was always off on plain scans.
 - **Measured** on a laptop, TSBS standard scale, each pair run twice. Local disk, repeat queries (geomean): IoT 10.7 → 10.2 ms, DevOps 16.4 → 15.6 ms. Selective group-bys gained 15–40%; queries whose filters keep most rows lost up to 20%.
 - **Object storage** (RustFS with 20 ms per request): each row group takes one more round trip, the filter columns first. First queries took 12–17% longer (geomean 125 → 147 ms at 50 MiB/s per request), and repeats from the cache 5–8% faster. So `auto` leaves it off there, and `true` turns it on for readers that mostly repeat queries.
 
-## Unreleased: columns encoded in parallel
+## 0.6.0: columns encoded in parallel
 
 - **What changed:** Timelake writes Parquet with its own writer, shared with the WebAssembly writer, instead of iceberg-rust's. Each row group's columns are encoded on threads of their own. The files are byte for byte the same, with the same statistics in Iceberg metadata (checked by a test).
 - **Measured** on the same laptop and data as streaming compaction below, three runs each: compaction 2.37 → 1.17 s; importing the 11.7M rows in one append 6.0 → 4.7 s (two runs each).
 
-## Unreleased: streaming compaction
+## 0.6.0: streaming compaction
 
 - **What changed:** compaction merges its input files as sorted streams instead of loading a whole partition, sorting it, and removing copies in memory. See [Compaction](/docs/architecture#compaction).
 - **Measured** on a laptop (M1 Pro, local disk): the TSBS IoT readings (11.7M rows, 3 days) appended in 72 hourly files, then `timelake maintain` rewrote each day into one file. Three runs each:
@@ -74,7 +87,7 @@ From 0.2.0 to 0.3.0, the first `latest` query on S3 went from about 510 ms to 24
 - Of the 2.37 s, reading and merging take 0.44 s; the rest is encoding the output on one thread.
 - **Tried:** read batches of 1,024 to 16,384 rows and reading 1 to 4 batches ahead: the same time, within noise in memory. Data pages of 32 KiB or 128 KiB instead of 1 MiB: barely less memory (347 and 365 MB for one day against 362 MB), so pages stay at 1 MiB.
 
-## Unreleased: version check interval
+## 0.6.0: version check interval
 
 - **What changed:** a reader that already has a table version checks for a newer one only after the setting `version-check-interval` (default 1 second, as before). Set it longer, per table or session, to skip the check on queries in between.
 - **Effect:** with the block cache warm, a repeat query on S3 made one request, the check; within the interval it makes none. In the unit test with 100 ms per request, a warm `latest` went from one round trip to none. Not measured on S3 yet: the benchmark’s repeat runs follow each other within a second, where the check was already skipped.

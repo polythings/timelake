@@ -9,7 +9,7 @@ export const metadata = { title: "Limitations" }
 - **No deletes.** Row-level deletes, the delete audit trail, and GDPR erasure are designed but not built. Retention drops whole partitions only.
 - **No schema evolution.** The schema is fixed at creation.
 - **Duplicates until compaction, outside Timelake.** The Timelake reader (CLI, Python, Rust) skips older copies of a row when reading; DuckDB, other Iceberg readers, and the TypeScript client see them until compaction removes them.
-- **Rollups are one level, from the raw table.** No rollups of rollups, percentiles, or time-weighted averages in a rollup, and a query is only routed to a rollup with the same bucket width and grouping. Rollups don't see deletes (there are none yet). See [Rollups](/docs/rollups#not-yet).
+- **Rollups don't store percentiles,** and have no calendar buckets (months) or filters in their definition. A query is answered from a rollup whose bucket width divides its own and whose grouping includes its own, only by Timelake's reader (not plain DuckDB). Rollups don't see deletes (there are none yet). See [Rollups](/docs/rollups#not-yet).
 - **Planning cache.** A process reuses a table version it loaded within the last second for query planning (its own commits are always visible).
 - **Replaced files linger.** Files removed by compaction are deleted when the snapshots that reference them expire: at least an hour later by default, and inline expiry waits until about 20 extra snapshots have piled up.
 - **Benchmarks are narrow.** One dataset (TSBS IoT). The AWS S3 runs were made from a laptop, so their latency includes the trip to the region; runs from inside AWS are next.
