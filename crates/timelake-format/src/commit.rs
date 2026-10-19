@@ -21,7 +21,7 @@ use crate::iceberg::{
     write_manifest_list,
 };
 use crate::metadata::NewSnapshot;
-use crate::rows::latest_per_series;
+use crate::rows::merge_latest;
 use crate::summary;
 use crate::table::{TableState, encode_index, hint_uri, metadata_uri};
 
@@ -350,7 +350,7 @@ async fn new_index<H: Host>(
             }
             let mut parts: Vec<RecordBatch> = base.last_values(host).await?.into_iter().collect();
             parts.push(latest.clone());
-            latest_per_series(&base.schema, &base.contract, &parts)?
+            merge_latest(&base.schema, &base.contract, &parts)?
         }
         Change::Append { latest: None, .. } | Change::Replace { .. } => return Ok(None),
         Change::Delete { lvi_cutoff, .. } => {

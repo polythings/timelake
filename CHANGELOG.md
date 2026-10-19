@@ -35,6 +35,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Appends to tables with many series extend the last-value index by merging it with the append's newest rows instead
+  of sorting both: a 100,000-row append to a table of 1,000,000 series takes 171 ms instead of 264 ms.
 - Float columns are written with a dictionary, falling back to byte-stream-split once it outgrows its page, instead
   of byte-stream-split alone (setting `float-encoding`). IIoT readings take a third of the space (5 days: 366 → 119
   MB) and TSBS DevOps scans run up to twice as fast (`high-cpu-all` 274 → 136 ms, 38% more space); random doubles cost

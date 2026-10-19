@@ -3,6 +3,25 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P10: extending the last-value index at a million series (2026-10-19)
+
+Each append rewrites the last-value index: the base index merged with the newest rows of the append, encoded and
+uploaded. Tables of 100,000 and 1,000,000 series, appends of 100,000 rows on random series (a stream writer's batch),
+local disk, release build:
+
+| | 100,000 series | 1,000,000 series |
+|---|---:|---:|
+| Append, a writer process (median of 20), before | 66 ms | 264 ms |
+| Merge of base and append (stable sort of both) | | 148 ms |
+| Merge as a k-way merge of the two sorted indexes | | 56 ms |
+| Append, after | 54 ms | 171 ms |
+| Encoding the index (ZSTD 3 / ZSTD 1 / LZ4 / none) | | 78 / 75 / 65 / 50 ms (9.1 / 9.1 / 13.3 / 25.1 MB) |
+
+Both inputs are sorted by the write order with one row per series, so the merge (compaction's, deduplicating on the
+series key) replaces the sort. Encoding costs about as much uncompressed, so ZSTD 3 stays. What remains grows with
+the number of series: at 10 M about 1.5 s a commit. Avoiding it needs a different format: small index deltas per
+commit, merged by readers and folded into the base now and then (SPEC P10, for discussion).
+
 ## P7: time in a state from the signal aggregates (2026-10-19)
 
 A condition is a value of 1 while true, so the IIoT window queries for time in a state are signal aggregates. Same

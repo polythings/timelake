@@ -310,6 +310,38 @@ pub fn latest_per_series(
     Ok(Some(last_per_group(&sorted, &contract.series_key)?))
 }
 
+/// Newest row per series among `parts`, each already the newest rows of something, one per series
+/// and sorted by the write order (as indexes are): merged, not sorted again, so extending an index
+/// of a million series by an append costs a pass over it. Later parts win ties, as in
+/// [`latest_per_series`].
+pub fn merge_latest(
+    schema: &SchemaRef,
+    contract: &Contract,
+    parts: &[RecordBatch],
+) -> WriteResult<Option<RecordBatch>> {
+    if contract.series_key.is_empty() || contract.time_column.is_none() {
+        return latest_per_series(schema, contract, parts);
+    }
+    let parts: Vec<&RecordBatch> = parts.iter().filter(|p| p.num_rows() > 0).collect();
+    let rows: usize = parts.iter().map(|p| p.num_rows()).sum();
+    if rows == 0 {
+        return Ok(None);
+    }
+    let order = contract.write_order();
+    let keys: Vec<&str> = order.iter().map(String::as_str).collect();
+    let mut merge = Merge::new(schema.clone(), &keys, contract.series_key.len(), parts.len(), rows)?;
+    let mut inputs: Vec<Option<RecordBatch>> = parts.into_iter().cloned().map(Some).collect();
+    let mut out = vec![];
+    loop {
+        match merge.step()? {
+            Step::Need(i) => merge.push(i, inputs[i].take())?,
+            Step::Output(batch) => out.push(batch),
+            Step::Done => break,
+        }
+    }
+    Ok(Some(concat_batches(schema, &out)?))
+}
+
 /// Newest row per series among partitions that [`sort_and_split`] returned: each is sorted by the
 /// write order, so its last row per series is its newest, and only those few rows are sorted to
 /// pick the newest across partitions. The same rows as [`latest_per_series`] of the partitions,
@@ -467,5 +499,44 @@ mod tests {
     fn empty_input() {
         let b = batch(&[], &[]);
         assert_eq!(last_per_group(&stable_sort(&b, &["k".into()]).unwrap(), &["k".into()]).unwrap().num_rows(), 0);
+    }
+
+    /// Merging indexes gives what sorting their rows gives: the newest per series, later parts
+    /// winning ties, late rows of a part losing to newer ones of another.
+    #[test]
+    fn merged_indexes_match_sorted_ones() {
+        use std::collections::HashMap;
+
+        use arrow_array::Float64Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("time", DataType::Int64, false),
+            Field::new("device", DataType::Utf8, true),
+            Field::new("value", DataType::Float64, true),
+        ]));
+        let props = HashMap::from([
+            (crate::property::TIME_COLUMN.to_string(), "time".to_string()),
+            (crate::property::SERIES_KEY.to_string(), "device".to_string()),
+        ]);
+        let contract = Contract::from_properties(&props).unwrap();
+        let part = |rows: &[(i64, Option<&str>, f64)]| {
+            let b = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(arrow_array::Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                    Arc::new(rows.iter().map(|r| r.1).collect::<StringArray>()),
+                    Arc::new(Float64Array::from_iter_values(rows.iter().map(|r| r.2))),
+                ],
+            )
+            .unwrap();
+            latest_per_series(&schema, &contract, &[b]).unwrap().unwrap()
+        };
+        let base = part(&[(5, Some("a"), 1.0), (7, Some("b"), 2.0), (1, None, 3.0), (9, Some("d"), 4.0)]);
+        let late = part(&[(4, Some("a"), 5.0), (7, Some("b"), 6.0), (2, None, 7.0), (3, Some("c"), 8.0)]);
+        let newer = part(&[(8, Some("a"), 9.0), (1, Some("e"), 10.0)]);
+        let parts = [base, late, newer];
+        let merged = merge_latest(&schema, &contract, &parts).unwrap().unwrap();
+        assert_eq!(merged, latest_per_series(&schema, &contract, &parts).unwrap().unwrap());
+        let values = merged.column(2).as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec();
+        assert_eq!(values, [7.0, 9.0, 6.0, 8.0, 4.0, 10.0]);
     }
 }

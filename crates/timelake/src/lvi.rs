@@ -71,7 +71,7 @@ pub(crate) async fn merged(base: &Table, delta: &RecordBatch) -> Result<Option<R
         parts.push(read(base, &uri).await?);
     }
     parts.push(delta.clone());
-    latest_per_series(&base.schema(), base.contract(), &parts)
+    Ok(timelake_format::rows::merge_latest(&base.schema(), base.contract(), &parts)?)
 }
 
 #[cfg(test)]
