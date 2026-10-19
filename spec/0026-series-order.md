@@ -21,7 +21,7 @@ contiguous stretch of time, and only the files that overlap merged in series ord
 
 ## Design
 
-- **Signal aggregates** ([spec 30](0030-signal-aggregates.md)) need it for correctness: no partition may have readings
+- **Signal and gap aggregates** ([spec 30](0030-signal-aggregates.md)) need it for correctness: no partition may have readings
   of a series inside another partition's run of it. Files that must be merged (copies with dedup on read; without,
   files that overlap on `(series…, time)` or aren't sorted) are merged in series order with every file of the time they
   span (closed under overlap; the dedup operator, keeping every row without dedup), and the files before and after

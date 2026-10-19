@@ -14,21 +14,17 @@
 //!
 //! Readings at the same time count as one, with the largest value.
 //!
-//! All share one state, a list of segments: runs of a group's readings in time order, each with
-//! its first and last reading, the values of the readings next to them, the times between, the
-//! area under the signal and the counter's growth. Segments that follow each other in time join
-//! exactly (the gap between them adds its area and growth), so partial results from different
-//! partitions, and a rollup's buckets, merge into the result over all readings. Segments that
-//! overlap in time don't: their readings would have to be interleaved, so the result is an error,
-//! and scans that could give such runs merge their files in series order first (setting
-//! `series-order`, [`super::series_order`]).
+//! All share one state, a list of segments: runs of a group's readings in time order
+//! ([`super::runs`]), each with its first and last reading, the values of the readings next to
+//! them, the times between, the area under the signal and the counter's growth. Segments that
+//! follow each other in time join exactly (the gap between them adds its area and growth).
 //!
 //! `time_weighted_state(time, value [, method])` returns the state, and each aggregate also takes
 //! a state (`[, method]` for the mean and the integral) and merges it. Rollups store the state.
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array, Int64Array, ListArray, StructArray};
+use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{ScalarValue, exec_err, plan_datafusion_err, plan_err};
@@ -36,10 +32,12 @@ use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{
-    Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, EmitTo, GroupsAccumulator, ScalarFunctionArgs,
-    ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, GroupsAccumulator, ScalarFunctionArgs, ScalarUDF,
+    ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::physical_expr::expressions::Literal;
+
+use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
 /// What an aggregate returns from a group's joined segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -220,7 +218,7 @@ impl AggregateUDFImpl for SignalAggregate {
     }
 
     fn accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn Accumulator>> {
-        Ok(Box::new(OneGroup { runs: Runs::default(), method: method_of(&args)?, output: self.output }))
+        Ok(Box::new(OneGroup::new(Signal { output: self.output, method: method_of(&args)? })))
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs<'_>) -> bool {
@@ -228,7 +226,7 @@ impl AggregateUDFImpl for SignalAggregate {
     }
 
     fn create_groups_accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn GroupsAccumulator>> {
-        Ok(Box::new(AllGroups { groups: vec![], method: method_of(&args)?, output: self.output }))
+        Ok(Box::new(AllGroups::new(Signal { output: self.output, method: method_of(&args)? })))
     }
 }
 
@@ -258,9 +256,7 @@ impl ScalarUDFImpl for OfState {
             ColumnarValue::values_to_arrays(&args.args)?.try_into().map_err(|_| plan_datafusion_err!("one state"))?;
         let mut groups = vec![Runs::default(); state.len()];
         for_each_segment(&state, |row, s| groups[row].0.push(s))?;
-        let values: Vec<Option<f64>> =
-            groups.iter().map(|r| r.value(self.output, self.method)).collect::<DfResult<_>>()?;
-        Ok(ColumnarValue::Array(Arc::new(Float64Array::from(values))))
+        Ok(ColumnarValue::Array(Signal { output: self.output, method: self.method }.results(groups.iter())?))
     }
 }
 
@@ -281,16 +277,26 @@ struct Segment {
     growth: f64,
 }
 
-impl Segment {
+impl Run for Segment {
+    type Reading = (i64, f64);
+    type How = Method;
+
     fn new(p: (i64, f64)) -> Self {
         Self { first: p, first_span: 0, second: p.1, last: p, last_span: 0, penultimate: p.1, area: 0.0, growth: 0.0 }
     }
 
-    fn one_time(&self) -> bool {
-        self.first.0 == self.last.0
+    fn time(p: &(i64, f64)) -> i64 {
+        p.0
     }
 
-    /// Adds reading `p`, at or after the last.
+    fn first_time(&self) -> i64 {
+        self.first.0
+    }
+
+    fn last_time(&self) -> i64 {
+        self.last.0
+    }
+
     fn push(&mut self, p: (i64, f64), method: Method) {
         if p.0 == self.last.0 {
             self.raise_last(p.1, method);
@@ -306,6 +312,41 @@ impl Segment {
         self.last_span = span;
         self.penultimate = self.last.1;
         self.last = p;
+    }
+
+    fn join(mut self, mut next: Segment, method: Method) -> Segment {
+        if next.first.0 == self.last.0 {
+            let v = self.last.1.max(next.first.1);
+            self.raise_last(v, method);
+            next.raise_first(v, method);
+            return Segment {
+                first: self.first,
+                first_span: if self.one_time() { next.first_span } else { self.first_span },
+                second: if self.one_time() { next.second } else { self.second },
+                last: next.last,
+                last_span: if next.one_time() { self.last_span } else { next.last_span },
+                penultimate: if next.one_time() { self.penultimate } else { next.penultimate },
+                area: self.area + next.area,
+                growth: self.growth + next.growth,
+            };
+        }
+        let gap = next.first.0 - self.last.0;
+        Segment {
+            first: self.first,
+            first_span: if self.one_time() { gap } else { self.first_span },
+            second: if self.one_time() { next.first.1 } else { self.second },
+            last: next.last,
+            last_span: if next.one_time() { gap } else { next.last_span },
+            penultimate: if next.one_time() { self.last.1 } else { next.penultimate },
+            area: self.area + method.area(self.last.1, next.first.1, gap) + next.area,
+            growth: self.growth + growth(self.last.1, next.first.1) + next.growth,
+        }
+    }
+}
+
+impl Segment {
+    fn one_time(&self) -> bool {
+        self.first.0 == self.last.0
     }
 
     /// The last reading's value becomes the larger of it and `v` (readings at one time count as
@@ -347,36 +388,6 @@ impl Segment {
         self.first.1 = new;
     }
 
-    /// `self` followed by `next`, which starts at or after `self`'s last reading.
-    fn join(mut self, mut next: Segment, method: Method) -> Segment {
-        if next.first.0 == self.last.0 {
-            let v = self.last.1.max(next.first.1);
-            self.raise_last(v, method);
-            next.raise_first(v, method);
-            return Segment {
-                first: self.first,
-                first_span: if self.one_time() { next.first_span } else { self.first_span },
-                second: if self.one_time() { next.second } else { self.second },
-                last: next.last,
-                last_span: if next.one_time() { self.last_span } else { next.last_span },
-                penultimate: if next.one_time() { self.penultimate } else { next.penultimate },
-                area: self.area + next.area,
-                growth: self.growth + next.growth,
-            };
-        }
-        let gap = next.first.0 - self.last.0;
-        Segment {
-            first: self.first,
-            first_span: if self.one_time() { gap } else { self.first_span },
-            second: if self.one_time() { next.first.1 } else { self.second },
-            last: next.last,
-            last_span: if next.one_time() { gap } else { next.last_span },
-            penultimate: if next.one_time() { self.last.1 } else { next.penultimate },
-            area: self.area + method.area(self.last.1, next.first.1, gap) + next.area,
-            growth: self.growth + growth(self.last.1, next.first.1) + next.growth,
-        }
-    }
-
     /// What `output` returns for this segment.
     fn value(&self, output: Output) -> Option<f64> {
         let span = self.last.0 - self.first.0;
@@ -389,51 +400,6 @@ impl Segment {
             Output::CounterRate => (span > 0).then(|| self.growth / seconds),
             Output::State => None,
         }
-    }
-}
-
-/// A group's segments so far, in arrival order: the run being extended is the last. (Keeping that
-/// run in place of the vector's pointer made the groups twice as large, and hourly means 40% slower.)
-#[derive(Clone, Debug, Default)]
-struct Runs(Vec<Segment>);
-
-impl Runs {
-    fn add(&mut self, p: (i64, f64), method: Method) {
-        match self.0.last_mut() {
-            Some(run) if p.0 >= run.last.0 => run.push(p, method),
-            _ => self.0.push(Segment::new(p)),
-        }
-    }
-
-    fn take(&mut self, input: AddInput, method: Method) {
-        match input {
-            AddInput::Reading(p) => self.add(p, method),
-            AddInput::Segment(s) => self.0.push(s),
-        }
-    }
-
-    /// All segments joined in time order, or an error if two overlap.
-    fn joined(&self, method: Method) -> DfResult<Option<Segment>> {
-        let mut runs = self.0.clone();
-        runs.sort_by(|a, b| a.first.0.cmp(&b.first.0).then(a.last.0.cmp(&b.last.0)));
-        let mut out: Option<Segment> = None;
-        for run in runs {
-            out = Some(match out {
-                None => run,
-                Some(prev) if run.first.0 < prev.last.0 => {
-                    return exec_err!(
-                        "a group's readings came in runs that overlap in time: group by the series key (each series \
-                         is one signal). With timelake.series_order = 'segments', files that overlap do this too"
-                    );
-                }
-                Some(prev) => prev.join(run, method),
-            });
-        }
-        Ok(out)
-    }
-
-    fn value(&self, output: Output, method: Method) -> DfResult<Option<f64>> {
-        Ok(self.joined(method)?.and_then(|s| s.value(output)))
     }
 }
 
@@ -486,7 +452,7 @@ fn for_each_reading(times: &ArrayRef, values: &ArrayRef, mut add: impl FnMut(usi
 
 /// The groups' segments as a state column: each group's runs as they came (joining them here
 /// could hide a run of another partition between them).
-fn states<'a>(groups: impl Iterator<Item = &'a Runs>) -> ListArray {
+fn states<'a>(groups: impl Iterator<Item = &'a Runs<Segment>>) -> ListArray {
     let (mut times, mut spans): ([Vec<i64>; 2], [Vec<i64>; 2]) = Default::default();
     let (mut values, mut optionals): ([Vec<f64>; 4], [Vec<Option<f64>>; 2]) = Default::default();
     let mut lengths = vec![];
@@ -518,124 +484,48 @@ fn states<'a>(groups: impl Iterator<Item = &'a Runs>) -> ListArray {
     ListArray::new(field, OffsetBuffer::from_lengths(lengths), Arc::new(segments), None)
 }
 
-/// Calls `add` for each row's input: readings `(time, value [, method])` or states
-/// `(segments [, method])`.
-fn add_input(columns: &[ArrayRef], mut add: impl FnMut(usize, AddInput)) -> DfResult<()> {
-    match columns {
-        [lists] | [lists, _] if matches!(lists.data_type(), DataType::List(_)) => {
-            for_each_segment(lists, |row, s| add(row, AddInput::Segment(s)))
-        }
-        [times, values] | [times, values, _] => {
-            for_each_reading(times, values, |row, p| add(row, AddInput::Reading(p)));
-            Ok(())
-        }
-        _ => exec_err!("expected (time, value [, method]) or segments"),
-    }
-}
-
-/// One row's input.
-#[derive(Clone, Copy)]
-enum AddInput {
-    Reading((i64, f64)),
-    Segment(Segment),
-}
-
-/// The result column for `groups`: the state, joined, or each group's value.
-fn results<'a>(groups: impl Iterator<Item = &'a Runs>, output: Output, method: Method) -> DfResult<ArrayRef> {
-    if output == Output::State {
-        let joined: Vec<Runs> =
-            groups.map(|r| Ok(Runs(r.joined(method)?.into_iter().collect()))).collect::<DfResult<_>>()?;
-        return Ok(Arc::new(states(joined.iter())));
-    }
-    let values: Vec<Option<f64>> = groups.map(|r| r.value(output, method)).collect::<DfResult<_>>()?;
-    Ok(Arc::new(Float64Array::from(values)))
-}
-
-/// One group (DataFusion's fallback, e.g. without `GROUP BY`).
+/// A signal aggregate's output by its method, as a run aggregate.
 #[derive(Debug)]
-struct OneGroup {
-    runs: Runs,
-    method: Method,
+struct Signal {
     output: Output,
-}
-
-impl Accumulator for OneGroup {
-    fn update_batch(&mut self, values: &[ArrayRef]) -> DfResult<()> {
-        let method = self.method;
-        add_input(values, |_, input| self.runs.take(input, method))
-    }
-
-    fn merge_batch(&mut self, states: &[ArrayRef]) -> DfResult<()> {
-        self.update_batch(states)
-    }
-
-    fn state(&mut self) -> DfResult<Vec<ScalarValue>> {
-        Ok(vec![ScalarValue::List(Arc::new(states(std::iter::once(&self.runs))))])
-    }
-
-    fn evaluate(&mut self) -> DfResult<ScalarValue> {
-        ScalarValue::try_from_array(&results(std::iter::once(&self.runs), self.output, self.method)?, 0)
-    }
-
-    fn size(&self) -> usize {
-        size_of_val(self) + self.runs.0.capacity() * size_of::<Segment>()
-    }
-}
-
-/// All groups at once, as DataFusion's grouped aggregation uses.
-#[derive(Debug)]
-struct AllGroups {
-    groups: Vec<Runs>,
     method: Method,
-    output: Output,
 }
 
-impl AllGroups {
-    fn add(&mut self, columns: &[ArrayRef], groups: &[usize], filter: Option<&BooleanArray>, n: usize) -> DfResult<()> {
-        self.groups.resize_with(n, Runs::default);
-        let (all, method) = (&mut self.groups, self.method);
-        add_input(columns, |row, input| {
-            if filter.is_none_or(|f| f.is_valid(row) && f.value(row)) {
-                all[groups[row]].take(input, method);
+impl RunAggregate for Signal {
+    type Run = Segment;
+
+    fn how(&self) -> Method {
+        self.method
+    }
+
+    /// Readings `(time, value [, method])` or states `(segments [, method])`.
+    fn inputs(&self, columns: &[ArrayRef], mut add: impl FnMut(usize, Input<Segment>)) -> DfResult<()> {
+        match columns {
+            [lists] | [lists, _] if matches!(lists.data_type(), DataType::List(_)) => {
+                for_each_segment(lists, |row, s| add(row, Input::Run(s)))
             }
-        })
-    }
-}
-
-impl GroupsAccumulator for AllGroups {
-    fn update_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
+            [times, values] | [times, values, _] => {
+                for_each_reading(times, values, |row, p| add(row, Input::Reading(p)));
+                Ok(())
+            }
+            _ => exec_err!("expected (time, value [, method]) or segments"),
+        }
     }
 
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
+    fn states<'a>(&self, groups: impl Iterator<Item = &'a Runs<Segment>>) -> ArrayRef {
+        Arc::new(states(groups))
     }
 
-    fn evaluate(&mut self, emit_to: EmitTo) -> DfResult<ArrayRef> {
-        let taken = emit_to.take_needed(&mut self.groups);
-        results(taken.iter(), self.output, self.method)
-    }
-
-    fn state(&mut self, emit_to: EmitTo) -> DfResult<Vec<ArrayRef>> {
-        let taken = emit_to.take_needed(&mut self.groups);
-        Ok(vec![Arc::new(states(taken.iter()))])
-    }
-
-    fn size(&self) -> usize {
-        self.groups.iter().map(|r| r.0.capacity() * size_of::<Segment>()).sum::<usize>()
-            + self.groups.capacity() * size_of::<Runs>()
+    /// The state, joined, or each group's value.
+    fn results<'a>(&self, groups: impl Iterator<Item = &'a Runs<Segment>>) -> DfResult<ArrayRef> {
+        if self.output == Output::State {
+            let joined: Vec<Runs<Segment>> =
+                groups.map(|r| Ok(Runs(r.joined(self.method)?.into_iter().collect()))).collect::<DfResult<_>>()?;
+            return Ok(Arc::new(states(joined.iter())));
+        }
+        let values: Vec<Option<f64>> =
+            groups.map(|r| Ok(r.joined(self.method)?.and_then(|s| s.value(self.output)))).collect::<DfResult<_>>()?;
+        Ok(Arc::new(Float64Array::from(values)))
     }
 }
 
@@ -645,17 +535,17 @@ mod tests {
 
     use super::*;
 
-    fn group(output: Output, method: Method) -> OneGroup {
-        OneGroup { runs: Runs::default(), method, output }
+    fn group(output: Output, method: Method) -> OneGroup<Signal> {
+        OneGroup::new(Signal { output, method })
     }
 
-    fn update(acc: &mut OneGroup, rows: &[(i64, f64)]) {
+    fn update(acc: &mut OneGroup<Signal>, rows: &[(i64, f64)]) {
         let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(rows.iter().map(|r| r.0).collect::<Vec<_>>()));
         let values: ArrayRef = Arc::new(Float64Array::from(rows.iter().map(|r| r.1).collect::<Vec<_>>()));
         acc.update_batch(&[times, values]).unwrap();
     }
 
-    fn value(acc: &mut OneGroup) -> Option<f64> {
+    fn value(acc: &mut OneGroup<Signal>) -> Option<f64> {
         match acc.evaluate().unwrap() {
             ScalarValue::Float64(v) => v,
             other => panic!("{other:?}"),

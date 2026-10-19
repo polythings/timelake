@@ -18,6 +18,7 @@
 mod catalog;
 mod dedup;
 mod gapfill;
+mod gaps;
 mod in_list;
 mod m4;
 mod newest;
@@ -25,6 +26,7 @@ mod provider;
 mod rewrite;
 mod rollup;
 mod route;
+mod runs;
 mod series_order;
 mod session;
 mod settings;

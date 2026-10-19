@@ -39,6 +39,22 @@ series key) replaces the sort. Encoding costs about as much uncompressed, so ZST
 the number of series: at 10 M about 1.5 s a commit. Avoiding it needs a different format: small index deltas per
 commit, merged by readers and folded into the base now and then ([spec 6](../../spec/0006-last-value-index.md), #119).
 
+## P7: gaps in the readings (2026-10-19)
+
+`gap_count(time, threshold)` and `gap_seconds(time, threshold)` are run aggregates like the signal aggregates, with a
+run of their own (first and last time, gaps and their length: 32 bytes). IIoT small, the benchmark's `gaps` query (100
+one-second pressure tags, gaps over 5 minutes), release build, best of 7 interleaved runs on a loaded machine (load
+15–100), same answers:
+
+| | `lead()` window | `gap_count`, `gap_seconds` |
+|---|---:|---:|
+| A day | 226 ms | 77 ms |
+| 30 days | 17.8 s | 1.36 s |
+
+The window form sorts or merges every reading and materializes `lead()` for each; the aggregates keep 32 bytes per
+group. The run code moved into a generic module shared with the signal aggregates; their cost is unchanged (hourly
+`time_weighted_mean` per tag over 30 days 3.58 → 3.50 s, all four 4.80 → 4.68 s, same interleaved runs).
+
 ## P7: time in a state from the signal aggregates (2026-10-19)
 
 A condition is a value of 1 while true, so the IIoT window queries for time in a state are signal aggregates. Same

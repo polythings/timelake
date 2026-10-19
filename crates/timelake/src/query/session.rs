@@ -106,6 +106,9 @@ impl Session {
         for output in super::signal::Output::ALL {
             ctx.register_udaf(super::signal::udaf(output));
         }
+        for output in super::gaps::Output::ALL {
+            ctx.register_udaf(super::gaps::udaf(output));
+        }
         Self { lake, ctx, catalog, routes }
     }
 

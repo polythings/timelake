@@ -15,7 +15,7 @@ related: [26, 27, 28, 31]
 
 ## Summary
 
-`time_weighted_mean`, `integral`, `counter_diff` and `counter_rate` over irregular readings, exact, as fast as `avg`. They share one mergeable state (runs of readings), which rollups store and several aggregates of one column compute once; a condition counts as 1 while true, for time in a state and uptime.
+`time_weighted_mean`, `integral`, `counter_diff` and `counter_rate` over irregular readings, exact, as fast as `avg`. They share one mergeable state (runs of readings), which rollups store and several aggregates of one column compute once; a condition counts as 1 while true, for time in a state and uptime. `gap_count` and `gap_seconds`, how often and how long readings stopped, are run aggregates of the same kind.
 
 ## Design
 
@@ -45,6 +45,16 @@ reading).
   each result from it in a projection (`integral_of_state(state)`); setting `shared-signal-state`. Against the window form of the IIoT queries over 30 days: energy
   per machine (`lag`) 1.66 → 1.09 s, time-weighted means of a line's temperatures (`lead`) 166 → 87 ms.
 
+- **Gaps** (built 2026-10-19, #123): `gap_count(time, threshold)` and `gap_seconds(time, threshold)`, how many times
+  and for how long in all a group's readings stopped for longer than `threshold` (an interval literal without months).
+  A gap is the time from a reading to the next; silences before the first reading or after the last aren't gaps.
+  Their run is a reading time's first and last, the gaps so far and their length (32 bytes, a run of its own rather
+  than fields added to the signal segment, which cost 6% before); `gap_state` returns the state. The run code is
+  generic (`query/runs.rs`: a `Run` trait, the runs of a group and the accumulators), shared with the signal
+  aggregates at no cost (hourly means 3.58 → 3.50 s, all four 4.80 → 4.68 s, interleaved runs on a loaded machine).
+  IIoT gaps of 100 one-second tags, same answers as the benchmark's `lead()` window form: a day 226 → 77 ms, 30 days
+  17.8 → 1.36 s. Rollups don't store the gap state yet.
+
 ## Open questions and issues
 
 None open.
@@ -55,3 +65,4 @@ None open.
 - 2026-10-19: `integral`, `counter_diff`, `counter_rate`, conditions, shared state, scans in stretches of time
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 22; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-19: `gap_count` and `gap_seconds`, on run code shared with the signal aggregates.

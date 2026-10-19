@@ -27,6 +27,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Gap filling: the table function `time_buckets(width, start, end [, origin])`, every bucket of a range to join
   readings against, and the window functions `forward_fill` (`ffill`), `backward_fill` (`bfill`) and
   `interpolate(x [, t])`. `forward_fill` over 10 M rows takes 0.26 s; `last_value(x) IGNORE NULLS` 3.6 s.
+- Aggregates `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how many times a series' readings
+  stopped for longer than `threshold` (an interval, such as `INTERVAL '5 minutes'`), and how long those gaps lasted in
+  all, exact over each group's first to last reading. The gaps of 100 one-second tags: a day 226 → 77 ms, 30 days
+  17.8 → 1.4 s against the same query written with `lead()`.
 - Setting `window-series-order` (`auto`, `true`, `false`): a window over each series in time order
   (`lead(…) OVER (PARTITION BY <series key> ORDER BY time)`) reads the files merged in series order, so they are
   neither redistributed nor sorted. `auto` does so when the files are in one time partition: IIoT `gaps` 260 → 215 ms,

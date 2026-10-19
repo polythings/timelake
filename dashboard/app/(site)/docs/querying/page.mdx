@@ -65,6 +65,21 @@ FROM iot.readings WHERE time >= now() - INTERVAL '1 day' GROUP BY 1
 On the industrial benchmark, the seconds each of 100 pressure tags spent above its limit over a day took 191 ms this
 way and 334 ms as the usual `lead()` window query, with the same answers.
 
+### Gaps in the readings
+
+`gap_count(time, threshold)` counts the times a series stopped reporting for longer than `threshold`, an interval
+(a sensor or gateway down), and `gap_seconds(time, threshold)` adds up how long those gaps lasted:
+
+```sql
+SELECT tag, gap_count(time, INTERVAL '5 minutes') AS gaps, gap_seconds(time, INTERVAL '5 minutes') AS gap_seconds
+FROM iot.readings WHERE time >= now() - INTERVAL '1 day' GROUP BY tag
+```
+
+A gap is the time from one reading to the next. Like the aggregates above, they cover the group's first to last
+reading, so a silence before the first reading or after the last isn't counted, and they read each series in time
+order the same way. On the industrial benchmark, the gaps of 100 one-second tags took 77 ms over a day and 1.4 s over
+30 days, against 226 ms and 17.8 s as a `lead()` window query, with the same answers.
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is

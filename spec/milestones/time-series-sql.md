@@ -16,8 +16,8 @@ specs: [27, 28, 29, 30, 31, 26]
 
 The queries time-series users write every day, exact and fast: rollups kept up to date and used automatically,
 time-weighted means and integrals of irregular readings, counters across resets, time in a state, downsampling with
-`m4`, and gap filling. Built so far: everything but the planned functions of the library (quantiles, ASOF, `gaps`
-and the rest, [spec 28](../0028-function-library.md)) and percentiles in rollups.
+`m4`, gap filling, and gaps in the readings. Built so far: everything but the planned functions of the library
+(quantiles, ASOF and the rest, [spec 28](../0028-function-library.md)) and percentiles in rollups.
 
 <!-- specs:start -->
 

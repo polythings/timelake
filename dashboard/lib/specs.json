@@ -358,9 +358,9 @@
     "status": "in-progress",
     "updated": "2026-10-19",
     "versions": ["0.1.0", "0.7.0", "unreleased"],
-    "summary": "Time-series SQL functions with descriptive names and pandas aliases: bucketing, gap filling, selection, statistics, quantiles, changes, time-weighted aggregates, downsampling, rolling windows. Functions with a design of their own have their own spec; the rest are listed here with their issues. Built so far: `time_bucket`, `time_buckets`, the fills, the signal aggregates and `m4`.",
+    "summary": "Time-series SQL functions with descriptive names and pandas aliases: bucketing, gap filling, selection, statistics, quantiles, changes, time-weighted aggregates, downsampling, rolling windows. Functions with a design of their own have their own spec; the rest are listed here with their issues. Built so far: `time_bucket`, `time_buckets`, the fills, the signal aggregates, the gap aggregates and `m4`.",
     "related": [29, 30, 31, 33],
-    "issues": [123, 124, 125, 126, 127],
+    "issues": [124, 125, 126, 127],
     "milestones": ["time-series-sql"]
   },
   {
@@ -384,7 +384,7 @@
     "status": "done",
     "updated": "2026-10-19",
     "versions": ["0.7.0", "unreleased"],
-    "summary": "`time_weighted_mean`, `integral`, `counter_diff` and `counter_rate` over irregular readings, exact, as fast as `avg`. They share one mergeable state (runs of readings), which rollups store and several aggregates of one column compute once; a condition counts as 1 while true, for time in a state and uptime.",
+    "summary": "`time_weighted_mean`, `integral`, `counter_diff` and `counter_rate` over irregular readings, exact, as fast as `avg`. They share one mergeable state (runs of readings), which rollups store and several aggregates of one column compute once; a condition counts as 1 while true, for time in a state and uptime. `gap_count` and `gap_seconds`, how often and how long readings stopped, are run aggregates of the same kind.",
     "related": [26, 27, 28, 31],
     "issues": [],
     "milestones": ["time-series-sql"]

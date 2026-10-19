@@ -1,5 +1,5 @@
-//! Series order for the signal aggregates (`time_weighted_mean`, `integral`, `counter_diff`,
-//! `counter_rate`). Each partition sums its runs of a series' readings, and the runs of all
+//! Series order for the run aggregates ([`super::runs`]: `time_weighted_mean`, `integral`,
+//! `counter_diff`, `counter_rate`, `gap_count`, `gap_seconds`). Each partition sums its runs of a series' readings, and the runs of all
 //! partitions are joined in time order: exact when no partition has readings of the series inside
 //! another's run. A scan under a signal aggregate gives that:
 //! - files that must be merged (copies to remove with dedup on read; without, files that overlap
@@ -29,14 +29,14 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::{provider_as_source, source_as_provider};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::logical_expr::expr::{AggregateFunction, Sort};
+use datafusion::logical_expr::expr::Sort;
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::Expr;
 
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::unalias;
+use super::runs::over_readings;
 use super::settings::SessionSettings;
-use super::signal::Output;
 use crate::property;
 
 /// How a scan under a signal aggregate reads each series in time order (setting `series-order`).
@@ -81,7 +81,7 @@ impl OptimizerRule for SeriesOrder {
         let windows_session = settings.and_then(|s| s.get(property::WINDOW_SERIES_ORDER)).map(str::to_ascii_lowercase);
         plan.transform_down(|node| {
             let wants: Box<Wants> = match &node {
-                LogicalPlan::Aggregate(a) if a.aggr_expr.iter().any(over_readings) => {
+                LogicalPlan::Aggregate(a) if a.aggr_expr.iter().any(|e| over_readings(e, a.input.schema())) => {
                     Box::new(move |p| Some(session.unwrap_or_else(|| Order::parse(&p.table().contract().series_order))))
                 }
                 LogicalPlan::Window(w) => {
@@ -144,14 +144,6 @@ fn series_window(e: &Expr) -> Option<(HashSet<String>, String)> {
         _ => return None,
     };
     Some((by.collect::<Option<_>>()?, order))
-}
-
-/// Whether `e` is a signal aggregate over readings `(time, value [, method])`, not over states
-/// (whose segments say where they are in time).
-fn over_readings(e: &Expr) -> bool {
-    let Expr::AggregateFunction(AggregateFunction { func, params }) = unalias(e) else { return false };
-    Output::of(func.name()).is_some()
-        && matches!(params.args.as_slice(), [_, value, ..] if !matches!(value, Expr::Literal(..)))
 }
 
 #[cfg(test)]
