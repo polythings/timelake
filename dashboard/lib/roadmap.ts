@@ -21,6 +21,12 @@ export const NOW: RoadmapItem[] = [
     status: "next",
   },
   {
+    title: "Gap filling",
+    description:
+      "Every bucket of a time range to join readings against, and window functions that fill empty ones forward, backward, or along a line.",
+    status: "done",
+  },
+  {
     title: "Time-weighted averages and counters",
     description:
       "Means and integrals of irregular readings, each weighted by how long it held, and counters across resets. Exact, from raw data or rollups.",

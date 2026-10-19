@@ -3,6 +3,20 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P7: gap filling (2026-10-19)
+
+`forward_fill`, `backward_fill` and `interpolate` are window functions that compute a partition's results at once
+(the indices of the last or next value that isn't null, then one `take`). 10 M rows, 1,000 partitions, a third null,
+release build, best of 7, same answers as the built-in forms:
+
+| | Time |
+|---|---:|
+| `forward_fill(x)` | 256 ms |
+| `last_value(x) IGNORE NULLS` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | 3,581 ms |
+| `backward_fill(x)` | 267 ms |
+| `first_value(x) IGNORE NULLS` over `ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING` | 374 ms |
+| `interpolate(x, t)` | 264 ms |
+
 ## P8: float encoding (2026-10-19)
 
 Plain DataFusion read the TSBS DevOps reference Parquet (dictionary floats, arrival order) 3–5× faster than Timelake's

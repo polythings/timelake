@@ -51,6 +51,32 @@ dedup on read, together with the other files of the time they span (setting `ser
 all four take 2.1 s in the example above, not 3.5 s. [Rollups](/docs/rollups) store the runs and answer wider
 buckets from them.
 
+## Gap filling
+
+`GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is
+a table of every bucket in a range, aligned like `time_bucket`, to join the readings against; `start` and `end` can
+be expressions such as `now() - INTERVAL '1 day'`. Window functions then fill the empty buckets:
+
+| Function | Fills a null with |
+|---|---|
+| `forward_fill(x)` (`ffill`) | the last value before it |
+| `backward_fill(x)` (`bfill`) | the next value after it |
+| `interpolate(x)` | a straight line between the values before and after it, by row |
+| `interpolate(x, t)` | the same by time `t` |
+
+```sql
+SELECT b.bucket,
+       h.temp,                                                 -- null where the hour had no readings
+       forward_fill(h.temp) OVER (ORDER BY b.bucket) AS temp_filled,
+       interpolate(h.temp, b.bucket) OVER (ORDER BY b.bucket) AS temp_line
+FROM time_buckets(INTERVAL '1 hour', now() - INTERVAL '1 day', now()) b
+LEFT JOIN (SELECT time_bucket(INTERVAL '1 hour', time) AS bucket, avg(temp) AS temp
+           FROM iot.readings WHERE device_id = 'pump-7' GROUP BY 1) h ON h.bucket = b.bucket
+```
+
+Rows before the first value (and, for `backward_fill` and `interpolate`, after the last) stay null. `forward_fill` is
+DataFusion's `last_value(x) IGNORE NULLS` over the rows so far, 14 times faster (10 M rows: 0.26 s against 3.6 s).
+
 ## What the reader accelerates
 
 ### Time and series filters

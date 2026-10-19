@@ -766,8 +766,8 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 
 | Category | Functions (pandas alias in brackets, where it differs) |
 |----------|-----------|
-| Bucketing | `time_bucket` (with origin, offset, timezone, months); `time_buckets`, every bucket in a range, including empty ones, to join against (`date_range`) |
-| Gap filling | `forward_fill` (`ffill`), `backward_fill` (`bfill`), `interpolate` (linear or by time) |
+| Bucketing | `time_bucket` (with origin, offset, timezone, months); `time_buckets(width, start, end [, origin])`, every bucket in a range, including empty ones, to join against (`date_range`; built 2026-10-19, fixed widths) |
+| Gap filling | `forward_fill` (`ffill`), `backward_fill` (`bfill`), `interpolate` (linear or by time); built 2026-10-19 as window functions over a partition at once: `forward_fill` over 10 M rows 0.26 s against DataFusion's `last_value(x) IGNORE NULLS` 3.6 s, `backward_fill` 0.27 s against `first_value(x) IGNORE NULLS` 0.37 s |
 | Selection | `first`, `last`, `value_at`, the latest value at or before a time (`asof`); ASOF JOIN |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` |
 | Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) |

@@ -17,6 +17,7 @@
 
 mod catalog;
 mod dedup;
+mod gapfill;
 mod in_list;
 mod m4;
 mod newest;
