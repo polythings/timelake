@@ -1,4 +1,4 @@
-//! Gap filling (SPEC §11.2): `time_buckets`, a table of every bucket in a range to join readings
+//! Gap filling (spec 24): `time_buckets`, a table of every bucket in a range to join readings
 //! against, so empty buckets get a row, and window functions that fill the gaps:
 //! - `forward_fill(x)` (pandas' `ffill`): the last value that isn't null, at or before the row;
 //! - `backward_fill(x)` (`bfill`): the next value that isn't null, at or after the row;

@@ -1,4 +1,4 @@
-//! The block cache end to end (SPEC §19.3): the same answers with it on, through appends,
+//! The block cache end to end (spec 19): the same answers with it on, through appends,
 //! compaction and expiry, from memory and from a disk cache another lake (process) filled.
 
 #![allow(clippy::unwrap_used, reason = "test code")]

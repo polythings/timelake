@@ -32,7 +32,7 @@ pub struct Table {
 }
 
 /// Resolves to whether a newer version than the table's exists. Started when the table is loaded
-/// and awaited before its data is read, so the request overlaps planning (SPEC §19.2).
+/// and awaited before its data is read, so the request overlaps planning (spec 18).
 pub(crate) type FreshnessCheck = Shared<BoxFuture<'static, Result<bool, Arc<Error>>>>;
 
 /// A manifest entry of a data file, with inherited snapshot id and sequence numbers resolved.

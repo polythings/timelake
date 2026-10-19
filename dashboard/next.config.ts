@@ -1,4 +1,5 @@
 import { createRequire } from "node:module"
+import { fileURLToPath } from "node:url"
 
 import createMDX from "@next/mdx"
 import type { NextConfig } from "next"
@@ -34,10 +35,12 @@ const nextConfig: NextConfig = {
 // Plugins are passed as absolute paths: the loader resolves names next to each file, and CHANGELOG.md (rendered at
 // /docs/changelog) sits outside dashboard/.
 const plugin = createRequire(import.meta.url).resolve
+// Spec pages (spec/*.md at /spec): front matter parsed, not shown; links rewritten for the site.
+const SPEC_LINKS = new URL("./lib/remark-spec.mjs", import.meta.url)
 const withMDX = createMDX({
   extension: /\.mdx?$/,
   options: {
-    remarkPlugins: [plugin("remark-gfm")],
+    remarkPlugins: [plugin("remark-gfm"), [plugin("remark-frontmatter"), ["yaml"]], fileURLToPath(SPEC_LINKS)],
     rehypePlugins: [
       plugin("rehype-slug"),
       [plugin("rehype-autolink-headings"), { behavior: "wrap" }],

@@ -1,5 +1,5 @@
 //! Maintenance for the shared write path (the WASM writer): retention, compaction by streaming
-//! merge (SPEC §10.1), and snapshot expiry with file cleanup, as the engine's `maintain` does them.
+//! merge (spec 15), and snapshot expiry with file cleanup, as the engine's `maintain` does them.
 //! Compaction reads each input one row group at a time through ranged reads, so memory is a row
 //! group per input and the row group being written; a cap on the bytes one run rewrites keeps a
 //! run within a request's CPU time.

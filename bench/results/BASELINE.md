@@ -36,7 +36,7 @@
 
 | Finding | Implication |
 |---|---|
-| Lake engines need 34–317 ms for "latest value per device"; TimescaleDB needs 2–3 ms | Confirms the **last-value index / hot store** (SPEC §8.2, §12.2) as a must-have. It's the one query shape where the lake loses badly. |
+| Lake engines need 34–317 ms for "latest value per device"; TimescaleDB needs 2–3 ms | Confirms the **last-value index / hot store** ([spec 9](../../spec/0009-write-path.md), [spec 17](../../spec/0017-read-paths.md)) as a must-have. It's the one query shape where the lake loses badly. |
 | Sorted, day-partitioned Iceberg beats unsorted Parquet in DuckDB | Validates **time-aware compaction and sort order** (§7.3, §10) as a real, measurable win, even for plain-DuckDB readers. |
 | 14× storage gap vs. uncompressed TimescaleDB; lake 4–44× faster on analytics | The cost-and-scale argument for a lake holds. Next: compare against *compressed* TimescaleDB to make it fair. |
 | DataFusion competitive on scans/aggregates, weaker on multi-way joins | Keeps D3 (DataFusion inside, DuckDB extension for users) reasonable. Timelake's queries are join-light. |
@@ -46,7 +46,7 @@
 - **Small TSBS scale** (500 trucks × 3 days, ~250 MB Parquet): many queries take under 50 ms, where fixed overheads dominate. Next: 4,000 trucks × 30 days on a machine with more free disk.
 - **Local disk only.** Object storage (MinIO / S3) will change the picture: request latency, metadata reads, range GETs. This is the most important next run for a lake.
 - **ClickBench is a 10% subset** (disk constraints), so it isn't comparable with official ClickBench numbers.
-- **Not yet covered:** TimescaleDB with compression, InfluxDB 3, QuestDB, Delta, DuckLake, S3 Tables, and the lake-extension workloads from SPEC §17.2 (ingest freshness, late data, compaction, deletes).
+- **Not yet covered:** TimescaleDB with compression, InfluxDB 3, QuestDB, Delta, DuckLake, S3 Tables, and the lake-extension workloads from [spec 32](../../spec/0032-timebench.md) (ingest freshness, late data, compaction, deletes).
 - **Ports and dialects:**
   - TSBS lake queries use `ROW_NUMBER()` for TimescaleDB's `LATERAL … LIMIT 1` and fixed parameters (see `queries/tsbs_iot/queries.sql`). `breakdown-frequency` fixes a TSBS bug.
   - TPC-H q11 returns 0 rows: DuckDB's query text uses the SF1 fraction. Identical across engines, so timings are still comparable.

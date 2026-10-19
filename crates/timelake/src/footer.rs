@@ -1,5 +1,5 @@
 //! Parquet footers (file metadata and page indexes) kept apart from their files, so the head
-//! object can carry them and a cold scan doesn't fetch each file's footer first (SPEC §19.2, P2).
+//! object can carry them and a cold scan doesn't fetch each file's footer first (spec 18, P2).
 //! A footer is stored as `ParquetMetaDataWriter` writes it: page indexes, metadata, length, magic.
 
 use std::sync::Arc;

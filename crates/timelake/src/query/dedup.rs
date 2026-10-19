@@ -1,4 +1,4 @@
-//! Dedup on read (SPEC §9.1): files that may hold the same `(series…, time)` are merged in key order
+//! Dedup on read (spec 12): files that may hold the same `(series…, time)` are merged in key order
 //! and only the newest write of each key is kept, so queries never see duplicates that compaction
 //! hasn't removed yet.
 //!

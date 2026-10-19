@@ -1,4 +1,4 @@
-/** The public roadmap at /roadmap. A plain-words view of SPEC.md §19 and §21: change them together. */
+/** The public roadmap at /roadmap: a plain-words view of the specs (spec/README.md, /spec). Change them together. */
 
 export type RoadmapItem = {
   title: string

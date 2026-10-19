@@ -1,4 +1,4 @@
-//! Rollup routing (SPEC §11.1): a `GROUP BY time_bucket(…)` query on a raw table, answered from a
+//! Rollup routing (spec 21): a `GROUP BY time_bucket(…)` query on a raw table, answered from a
 //! rollup for the buckets the rollup has right, and from the raw table for the rest.
 //!
 //! Which buckets a rollup has right takes I/O to find out (its record, the raw table's files), and

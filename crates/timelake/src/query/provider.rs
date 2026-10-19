@@ -62,7 +62,7 @@ pub(super) enum Kind {
 pub(crate) struct TimelakeProvider {
     table: Table,
     kind: Kind,
-    /// Rollup routing has dealt with this scan (SPEC §11.1).
+    /// Rollup routing has dealt with this scan (spec 21).
     routed: bool,
     /// Under a signal aggregate: how each series' rows come in time order ([`super::series_order`]).
     series_order: Option<Order>,
@@ -703,7 +703,7 @@ impl Ranked {
     }
 }
 
-/// How copies are removed on read (SPEC §9.1): `merge` or `keys-first`.
+/// How copies are removed on read (spec 12): `merge` or `keys-first`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Strategy {
     Merge,

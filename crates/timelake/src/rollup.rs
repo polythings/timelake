@@ -1,4 +1,4 @@
-//! Materialized rollups (SPEC §11.1): tables of aggregates per time bucket that Timelake keeps up
+//! Materialized rollups (spec 21): tables of aggregates per time bucket that Timelake keeps up
 //! to date from a raw table, and that the Timelake reader answers matching queries from.
 //!
 //! A rollup is an ordinary Timelake table (time column `bucket`, series key the grouping columns,

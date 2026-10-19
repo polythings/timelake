@@ -1,4 +1,4 @@
-//! A cache of object blocks under the object store (SPEC §19.3, P5). Every read of an immutable
+//! A cache of object blocks under the object store (spec 19, P5). Every read of an immutable
 //! object (data files, manifests, manifest lists, last-value indexes: `*.parquet` and `*.avro`,
 //! whose names Timelake never reuses) goes through it, in aligned blocks: in memory, and optionally
 //! on local disk, shared by every process on the machine. Everything else (the version hint, the

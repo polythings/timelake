@@ -19,6 +19,7 @@ const LINKS = [
   { href: "/benchmarks", label: "Benchmarks" },
   { href: "/explore", label: "Explorer" },
   { href: "/roadmap", label: "Roadmap" },
+  { href: "/spec", label: "Specs" },
   { href: "/contribute", label: "Contribute" },
 ]
 

@@ -1,4 +1,4 @@
-//! Writing tables from JavaScript (SPEC §21.10): the shared write path (`timelake_format::append`)
+//! Writing tables from JavaScript (spec 16): the shared write path (`timelake_format::append`)
 //! over a [`Host`] whose objects come from a JavaScript store (an R2 binding, memory, or one the
 //! application provides). The store gets absolute URIs, as Iceberg metadata records them; the
 //! TypeScript client maps them to keys.
@@ -195,7 +195,7 @@ const DATA_PAGE_ROWS: usize = 8 * 1024;
 const JSON_BATCH_ROWS: usize = 8 * 1024;
 
 /// Bytes inline compaction reads after an append from JavaScript, unless the call says otherwise:
-/// keeps an append's CPU time within what a Worker request gets (SPEC §21.10).
+/// keeps an append's CPU time within what a Worker request gets (spec 16).
 const DEFAULT_MAX_COMPACT_BYTES: u64 = 64 << 20;
 
 /// Options of an append, from JavaScript.

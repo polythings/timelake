@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The database servers timebench compares against (SPEC §17.3, §17.6), in Docker at pinned versions, so that changes
+# The database servers timebench compares against (spec 32, spec 33), in Docker at pinned versions, so that changes
 # in the history are ours; move a version deliberately. Used on a laptop and on the benchmark instance.
 #   bench/infra/servers.sh up [name...]     start them (a running one at the pinned version is kept); default: all
 #   bench/infra/servers.sh down [name...]   remove the containers (their data directories stay)

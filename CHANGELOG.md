@@ -10,6 +10,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- The design moved from one file, `SPEC.md`, to numbered specs in `spec/` (in the spirit of Rust's RFCs and Python's
+  PEPs): one file per part of Timelake with the same template, its status (done, in progress, planned, dropped) and
+  history, and an index for people and agents. The website shows them at [/spec](https://timelake.dev/spec). Open
+  questions and tasks moved to GitHub issues (#104–#143), linked from the specs.
+
 - Aggregates `integral(time, value [, 'forward_fill' | 'linear'])` (the area under the signal, in value × seconds),
   `counter_diff(time, value)` (how much a counter grew; a drop is a reset to zero) and `counter_rate(time, value)` (that
   growth per second), exact over irregular readings like `time_weighted_mean`, and about as fast (hourly values of
@@ -112,7 +117,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   index and head. Rows are objects or an Arrow IPC stream; `batchId` makes retries safe. Appends run inline
   maintenance like the engine's (size-tier and cold-partition compaction by streaming merge, within `maxCompactBytes`,
   default 64 MiB; retention; snapshot expiry), and `writer.maintain()` runs a full pass. Tables are created with
-  the CLI or Python (SPEC §21.10). In Cloudflare Workers, import from `@timelake/client/workers` and pass the
+  the CLI or Python ([spec 16](spec/0016-wasm-writes.md)). In Cloudflare Workers, import from `@timelake/client/workers` and pass the
   module from `@timelake/client/timelake.wasm` to `initWasm`. Measured in workerd: an append of 100,000 rows takes
   0.7 s and 37 MiB, compaction of a day of 24 files 2.7 s and 95 MiB (`bench/results/WORKERS.md`).
 - **`data-page-rows`**: rows per Parquet data page in the files a table gets (default 20,000; 8,192 for files

@@ -1,4 +1,4 @@
-# The weekly regression run (SPEC §17.4), on the benchmark instance in us-east-2 (bench/infra/remote.sh weekly).
+# The weekly regression run (spec 32), on the benchmark instance in us-east-2 (bench/infra/remote.sh weekly).
 # Same workloads, scales and systems every week, so the history shows what changed between commits.
 label = "weekly"
 runs = 2

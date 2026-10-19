@@ -1,4 +1,4 @@
-//! A table's head object (`metadata/timelake-head`, SPEC §19.2): its metadata, live files with
+//! A table's head object (`metadata/timelake-head`, spec 18): its metadata, live files with
 //! column bounds, and when they fit, the last-value index and the footers of the newest files. One
 //! request instead of the version hint, metadata, manifest list and manifests.
 

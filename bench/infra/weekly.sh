@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The weekly regression run (SPEC §17.4) on the weekly stack's instance. Run by .github/workflows/bench-weekly.yml,
+# The weekly regression run (spec 32) on the weekly stack's instance. Run by .github/workflows/bench-weekly.yml,
 # or by hand (with STACK=timelake-bench-weekly):
 #   bench/infra/weekly.sh start [commit] [profile]   start the instance and the run of profiles/weekly.toml (or
 #                                          another profile) at a commit (default HEAD, which must be pushed); the

@@ -1,6 +1,6 @@
 //! The Timelake reader: DataFusion over Timelake tables.
 //!
-//! What it adds over a generic Iceberg/Parquet scan (SPEC §12.2):
+//! What it adds over a generic Iceberg/Parquet scan (spec 17):
 //! - **File pruning** on Iceberg column bounds (time range, series key) evaluated with DataFusion's
 //!   `PruningPredicate`, then row-group and page pruning inside the (sorted) Parquet files.
 //! - **Last-value rewrite:** "newest row per series" queries (`ROW_NUMBER() OVER (PARTITION BY
@@ -11,7 +11,7 @@
 //! - **Dedup on read:** in tables with dedup on, files that may share a `(series…, time)` are
 //!   merged and only the newest write of each key is returned, before compaction removes the rest.
 //! - **Rollup routing:** `GROUP BY time_bucket(…)` queries read the buckets a rollup has right from
-//!   the rollup, and the rest from the raw table (SPEC §11.1).
+//!   the rollup, and the rest from the raw table (spec 21).
 //! - `time_bucket(interval, ts [, origin])`, an alias of `date_bin`.
 //! - Namespaces as SQL schemas: `SELECT … FROM iot.readings`.
 

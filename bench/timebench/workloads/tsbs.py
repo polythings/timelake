@@ -1,4 +1,4 @@
-"""TSBS workloads (SPEC §17.1, §17.7): TSBS's generator, its data converted once to Parquet, streamed in time windows.
+"""TSBS workloads (spec 32): TSBS's generator, its data converted once to Parquet, streamed in time windows.
 
 IoT is a truck fleet's readings and diagnostics; DevOps (cpu-only) is servers' CPU metrics.
 """

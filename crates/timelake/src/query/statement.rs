@@ -1,5 +1,5 @@
 //! SQL text split into statements: DataFusion's, and Timelake's own about rollups
-//! (`CREATE`, `DROP` and `REFRESH MATERIALIZED ROLLUP`, SPEC §11.1).
+//! (`CREATE`, `DROP` and `REFRESH MATERIALIZED ROLLUP`, spec 21).
 
 use datafusion::sql::parser::DFParserBuilder;
 use datafusion::sql::sqlparser::dialect::Dialect;

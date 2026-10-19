@@ -3,7 +3,7 @@
 //! in `timelake.*` properties, time partition math, and Iceberg bound decoding. With the `write`
 //! feature, also the write path: preparing rows, writing Parquet with Iceberg statistics,
 //! manifests and table metadata, and appending and committing over a [`host::Host`] that the
-//! caller implements (SPEC §21.10).
+//! caller implements (spec 16).
 //!
 //! ```
 //! use std::collections::HashMap;
@@ -91,7 +91,7 @@ pub mod property {
     pub const INGEST_TIME_COLUMN: &str = "timelake.ingest-time-column";
     /// The Timelake reader removes copies of a `(series…, time)` when reading (default: as `dedup`).
     pub const READ_DEDUP: &str = "timelake.read-dedup";
-    /// How the Timelake reader removes copies: `merge` (default) or `keys-first` (SPEC §9.1).
+    /// How the Timelake reader removes copies: `merge` (default) or `keys-first` (spec 12).
     pub const READ_DEDUP_STRATEGY: &str = "timelake.read-dedup-strategy";
     /// Whether the Timelake reader filters rows while decoding Parquet: `auto` (default), `true` or `false`.
     pub const FILTER_PUSHDOWN: &str = "timelake.filter-pushdown";
@@ -117,7 +117,7 @@ pub mod property {
     pub const KEEP_SNAPSHOTS_UNTIL: &str = "timelake.keep-snapshots-until";
     /// The table format version (see [`crate::FORMAT_VERSION`]); absent means 0.1.0.
     pub const FORMAT_VERSION: &str = "timelake.format-version";
-    /// On a raw table: its rollups, comma-separated table names (SPEC §11.1).
+    /// On a raw table: its rollups, comma-separated table names (spec 21).
     pub const ROLLUPS: &str = "timelake.rollups";
     /// `false` to stop the Timelake reader answering queries on this table from its rollups.
     pub const ROLLUP_ROUTING: &str = "timelake.rollup-routing";

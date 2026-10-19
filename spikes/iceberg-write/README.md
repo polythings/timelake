@@ -1,8 +1,8 @@
-# Spike: iceberg-rust write path (SPEC.md Q7)
+# Spike: iceberg-rust write path (Q7, spec 3)
 
 **Question:** Can `iceberg-rust` 0.10.1 carry Timelake's write path, or do we need to contribute upstream, fork, or build our own layer?
 
-**Code:** removed once the question was answered (SPEC D13). To run it again, check out the last commit that had it:
+**Code:** removed once the question was answered (D13, spec 3). To run it again, check out the last commit that had it:
 ```bash
 git checkout 2d66939 -- spikes/iceberg-write Cargo.toml Cargo.lock
 cargo run --release -p spike-iceberg-write -- v2 100   # or v3; second arg = number of small commits
@@ -20,7 +20,7 @@ cargo run --release -p spike-iceberg-write -- v2 100   # or v3; second arg = num
 | Late data into an old partition | ✅ | ✅ | |
 | Concurrent appends from a stale base | ✅ | ✅ | 2 sequential + 8 parallel commits: all rebased and retried automatically, **no lost rows** (798,000 expected = 798,000 read) |
 | Scan planning prunes by time partition | ✅ | ✅ | last-day filter: 111 of 114 files (exactly the files in overlapping day partitions) |
-| Scan planning prunes by series | ➖ | ➖ | No file-level pruning: every live file contains all devices. Expected; this is what bucket partitioning and Puffin series indexes are for (SPEC §7.3, §12.2). |
+| Scan planning prunes by series | ➖ | ➖ | No file-level pruning: every live file contains all devices. Expected; this is what bucket partitioning and Puffin series indexes are for ([spec 6](../../spec/0006-table-contract.md), [spec 17](../../spec/0017-read-paths.md)). |
 | **Plain DuckDB reads tables written by iceberg-rust** | ✅ | ✅ | `iceberg_scan(metadata.json)`; counts, per-day aggregates, and device + time filters all correct; 112 snapshots visible |
 
 **Commit overhead (local disk, 100 small commits):**
@@ -32,9 +32,9 @@ cargo run --release -p spike-iceberg-write -- v2 100   # or v3; second arg = num
 
 | Needed for | Missing capability |
 |---|---|
-| Compaction, dedup, tiered partitioning, GDPR purge (§9.3, §10) | **Rewrite/replace commit** (swap files atomically). Only `fast_append` exists. |
-| Logical deletes, `replace` backfill mode (§8.4, §9.2) | **Row-delta commit**: `fast_append` rejects delete files ("Only data content type is allowed"). **No position-delete or deletion-vector writer** either (only an equality-delete writer). |
-| Backfill write-audit-publish (§8.4) | **Commits to a branch**: the snapshot producer always targets `main`. |
+| Compaction, dedup, tiered partitioning, GDPR purge (specs 14, 15) | **Rewrite/replace commit** (swap files atomically). Only `fast_append` exists. |
+| Logical deletes, `replace` backfill mode (specs 10, 13) | **Row-delta commit**: `fast_append` rejects delete files ("Only data content type is allowed"). **No position-delete or deletion-vector writer** either (only an equality-delete writer). |
+| Backfill write-audit-publish (spec 10) | **Commits to a branch**: the snapshot producer always targets `main`. |
 | Keeping metadata small under frequent commits | **Manifest merging / rewrite manifests** |
 | Storage cleanup, GDPR purge | **File deletion on snapshot expiry, orphan-file removal**: `expire_snapshots` only edits metadata |
 | Extending any of the above outside the crate | `TransactionAction`, `SnapshotProducer`, and the `TableCommit` builder are all `pub(crate)` |
@@ -46,7 +46,7 @@ Everything needed to produce snapshots ourselves:
 - `TableUpdate` / `TableRequirement` (serde types, i.e. the Iceberg REST commit payload)
 - `DeleteVector`, Puffin reader/writer, all scan/read paths
 
-## Conclusion → recommendation for SPEC Q7
+## Conclusion → recommendation for Q7
 
 `iceberg-rust` is solid for the **append + read** path, and its output is fully DuckDB-compatible on both v2 and v3. Everything *beyond* append is missing. That is most of what makes Timelake valuable: compaction, deletes, branches, cleanup.
 
@@ -74,4 +74,4 @@ Recommendation: **no fork. Build a Timelake commit layer on iceberg-rust's publi
 | Apache iceberg-rust 0.10.1 | ❌ | ❌ | ❌ | metadata only | ❌ | ❌ |
 
 - **iceberg-cpp** is now the most complete non-JVM implementation. Its structure mirrors Java, which makes it the best reference for how each commit operation works.
-- We don't link it via FFI: it needs a C++23 toolchain, which is the same cross-compilation concern as embedding DuckDB (SPEC D3).
+- We don't link it via FFI: it needs a C++23 toolchain, which is the same cross-compilation concern as embedding DuckDB (D3, spec 5).

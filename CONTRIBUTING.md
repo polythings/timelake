@@ -5,7 +5,7 @@ type checkers enforce the mechanical rules (see [Checks](#checks)). This guide c
 read.
 
 New here? Read [How it works](https://timelake.dev/docs/how-it-works) and the
-[Codebase tour](https://timelake.dev/docs/codebase) first. [SPEC.md](SPEC.md) holds the design and the roadmap.
+[Codebase tour](https://timelake.dev/docs/codebase) first. The [specs](spec/README.md) hold the design, one numbered spec per part, with its status.
 
 Found a security problem? Don't open an issue: report it privately as [SECURITY.md](SECURITY.md) describes.
 
@@ -29,7 +29,7 @@ Found a security problem? Don't open an issue: report it privately as [SECURITY.
   One to three lines is usually enough.
 - **Comments explain why, not what.** Don't restate the code. Do explain a non-obvious choice, a workaround, or a
   number that came from a measurement.
-- **No long comments.** If an explanation needs a page, it belongs in SPEC.md or the docs. Link to it from the code.
+- **No long comments.** If an explanation needs a page, it belongs in a spec or the docs. Link to it from the code.
 
 ```rust
 // Bad: restates the code.
@@ -150,7 +150,7 @@ pulled within days. Merge its pull requests once CI passes, fixing the code on t
 ## Commits
 
 - **Subject:** a short imperative sentence with the area first, for example `Engine: …`, `CLI: …`, `Python: …`,
-  `Client: …`, `Site: …`, `Docs: …`, `bench: …` or `SPEC: …`. Add a body when the why isn't obvious.
+  `Client: …`, `Site: …`, `Docs: …`, `bench: …` or `Spec: …`. Add a body when the why isn't obvious.
 - **Scope:** one logical change per commit. Formatting-only commits go in `.git-blame-ignore-revs`.
 - **Secrets:** never commit credentials or `.env*` files (`.env.example` is the exception).
 

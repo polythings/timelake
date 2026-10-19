@@ -1,4 +1,4 @@
-//! The head object (SPEC §19.2, P1): `<table>/metadata/timelake-head`, one object holding what a
+//! The head object (spec 18, P1): `<table>/metadata/timelake-head`, one object holding what a
 //! reader needs to plan a query at the current version: the table metadata, the live data files
 //! with their column statistics, and the last-value index when it fits. A cold query reads it
 //! instead of following the version hint, metadata, manifest list and manifests one by one.

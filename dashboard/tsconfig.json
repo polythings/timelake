@@ -22,7 +22,8 @@
     ],
     "paths": {
       "@/*": ["./*"],
-      "@timelake/client": ["../packages/timelake-client/src/index.ts"]
+      "@timelake/client": ["../packages/timelake-client/src/index.ts"],
+      "@spec/*": ["../spec/*"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", ".next/dev/types/**/*.ts", "**/*.mts"],

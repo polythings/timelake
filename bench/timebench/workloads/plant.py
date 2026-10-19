@@ -1,4 +1,4 @@
-"""A deterministic generator for the IIoT workload (SPEC §17.6): one plant's process historian, as it arrives.
+"""A deterministic generator for the IIoT workload (spec 33): one plant's process historian, as it arrives.
 
 The plant is a hierarchy: sites of 10 areas, areas of 10 lines, lines of 10 machines, and each machine has the same
 10 tags (``SIGNALS``) at mixed rates: 1 s, 10 s and 60 s, and on change (with an hourly heartbeat). Values follow the
@@ -15,7 +15,7 @@ What makes it a plant rather than a clean series:
 
 Everything is drawn from one seed, so a scale always generates the same rows. Rows are written by arrival hour
 (``readings/h<hour>/``) with their arrival window, so the workload can replay them in the order they arrived. Every
-injected event is also written to ``events.parquet``, the ground truth for the agent benchmark (SPEC §17.8).
+injected event is also written to ``events.parquet``, the ground truth for the agent benchmark (spec 34).
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@ export const metadata = { title: "Codebase tour" }
 
 # Codebase tour
 
-What lives where, which technologies are used and why, and how a write and a query flow through the code. Paths are relative to the repository root. For the design behind it, see `SPEC.md`; for the on-disk format, see [Architecture](/docs/architecture).
+What lives where, which technologies are used and why, and how a write and a query flow through the code. Paths are relative to the repository root. For the design behind it, see the [specs](/spec); for the on-disk format, see [Architecture](/docs/architecture).
 
 ## The big picture
 
@@ -41,7 +41,7 @@ What lives where, which technologies are used and why, and how a write and a que
 | `scripts` | shell, JavaScript | Builds the demo warehouse for the website; a static file server with Range support for testing. |
 | `spikes/iceberg-write` | Markdown | Findings of an early experiment with iceberg-rust's write support (the code is in git history). |
 | `pyproject.toml` | TOML | The uv workspace: the Python package and the benchmarks share one environment (.venv). |
-| `SPEC.md` | Markdown | The design: requirements, decisions, roadmap, and benchmark plans. |
+| `spec/` | Markdown | The design, one numbered spec per part with its status: requirements, decisions, benchmark plans. Shown on the site at [/spec](/spec). |
 
 ## Technologies
 

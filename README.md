@@ -27,7 +27,7 @@ Keep time series in your own bucket on S3, R2, GCS, Azure, MinIO or a local disk
 
 **Open format** (Parquet files and Apache Iceberg metadata today; DuckDB, Spark and PyIceberg read the tables, and Trino, Athena and Snowflake will through the planned REST catalog) · **any object store** · **Apache 2.0**.
 
-> **Status: v0, open source, under active development.** See [SPEC.md](SPEC.md) for the design (§19.0 covers v0's scope). On real AWS S3 (us-east-2, queried from a laptop), against the same data streamed in 5-minute batches, Timelake answered the TSBS IoT queries 2.1–13× faster than Lance, PyIceberg-written Iceberg and S3 Tables right after ingest, and the "latest position of every truck" query took 18 requests instead of 1,733 ([bench/results/S3.md](bench/results/S3.md); the earlier RustFS runs are in [V0.md](bench/results/V0.md)). An IIoT benchmark against InfluxDB 3, TimescaleDB, ClickHouse and QuestDB is next (SPEC §17.6).
+> **Status: v0, open source, under active development.** See the [specs](spec/README.md) for the design ([spec 31](spec/0031-v0.md) covers v0's scope). On real AWS S3 (us-east-2, queried from a laptop), against the same data streamed in 5-minute batches, Timelake answered the TSBS IoT queries 2.1–13× faster than Lance, PyIceberg-written Iceberg and S3 Tables right after ingest, and the "latest position of every truck" query took 18 requests instead of 1,733 ([bench/results/S3.md](bench/results/S3.md); the earlier RustFS runs are in [V0.md](bench/results/V0.md)). An IIoT benchmark against InfluxDB 3, TimescaleDB, ClickHouse and QuestDB is next ([spec 33](spec/0033-iiot-benchmark.md)).
 
 ## Quick start
 
@@ -133,7 +133,7 @@ SELECT * FROM iceberg_scan('s3://lake/wh/iot/readings');   -- reads metadata/ver
 | `bench/` | Benchmarks: TSBS IoT, TPC-H, ClickBench, the v0 comparison (`bench/v0`), TimescaleDB on Tiger Cloud |
 | `scripts/` | Demo warehouse build (`build-demo-warehouse.sh`) and a static server with Range support for testing (`serve-range.mjs`) |
 | `spikes/` | Findings of Phase 0 experiments (code in git history) |
-| `SPEC.md` | Design and decisions |
+| `spec/` | Design and decisions: one numbered spec per part, with its status |
 
 ## Documentation
 The [docs](https://timelake.dev/docs) cover a [quick start](https://timelake.dev/docs/quick-start) with sample data, [how it works](https://timelake.dev/docs/how-it-works), the CLI, Python and TypeScript APIs, a [glossary](https://timelake.dev/docs/glossary), a [tour of this codebase](https://timelake.dev/docs/codebase) and [development setup](https://timelake.dev/docs/development). Their source is in `dashboard/app/(site)/docs/`.

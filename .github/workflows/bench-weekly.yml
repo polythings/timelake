@@ -1,4 +1,4 @@
-# The weekly regression benchmark (SPEC §17.4) on a fixed instance in us-east-2, at the newest commit on main.
+# The weekly regression benchmark (spec 32) on a fixed instance in us-east-2, at the newest commit on main.
 # "start" starts the instance and a run: bench/profiles/weekly.toml on Mondays, iiot.toml (industrial IoT) on
 # Thursdays; the instance stops itself when done. "collect" (hourly, Monday to Friday) commits finished run files to
 # bench/results/runs and the website's copy, so the history on timelake.dev/benchmarks grows each week.

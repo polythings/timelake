@@ -7,7 +7,8 @@ Next.js website (`dashboard/`) and benchmarks (`bench/`).
 ## Before changing code
 
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). It is the code guide, and it applies to you.
-- For anything beyond a small fix, check [SPEC.md](SPEC.md) and the docs (`dashboard/app/(site)/docs/*/page.mdx`).
+- For anything beyond a small fix, check the specs ([spec/README.md](spec/README.md): one numbered spec per part of
+  Timelake, with its status) and the docs (`dashboard/app/(site)/docs/*/page.mdx`).
   Agree on the design with the user before building something new.
 
 ## Rules
@@ -21,7 +22,9 @@ Next.js website (`dashboard/`) and benchmarks (`bench/`).
 - **Keep things in sync:** a change in behaviour updates the docs, the tests and `CHANGELOG.md` (under `Unreleased`) in
   the same commit. A change to the Python bindings updates `_timelake.pyi`. A change to `timelake-wasm` or
   `timelake-format` gets a rebuilt WASM bundle (`bun run build:wasm` in `packages/timelake-client`).
-  A change to the plan in SPEC.md (§19, §21) updates the public roadmap, `dashboard/lib/roadmap.ts`.
+  A change to a spec changes its status and history in the same commit, and `uv run python scripts/spec_index.py`
+  updates the index; a change to the plan updates the public roadmap, `dashboard/lib/roadmap.ts`.
+  Open questions and tasks are GitHub issues, linked from the spec, not paragraphs in it.
 - **Ideas, not code.** Never copy or translate another project's code. Credit ideas from open-source projects
   where they're used and in `PRIOR_ART.md`; never name open-core, dual-licensed or commercial products as a source
   (CONTRIBUTING.md, "Credit").

@@ -75,11 +75,7 @@ export default function RoadmapPage() {
             <GithubIcon />
             Open an issue
           </Button>
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<a href={`${REPO_URL}/blob/main/SPEC.md`} target="_blank" rel="noreferrer" />}
-          >
+          <Button variant="outline" nativeButton={false} render={<Link href="/spec" />}>
             Read the design
           </Button>
           <Button variant="outline" nativeButton={false} render={<Link href="/contribute" />}>

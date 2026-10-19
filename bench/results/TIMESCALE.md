@@ -34,6 +34,6 @@ _2026-10-12. Same TSBS IoT data (23.3M rows) and the same 17 queries as [V0.md](
 
 ## Reading this honestly
 - **Analytics (TSBS):** even with the database's data hot in memory and on disk, the columnstore on this small service is about 7× slower than Timelake reading object storage with 20 ms per request. It is about 50× slower than Timelake on local disk. Much of that gap is the shared-CPU tier. A sized service would narrow it, and this run cannot say by how much.
-- **Single-series lookups:** TimescaleDB's index and segment-by layout are fast, about 27 ms server-side on the columnstore. Timelake on remote storage (154 ms) pays object-store round trips for metadata and footers. Locally it is faster (9 ms). Lookups like this are the case for Timelake's planned hot tier and reader cache (SPEC §8, §12).
+- **Single-series lookups:** TimescaleDB's index and segment-by layout are fast, about 27 ms server-side on the columnstore. Timelake on remote storage (154 ms) pays object-store round trips for metadata and footers. Locally it is faster (9 ms). Lookups like this are the case for Timelake's planned hot tier and reader cache ([spec 17](../../spec/0017-read-paths.md)).
 - **Storage:** 413 MB in the TimescaleDB columnstore (database storage) vs 228 MB of Parquet in Timelake (object storage). Tiered storage would move TimescaleDB's chunks to S3 as well, which is the comparison still missing.
 - **Different hardware:** a managed cloud database measured over the internet vs a laptop with a latency-injecting proxy. Treat cross-system ratios as indicative.

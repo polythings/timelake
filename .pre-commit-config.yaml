@@ -47,6 +47,14 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+      # Specs: the index in spec/README.md and the website's list follow each spec's front matter.
+      - id: spec-index
+        name: spec index
+        entry: uv run --no-sync python scripts/spec_index.py --check
+        language: system
+        files: ^(spec/|scripts/spec_index\.py|dashboard/lib/spec)
+        pass_filenames: false
+
       # Python
       - id: ruff-format
         name: ruff format

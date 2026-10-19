@@ -1,4 +1,4 @@
-"""Industrial IoT (SPEC §17.6): a plant's process historian, from ``plant.py``'s generator, replayed as it arrived.
+"""Industrial IoT (spec 33): a plant's process historian, from ``plant.py``'s generator, replayed as it arrived.
 
 History loads in bulk, an hour of arrivals per commit, with queries after 1 and 7 days; the last day then arrives
 live, a 5-minute window per commit, and the queries run again at ``ingested``. Queries ask about the last minutes,

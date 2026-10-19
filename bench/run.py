@@ -1,4 +1,4 @@
-"""Phase 0 engine comparison (SPEC.md §17.5): query engines over the same static Parquet, Vortex and Iceberg files.
+"""Phase 0 engine comparison (spec 32): query engines over the same static Parquet, Vortex and Iceberg files.
 
 Workloads that write tables (ingest, maintenance, then queries per system) run with ``timebench`` instead
 (``timebench/cli.py``). This runs a query suite on one engine. Each query runs in a fresh subprocess: one "first"

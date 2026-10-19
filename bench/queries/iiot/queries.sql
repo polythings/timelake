@@ -1,4 +1,4 @@
--- Industrial IoT queries (SPEC §17.6): what an operator, an engineer or a report asks of a plant historian.
+-- Industrial IoT queries (spec 33): what an operator, an engineer or a report asks of a plant historian.
 --
 -- Tables: `readings` (time, tag, value, quality), one row per sample, and `tags`, the asset model (tag, machine,
 -- line, area, site, signal, kind, unit, rate_s, lo_limit, hi_limit, gateway). Names exist at every scale: machines

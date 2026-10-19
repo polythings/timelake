@@ -155,12 +155,13 @@
 .prose-docs ul { @apply my-4 ml-5 list-disc space-y-1.5 text-muted-foreground; }
 .prose-docs ol { @apply my-4 ml-5 list-decimal space-y-1.5 text-muted-foreground; }
 .prose-docs a { @apply font-medium text-foreground underline decoration-primary underline-offset-4; }
-.prose-docs :not(pre) > code { @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground; }
+.prose-docs :not(pre) > code { @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground; overflow-wrap: anywhere; }
 .prose-docs pre { @apply my-4 overflow-x-auto rounded-lg border bg-muted/50 p-4 font-mono text-[13px] leading-6; }
 .prose-docs table { @apply my-4 w-full text-sm; }
 .prose-docs th { @apply border-b px-3 py-2 text-left font-medium; }
 .prose-docs td { @apply border-b px-3 py-2 align-top text-muted-foreground; overflow-wrap: anywhere; }
-@media (max-width: 640px) {
+/* Below lg the article is narrow (next to a sidebar, or on a phone): wide tables scroll rather than the page. */
+@media (max-width: 1023px) {
   .prose-docs table { display: block; overflow-x: auto; }
 }
 /* Headings link to themselves (rehype-autolink-headings) but look like headings. */

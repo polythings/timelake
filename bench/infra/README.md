@@ -1,6 +1,6 @@
 # Benchmarks on AWS
 
-Runs `timebench` and the Phase 0 suites on real S3 (SPEC §17.4), including the weekly regression run. One CloudFormation stack in one zone holds:
+Runs `timebench` and the Phase 0 suites on real S3 ([spec 32](../../spec/0032-timebench.md)), including the weekly regression run. One CloudFormation stack in one zone holds:
 - an S3 Standard bucket;
 - an S3 Express One Zone bucket;
 - an S3 Tables table bucket;

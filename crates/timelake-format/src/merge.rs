@@ -1,4 +1,4 @@
-//! A k-way merge of sorted inputs, with dedup, for compaction (SPEC §10.1). It does no I/O: it
+//! A k-way merge of sorted inputs, with dedup, for compaction (spec 15). It does no I/O: it
 //! says which input needs its next batch, and the caller (the engine, reading an object store, or
 //! the WASM writer, reading through JavaScript) feeds batches as they come. Memory is one batch per
 //! input plus the output batch being built, however large the inputs are.
