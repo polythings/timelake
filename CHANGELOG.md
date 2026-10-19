@@ -14,6 +14,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `counter_diff(time, value)` (how much a counter grew; a drop is a reset to zero) and `counter_rate(time, value)` (that
   growth per second), exact over irregular readings like `time_weighted_mean`, and about as fast (hourly values of
   1,000 tags over 30 days: 2.2 s, `avg` 2.0 s). Rollups answer them from a stored `time_weighted_mean`, or store them.
+- Setting `window-series-order` (`auto`, `true`, `false`): a window over each series in time order
+  (`lead(…) OVER (PARTITION BY <series key> ORDER BY time)`) reads the files merged in series order, so they are
+  neither redistributed nor sorted. `auto` does so when the files are in one time partition: IIoT `gaps` 260 → 215 ms,
+  `time-above-limit` 396 → 327 ms. Over a week of files merging is slower (2.0 → 3.0 s), so `auto` leaves it.
 - Setting `shared-signal-state` (on by default): signal aggregates of the same column in one query compute their runs
   of readings once. All four, hourly for 1,000 tags over 30 days: 3.5 → 2.1 s.
 

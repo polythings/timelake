@@ -153,14 +153,20 @@ async fn scan_data(
     // before and after the time of the files merged (to remove copies, or because they overlap or
     // aren't sorted), which are merged with every file in that time.
     let (mut stretches, mut in_order) = (vec![], vec![]);
+    let series_order = match series_order {
+        Some(Order::MergeOnePartition) => {
+            let mut partitions = files.iter().chain(&merged).map(|f| crate::write::file_partition(&f.data_file));
+            let first = partitions.next();
+            partitions.all(|p| Some(p) == first).then_some(Order::Merge)
+        }
+        other => other,
+    };
     if let Some(order) = series_order {
         let dedup = !merged.is_empty();
-        if !dedup {
-            let merge = match order {
-                Order::Segments => vec![false; files.len()],
-                Order::Auto => out_of_order(table, &files)?,
-                Order::Merge => vec![true; files.len()],
-            };
+        if order == Order::Merge {
+            merged.append(&mut files);
+        } else if !dedup {
+            let merge = if order == Order::Auto { out_of_order(table, &files)? } else { vec![false; files.len()] };
             let (now, alone): (Vec<_>, Vec<_>) = files.into_iter().zip(merge).partition(|(_, m)| *m);
             (merged, files) = (now.into_iter().map(|(f, _)| f).collect(), alone.into_iter().map(|(f, _)| f).collect());
         }

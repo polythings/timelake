@@ -157,6 +157,18 @@
   },
   {
     "default": {
+      "value": "auto"
+    },
+    "description": "A window over each series in time order (`lead(…) OVER (PARTITION BY <series key> ORDER BY time)`) reads the series merged in order, already split by series, so the reader neither repartitions nor sorts the rows. Faster on one large file (a day of readings: 18% less), slower over many (a week: 50% more), with less memory either way. `auto`: when the files read are in one time partition.",
+    "kind": "auto, true or false",
+    "levels": ["table", "session"],
+    "name": "window-series-order",
+    "property": "timelake.window-series-order",
+    "since": "0.8.0",
+    "sql": "timelake.window_series_order"
+  },
+  {
+    "default": {
       "value": "true"
     },
     "description": "Signal aggregates of the same readings in one query (`time_weighted_mean`, `integral`, `counter_diff`, `counter_rate` of one column, by one method) compute their runs of readings once and each result from them, instead of each computing its own.",

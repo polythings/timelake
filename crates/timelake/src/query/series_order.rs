@@ -13,15 +13,23 @@
 //! (overlaps are then an error), `merge` everything. Measured alternatives: a window over every
 //! reading (550 s and 20 GB for hourly means of 370 M readings, against 2 s); files spread over
 //! partitions by size, as other scans do, which makes runs with gaps that other partitions fill.
+//!
+//! A window over each series in time order (`lead(…) OVER (PARTITION BY <series key> ORDER BY
+//! time)`) can read every file merged the same way: split by series and sorted, so DataFusion
+//! neither repartitions nor sorts. Setting `window-series-order`: on the industrial benchmark,
+//! gaps of a day's 1-second readings (one file) 265 → 217 ms, but of a week (seven) 2.0 → 3.0 s:
+//! merging sorted files costs more than DataFusion's sort once there are several. `auto` (the
+//! default) merges when the files are in one time partition, `true` always, `false` never.
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::{provider_as_source, source_as_provider};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::logical_expr::expr::AggregateFunction;
+use datafusion::logical_expr::expr::{AggregateFunction, Sort};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::Expr;
 
@@ -40,6 +48,9 @@ pub(crate) enum Order {
     Auto,
     /// All files merged.
     Merge,
+    /// All files merged if they're in one time partition (a window's `auto`); else read as other
+    /// scans are, which DataFusion then splits by series and sorts.
+    MergeOnePartition,
 }
 
 impl Order {
@@ -66,25 +77,46 @@ impl OptimizerRule for SeriesOrder {
         let options = config.options();
         let session = options.extensions.get::<SessionSettings>().and_then(|s| s.get(property::SERIES_ORDER));
         let session = session.map(Order::parse);
+        let settings = options.extensions.get::<SessionSettings>();
+        let windows_session = settings.and_then(|s| s.get(property::WINDOW_SERIES_ORDER)).map(str::to_ascii_lowercase);
         plan.transform_down(|node| {
-            let LogicalPlan::Aggregate(a) = &node else { return Ok(Transformed::no(node)) };
-            if !a.aggr_expr.iter().any(over_readings) {
-                return Ok(Transformed::no(node));
-            }
-            let input = a.input.as_ref().clone().transform_up(|n| order(n, session))?;
-            if !input.transformed {
-                return Ok(Transformed::no(node));
-            }
-            let LogicalPlan::Aggregate(mut a) = node else { unreachable!("matched above") };
-            a.input = Arc::new(input.data);
-            Ok(Transformed::new(LogicalPlan::Aggregate(a), true, TreeNodeRecursion::Jump))
+            let wants: Box<Wants> = match &node {
+                LogicalPlan::Aggregate(a) if a.aggr_expr.iter().any(over_readings) => {
+                    Box::new(move |p| Some(session.unwrap_or_else(|| Order::parse(&p.table().contract().series_order))))
+                }
+                LogicalPlan::Window(w) => {
+                    let windows: Vec<(HashSet<String>, String)> =
+                        w.window_expr.iter().filter_map(series_window).collect();
+                    if windows.is_empty() {
+                        return Ok(Transformed::no(node));
+                    }
+                    let session = windows_session.clone();
+                    Box::new(move |p| {
+                        let contract = p.table().contract();
+                        let keys: HashSet<String> = contract.series_key.iter().cloned().collect();
+                        let fits = windows
+                            .iter()
+                            .any(|(by, order)| *by == keys && contract.time_column.as_ref() == Some(order));
+                        match session.as_deref().unwrap_or(&contract.window_series_order) {
+                            "false" => None,
+                            "true" => fits.then_some(Order::Merge),
+                            _ => fits.then_some(Order::MergeOnePartition),
+                        }
+                    })
+                }
+                _ => return Ok(Transformed::no(node)),
+            };
+            let marked = node.map_children(|child| child.transform_up(|n| mark(n, &wants)))?;
+            Ok(Transformed::new(marked.data, marked.transformed, TreeNodeRecursion::Jump))
         })
     }
 }
 
-/// `node` with its Timelake scan reading in series order, as the session's setting or else the
-/// table's says.
-fn order(node: LogicalPlan, session: Option<Order>) -> DfResult<Transformed<LogicalPlan>> {
+/// How a node needs a Timelake scan read, if it does.
+type Wants = dyn Fn(&TimelakeProvider) -> Option<Order>;
+
+/// `node` with its Timelake scan reading in series order, if `wants` says so.
+fn mark(node: LogicalPlan, wants: &Wants) -> DfResult<Transformed<LogicalPlan>> {
     let LogicalPlan::TableScan(scan) = &node else { return Ok(Transformed::no(node)) };
     let provider = source_as_provider(&scan.source)?;
     let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else {
@@ -93,10 +125,25 @@ fn order(node: LogicalPlan, session: Option<Order>) -> DfResult<Transformed<Logi
     if p.kind() != Kind::Data || p.reads_in_series_order() {
         return Ok(Transformed::no(node));
     }
-    let order = session.unwrap_or_else(|| Order::parse(&p.table().contract().series_order));
+    let Some(order) = wants(p) else { return Ok(Transformed::no(node)) };
     let mut scan = scan.clone();
     scan.source = provider_as_source(Arc::new(p.in_series_order(order)));
     Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
+}
+
+/// The columns a window partitions by and the one it orders by, if it partitions by columns and
+/// orders by one, ascending.
+fn series_window(e: &Expr) -> Option<(HashSet<String>, String)> {
+    let Expr::WindowFunction(w) = unalias(e) else { return None };
+    let by = w.params.partition_by.iter().map(|e| match e {
+        Expr::Column(c) => Some(c.name.clone()),
+        _ => None,
+    });
+    let order = match w.params.order_by.as_slice() {
+        [Sort { expr: Expr::Column(c), asc: true, .. }] => c.name.clone(),
+        _ => return None,
+    };
+    Some((by.collect::<Option<_>>()?, order))
 }
 
 /// Whether `e` is a signal aggregate over readings `(time, value [, method])`, not over states
@@ -205,6 +252,36 @@ mod tests {
                     assert!(got.contains(expected), "dedup {dedup}, copy {copy}, {mode}\n{got}");
                 }
             }
+        }
+    }
+
+    /// A window over each series in time order gives the same rows merged or not; merged, the plan
+    /// doesn't sort. `auto` merges one day's files, not several days'.
+    #[tokio::test]
+    async fn windows_read_each_series_in_order() {
+        let (lake, _) = faulty_lake();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        let rows: Vec<(i64, i32, f64)> =
+            (0..3000).map(|i| (T0 + i * 60 * SECOND, i32::try_from(i % 4).unwrap(), ((i * 37) % 101) as f64)).collect();
+        t.append(&[batch(&rows)], AppendOptions::default()).await.unwrap();
+        let window = |filter: &str| {
+            format!(
+                "SELECT device, time, value, lead(value) OVER (PARTITION BY device ORDER BY time) AS next
+                 FROM iot.r {filter} ORDER BY device, time"
+            )
+        };
+        for (filter, auto_merges) in [("", false), ("WHERE time < TIMESTAMP '2026-01-02 00:00:00'", true)] {
+            let sql = window(filter);
+            let mut answers = vec![];
+            for (mode, merges) in [("true", true), ("false", false), ("auto", auto_merges)] {
+                let s = Session::new(lake.clone());
+                s.sql(&format!("SET timelake.window_series_order = '{mode}'")).await.unwrap();
+                let plan = answer(&s, &format!("EXPLAIN {sql}")).await.unwrap();
+                let window_input = plan.lines().skip_while(|l| !l.contains("WindowAggExec")).nth(1).unwrap();
+                assert_eq!(!window_input.contains("SortExec"), merges, "{mode} {filter}\n{plan}");
+                answers.push(answer(&s, &sql).await.unwrap());
+            }
+            assert!(answers.iter().all(|a| *a == answers[0]));
         }
     }
 

@@ -173,6 +173,8 @@ pub struct Contract {
     pub newest_first: bool,
     /// How the signal aggregates get readings in time order: `auto`, `segments` or `merge`.
     pub series_order: String,
+    /// Whether windows over each series in time order read it merged in order: `auto`, `true` or `false`.
+    pub window_series_order: String,
     /// Format of the head object, or `none` to not write one.
     pub head_format: String,
     /// Bytes the head may spend on optional sections (the last-value index).
@@ -241,6 +243,7 @@ impl Contract {
             in_list_pruning: p.flag(property::IN_LIST_PRUNING, true)?,
             newest_first: p.flag(property::NEWEST_FIRST, true)?,
             series_order: p.get(property::SERIES_ORDER).unwrap_or("auto").to_ascii_lowercase(),
+            window_series_order: p.get(property::WINDOW_SERIES_ORDER).unwrap_or("auto").to_ascii_lowercase(),
             head_format: p.get(property::HEAD_FORMAT).unwrap_or(Self::DEFAULT_HEAD_FORMAT).to_ascii_lowercase(),
             head_inline_bytes: p.number(property::HEAD_INLINE_BYTES, Self::DEFAULT_HEAD_INLINE_BYTES)?,
             format_version: p.get(property::FORMAT_VERSION).map_or(Ok(FormatVersion::UNVERSIONED), str::parse)?,

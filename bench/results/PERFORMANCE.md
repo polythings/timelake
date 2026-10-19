@@ -3,6 +3,26 @@
 Measurements for the steps of the performance plan ([SPEC.md §19.1](../../SPEC.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## P8: windows over each series read in series order (2026-10-19)
+
+The IIoT window queries (`lead`/`lag` partitioned by tag, ordered by time) had DataFusion repartition every row by tag
+and sort it. The series-order merge (the dedup scan's, keeping every row) already gives rows split by series hash
+and sorted, and declares it, so a window over it needs neither. IIoT small, local disk, best of 7:
+
+| Query | Repartition and sort | Merged |
+|---|---:|---:|
+| `gaps`, a day of 1-second pressure tags (one file) | 260 ms | 215 ms |
+| `time-above-limit` (one file) | 396 ms | 327 ms |
+| `energy`, 1-minute counters (one file) | 81 ms | 84–85 ms |
+| `uptime`, `time-weighted-avg` | 32 ms | 31–34 ms |
+| `gaps` over 7 days (seven files) | 1.95 s | 3.03 s |
+| `gaps` over 30 days | 13.1 s | 17.4 s |
+
+Peak memory merged: 1.5 GB instead of 4.3 GB over 7 days, 5.6 instead of 8.5 GB over 30. Merging several sorted
+files costs more than DataFusion's sort, so setting `window-series-order` is `auto` by default: merged when the files
+read are in one time partition (the 24-hour queries above), else repartitioned and sorted; `true` and `false` force
+either.
+
 ## P7: `integral`, `counter_diff`, `counter_rate` (2026-10-18)
 
 The three share `time_weighted_mean`'s segments, which gained the values of the readings next to the first and last

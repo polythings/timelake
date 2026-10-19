@@ -61,6 +61,15 @@ A query sorted by time, newest first, with a limit (`ORDER BY time DESC LIMIT 10
 first and older ones only while they can still hold one of the rows asked for (setting `newest-first`). On 30 days of
 the industrial benchmark, the 100 newest readings before a past time took 38 ms instead of 298 ms.
 
+### Windows over each series
+
+A window over each series in time order, such as the time to the next reading,
+`lead(time) OVER (PARTITION BY device_id ORDER BY time)`, needs each series' rows together and sorted. When the rows
+come from one time partition, the reader merges its sorted files in that order, split by series, and the window reads
+them as they come instead of the rows being redistributed and sorted (setting `window-series-order`). On the
+industrial benchmark, gaps in a day of 1-second readings took 215 ms instead of 260 ms. Over several partitions,
+sorting is the faster way, and the reader leaves it to DataFusion.
+
 ### Latest row per series
 
 This query shape is rewritten to read the last-value index instead of scanning the table:

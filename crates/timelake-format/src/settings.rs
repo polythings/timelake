@@ -304,6 +304,19 @@ pub static SETTINGS: &[Setting] = &[
         check: series_order,
     },
     Setting {
+        name: "window-series-order",
+        kind: "auto, true or false",
+        default: DefaultValue::Value("auto"),
+        levels: &[Level::Table, Level::Session],
+        since: "0.8.0",
+        description: "A window over each series in time order (`lead(…) OVER (PARTITION BY <series key> ORDER BY \
+                      time)`) reads the series merged in order, already split by series, so the reader neither \
+                      repartitions nor sorts the rows. Faster on one large file (a day of readings: 18% less), \
+                      slower over many (a week: 50% more), with less memory either way. `auto`: when the files read \
+                      are in one time partition.",
+        check: auto_or_boolean,
+    },
+    Setting {
         name: "shared-signal-state",
         kind: "boolean",
         default: DefaultValue::Value("true"),
@@ -611,6 +624,7 @@ mod tests {
             property::NEWEST_FIRST,
             property::SERIES_ORDER,
             property::SHARED_SIGNAL_STATE,
+            property::WINDOW_SERIES_ORDER,
             property::HEAD_FORMAT,
             property::HEAD_INLINE_BYTES,
             property::KEEP_SNAPSHOTS_UNTIL,
@@ -626,7 +640,7 @@ mod tests {
         ] {
             assert_eq!(find(key).map(Setting::property).as_deref(), Some(key));
         }
-        assert_eq!(SETTINGS.len(), 33, "a new setting needs a property constant and an entry above");
+        assert_eq!(SETTINGS.len(), 34, "a new setting needs a property constant and an entry above");
     }
 
     /// A stated default is what the contract uses when the property is unset.
