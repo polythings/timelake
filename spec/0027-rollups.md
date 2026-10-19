@@ -3,7 +3,7 @@ number: 27
 title: Materialized rollups
 area: Reading
 status: done
-updated: 2026-10-18
+updated: 2026-10-19
 versions: [0.5.0, 0.7.0, unreleased]
 related: [12, 28, 30, 31]
 issues: [15, 108, 136]
@@ -11,7 +11,7 @@ issues: [15, 108, 136]
 
 # 27. Materialized rollups
 
-**Done** · updated 2026-10-18 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
+**Done** · updated 2026-10-19 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
 · related: [spec 12](0012-late-data-and-dedup.md), [spec 28](0028-function-library.md), [spec 30](0030-signal-aggregates.md), [spec 31](0031-m4.md)
 
 ## Summary
@@ -125,6 +125,27 @@ the one being refreshed. Refreshes go from the narrowest bucket to the widest, s
 up-to-date hourly or minute one. IIoT small: creating a daily rollup 5.2 s from the raw table, 1.8 s with a 1-minute
 rollup.
 
+#### Time ranges without a bucket, and which rollup (built 2026-10-19)
+
+A query grouped by some of a rollup's key columns and by no `time_bucket`, over a time range, is rewritten as the same
+query per bucket of a rollup's width, with its aggregates in mergeable form (`count`, `sum`, `min`, `max`; `avg` as
+`sum` and `count`; `m4`; the signal and gap aggregates as their states, `time_weighted_state` and `gap_state`), routed
+as a bucketed query, and merged once more by the query's keys. At a rollup's own width and keys, stored states are
+read as they are, not merged per bucket (30 M one-row groups took 16 s). A rollup may also store
+`time_weighted_state` and `gap_state` directly. IIoT small, an hourly rollup, 30 days per tag: statistics 1.75 s →
+55 ms, gaps 1.34 s → 44 ms, time-weighted means 1.50 s → 0.15 s; a day of statistics 93 → 39 ms. Same answers up to
+the rounding of sums.
+
+**Which rollup:** the widest that answers (fewest rows), then the next. A rollup answers from stored signal states
+only where it holds at least 32 raw rows per row on average, and from `m4` points or gap runs at 4: merging an 80-byte
+state costs about 25–50 readings. Measured on IIoT small: daily time-weighted means from a 1-minute rollup (12 readings
+a row) 3.6 s against 2.0 s from the readings (the coarser routing of 0.7.0 did this), daily averages from it 0.29 s
+against 1.9 s, gaps over 30 days 0.24 s against 1.2 s. The counts come from both tables' live files.
+
+**Gaps:** `gap_count` and `gap_seconds` are stored as their state for one threshold, named with it
+(`gap_count:300s`), which answers both at that threshold. Default output names now replace `:` with `_`
+(`integral_linear_value`, `gap_count_300s`).
+
 ## Open questions and issues
 
 - [#15](https://github.com/polythings/timelake/issues/15) Rollups: refresh rules (overwrite buckets, ignore compaction and retention, check lag vs retention)
@@ -137,3 +158,4 @@ rollup.
 - 2026-10-18: coarser queries, fewer keys, rollups of rollups
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 21; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-19: time ranges without a bucket, the widest rollup first, readings per row for states, gap states.

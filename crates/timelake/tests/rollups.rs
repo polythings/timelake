@@ -17,7 +17,7 @@ const CREATE: &str = "CREATE MATERIALIZED ROLLUP iot.r_1h AS
            avg(value) AS avg_value, min(value), max(value), sum(value), count(*) AS n, count(value),
            first_value(value ORDER BY time) AS first, last_value(value ORDER BY time) AS last,
            m4(time, value) AS points, time_weighted_mean(time, value) AS twa,
-           time_weighted_mean(time, value, 'linear') AS twa_linear
+           time_weighted_mean(time, value, 'linear') AS twa_linear, gap_count(time, INTERVAL '90 seconds') AS gaps
     FROM iot.r GROUP BY device, bucket
     WITH (refresh_interval = 'off')";
 
@@ -69,6 +69,33 @@ const QUERIES: &[(&str, bool)] = &[
          GROUP BY 1, 2 HAVING max(t.value) > 15000",
         true,
     ),
+    // The gap aggregates, from the stored gap state of the same threshold; not from another threshold's.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, gap_count(time, INTERVAL '90 seconds'),
+                gap_seconds(time, INTERVAL '90 seconds') FROM iot.r GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, gap_seconds(time, INTERVAL '90 seconds')
+         FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 05:30:00' GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, gap_count(time, INTERVAL '30 seconds')
+         FROM iot.r GROUP BY 1, 2",
+        false,
+    ),
+    // A time range without a bucket: the rollup's hours inside it, the raw rows at its edges, merged.
+    (
+        "SELECT device, avg(value), min(value), max(value), count(*), sum(value), count(value), m4(time, value),
+                time_weighted_mean(time, value), integral(time, value, 'linear'), counter_diff(time, value)
+         FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND time < TIMESTAMP '2026-01-02 20:10:00'
+         GROUP BY device",
+        true,
+    ),
+    ("SELECT device, max(value), count(*) FROM iot.r GROUP BY device", true),
+    ("SELECT count(*), max(value) FROM iot.r WHERE time > TIMESTAMP '2026-01-01 10:00:00'", true),
+    ("SELECT device, first_value(value ORDER BY time) FROM iot.r GROUP BY device", false),
     // Wider buckets and fewer keys: the rollup's hours merged.
     (
         "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), min(value), max(value), count(*),
@@ -157,7 +184,8 @@ async fn rollups_answer_like_the_raw_table() {
             "last",
             "points",
             "twa",
-            "twa_linear"
+            "twa_linear",
+            "gaps"
         ]
     );
     check_answers(&lake).await;
@@ -325,4 +353,68 @@ async fn rollups_keep_what_the_raw_table_drops() {
     for &(sql, _) in QUERIES {
         assert_eq!(answer(&s, sql).await, answer(&unrouted, sql).await, "{sql}");
     }
+}
+
+/// Gaps that cross bucket boundaries, and buckets full of gaps, merge from the stored gap state
+/// into what the raw readings give, at the rollup's width and wider.
+#[tokio::test(flavor = "multi_thread")]
+async fn gaps_merge_across_buckets() {
+    let (_dir, lake) = temp_lake();
+    let t = lake.create_table("iot.r", &common::schema(), opts()).await.unwrap();
+    // 20 hours a minute apart, nothing for 6 hours, then 11 hours two minutes apart.
+    let first = batch(T0, 20 * 60, MINUTE, 4, |d, i| f64::from(d) + i as f64);
+    let second = batch(T0 + 26 * HOUR, 11 * 30, 2 * MINUTE, 4, |d, i| f64::from(d) + i as f64);
+    t.append(&[first, second], AppendOptions::default()).await.unwrap();
+    let s = Session::new(lake.clone());
+    rows(
+        &s,
+        "CREATE MATERIALIZED ROLLUP iot.r_1h AS SELECT device, time_bucket(INTERVAL '1 hour', time) AS bucket,
+         gap_count(time, INTERVAL '90 seconds') AS gaps
+         FROM iot.r GROUP BY device, bucket WITH (refresh_interval = 'off')",
+    )
+    .await;
+    let unrouted = Session::new(lake.clone());
+    unrouted.sql("SET timelake.rollup_routing = false").await.unwrap();
+    for sql in [
+        "SELECT device, time_bucket(INTERVAL '1 hour', time) AS h, gap_count(time, INTERVAL '90 seconds') AS n,
+                gap_seconds(time, INTERVAL '90 seconds') AS s FROM iot.r GROUP BY 1, 2",
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, gap_count(time, INTERVAL '90 seconds') AS n,
+                gap_seconds(time, INTERVAL '90 seconds') AS s FROM iot.r GROUP BY 1, 2",
+        "SELECT device, gap_count(time, INTERVAL '90 seconds') AS n, gap_seconds(time, INTERVAL '90 seconds') AS s
+         FROM iot.r WHERE time >= TIMESTAMP '2026-01-01 10:30:20' GROUP BY 1",
+    ] {
+        assert!(reads_rollup(&s, sql).await, "{sql}");
+        assert_eq!(answer(&s, sql).await, answer(&unrouted, sql).await, "{sql}");
+    }
+    // Device 0: the 6-hour silence, then 329 two-minute steps between its 330 later readings.
+    let all = "SELECT gap_count(time, INTERVAL '90 seconds') FROM iot.r WHERE device = 0";
+    assert_eq!(scalar_i64(&unrouted, all).await, 330);
+}
+
+/// A rollup that holds few readings per row answers plain aggregates, but not signal aggregates,
+/// whose stored states cost more to merge than the readings do to read.
+#[tokio::test(flavor = "multi_thread")]
+async fn signal_states_need_enough_readings_per_row() {
+    let (_dir, lake) = lake_with_rollup().await;
+    let s = Session::new(lake.clone());
+    rows(
+        &s,
+        "CREATE MATERIALIZED ROLLUP iot.r_1m AS SELECT device, time_bucket(INTERVAL '1 minute', time) AS bucket,
+         avg(value) AS a, count(*) AS n, time_weighted_mean(time, value) AS twa
+         FROM iot.r GROUP BY device, bucket WITH (refresh_interval = 'off')",
+    )
+    .await;
+    let reads = |sql: &'static str| {
+        let s = Session::new(lake.clone());
+        async move { s.sql(sql).await.unwrap().into_optimized_plan().unwrap().display_indent().to_string() }
+    };
+    let avg = reads("SELECT device, time_bucket(INTERVAL '1 minute', time), avg(value) FROM iot.r GROUP BY 1, 2");
+    assert!(avg.await.contains("r_1m"));
+    let twa = reads(
+        "SELECT device, time_bucket(INTERVAL '1 minute', time), time_weighted_mean(time, value) FROM iot.r GROUP BY 1, 2",
+    );
+    assert!(!twa.await.contains("r_1m"), "a reading a minute: one per row");
+    // The hourly rollup holds 60 a row: enough.
+    let hourly = reads("SELECT device, time_weighted_mean(time, value) FROM iot.r GROUP BY 1");
+    assert!(hourly.await.contains("r_1h"));
 }

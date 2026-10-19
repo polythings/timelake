@@ -92,6 +92,16 @@ pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<Strin
         return None;
     }
     let mut function = func.name().to_string();
+    // The gap aggregates take `(time, threshold)`: the threshold is part of what is stored.
+    if let Some(output) = super::gaps::Output::of(&function) {
+        return match params.args.as_slice() {
+            [Expr::Column(t), Expr::Literal(threshold, _)] if t.name == time && params.order_by.is_empty() => {
+                let threshold = super::gaps::threshold_of_literal(threshold)?;
+                Some((super::gaps::rollup_name(output, threshold), None))
+            }
+            _ => None,
+        };
+    }
     // m4 and the signal aggregates take `(time, value)`: they're of `value`.
     let of_readings = function == "m4" || Output::of(&function).is_some();
     let column = match params.args.as_slice() {
@@ -110,7 +120,7 @@ pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<Strin
         matches!(params.order_by.as_slice(), [Sort { expr: Expr::Column(c), asc: true, .. }] if c.name == time);
     let fits = match function.as_str() {
         "first_value" | "last_value" => by_time && column.is_some(),
-        f => FUNCTIONS.contains(&f) && params.order_by.is_empty(),
+        f => (FUNCTIONS.contains(&f) || of_rollup(f).is_some()) && params.order_by.is_empty(),
     };
     fits.then_some((function, column))
 }
@@ -129,11 +139,13 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
         "first_value" => agg::first_value(column()?, by_time()),
         "last_value" => agg::last_value(column()?, by_time()),
         "m4" => super::m4::m4_udaf().call(vec![ident(time), column()?]),
-        // The state: a bucket's segment, which wider buckets merge.
-        f => match of_rollup(f) {
-            Some((_, Method::Linear)) => udaf(Output::State).call(vec![ident(time), column()?, lit("linear")]),
-            Some(_) => udaf(Output::State).call(vec![ident(time), column()?]),
-            None => return Err(Error::invalid(format!("a rollup can't store {f}"))),
+        // The state: a bucket's runs, which wider buckets merge.
+        f => match (of_rollup(f), super::gaps::of_rollup(f)) {
+            (Some((_, Method::Linear)), _) => udaf(Output::State).call(vec![ident(time), column()?, lit("linear")]),
+            (Some(_), _) => udaf(Output::State).call(vec![ident(time), column()?]),
+            (None, Some((_, threshold))) => super::gaps::udaf(super::gaps::Output::State)
+                .call(vec![ident(time), super::gaps::threshold_literal(threshold)]),
+            (None, None) => return Err(Error::invalid(format!("a rollup can't store {f}"))),
         },
     })
 }
@@ -246,11 +258,13 @@ pub(crate) fn definition_of(plan: &LogicalPlan, name: &crate::TableName) -> Resu
             let e = &node.aggr_expr[index - n_group];
             let Some((function, column)) = aggregate_of(e, &time) else {
                 return Err(fail(&format!(
-                    "{e} isn't an aggregate a rollup stores: count, sum, min, max, avg, or first_value / last_value \
-                     ORDER BY {time}"
+                    "{e} isn't an aggregate a rollup stores: count, sum, min, max, avg, first_value / last_value \
+                     ORDER BY {time}, m4, a signal aggregate or a gap aggregate"
                 )));
             };
-            let default = column.as_ref().map_or_else(|| function.clone(), |c| format!("{function}_{c}"));
+            // `integral:linear` of `value` is `integral_linear_value`; `gap_count:300s` is `gap_count_300s`.
+            let stem = function.replace(':', "_");
+            let default = column.as_ref().map_or_else(|| stem.clone(), |c| format!("{stem}_{c}"));
             let a = Aggregate { name: if named { output } else { default }, function, column };
             let name = a.name.clone();
             aggregates.push(a);

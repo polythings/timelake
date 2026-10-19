@@ -39,6 +39,27 @@ series key) replaces the sort. Encoding costs about as much uncompressed, so ZST
 the number of series: at 10 M about 1.5 s a commit. Avoiding it needs a different format: small index deltas per
 commit, merged by readers and folded into the base now and then ([spec 6](../../spec/0006-last-value-index.md), #119).
 
+## P7: rollups for time ranges, and which rollup (2026-10-19)
+
+A query over a time range without a bucket, grouped by tag, routed through a rollup per bucket of its width and
+merged (#122). IIoT small (30 days, 1,000 tags, 370 M readings), a 1-minute rollup (30.4 M rows) and an hourly one
+(0.72 M), release build, best of 5 interleaved runs on a loaded machine (load 40–100), same answers up to the
+rounding of sums:
+
+| Per tag | Readings | 1-minute rollup | Hourly rollup |
+|---|---:|---:|---:|
+| Statistics (`avg`, `min`, `max`, `count`), a day | 93 ms | 67 ms | 39 ms |
+| Statistics, 30 days | 1.50–1.75 s | 0.22 s | 55 ms |
+| Gaps over 5 minutes (`gap_count`, `gap_seconds`), 30 days | 1.2–1.3 s | 0.24 s | 44 ms |
+| `time_weighted_mean`, 30 days | 1.27–1.50 s | 2.9 s | 0.15 s |
+| Daily `time_weighted_mean` (bucketed, 0.7.0's coarser routing) | 2.0 s | 3.6 s | |
+| Daily `avg`, `max` (bucketed) | 1.9 s | 0.29 s | |
+
+A signal state is 80 bytes and merging one costs about what 25–50 readings do; the 1-minute rollup holds 12 readings
+a row, the hourly one 515. Decided: the widest rollup that answers goes first; signal states are routed only where a
+rollup holds 32 readings or more per row, `m4` points and gap runs (32 bytes) at 4. At a rollup's own width the
+stored states are read as they are: merging them per bucket made 30 M one-row groups (16 s for the monthly means).
+
 ## P7: gaps in the readings (2026-10-19)
 
 `gap_count(time, threshold)` and `gap_seconds(time, threshold)` are run aggregates like the signal aggregates, with a

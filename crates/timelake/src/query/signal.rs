@@ -120,7 +120,7 @@ pub(crate) fn of_rollup(function: &str) -> Option<(Output, Method)> {
         Some(_) => return None,
         None => (function, Method::ForwardFill),
     };
-    Output::of(name).filter(|o| *o != Output::State).map(|o| (o, method))
+    Output::of(name).map(|o| (o, method))
 }
 
 /// The rollup name of `output` by `method`.

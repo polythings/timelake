@@ -4,7 +4,7 @@ export const metadata = { title: "Rollups" }
 
 A rollup is a table of aggregates per time bucket, such as the hourly average and maximum of each device, that Timelake keeps up to date as data arrives. Dashboards that ask for hourly values then read one row per device and hour instead of every reading.
 
-A rollup is an ordinary Timelake table, so DuckDB and other Iceberg readers can query it directly. The Timelake reader also uses it on its own: a `GROUP BY time_bucket(…)` query on the raw table that the rollup matches is answered from the rollup, with the same rows the raw table would give.
+A rollup is an ordinary Timelake table, so DuckDB and other Iceberg readers can query it directly. The Timelake reader also uses it on its own: a `GROUP BY time_bucket(…)` query on the raw table that the rollup matches, or a query over a time range grouped by the rollup's columns, is answered from the rollup, with the same rows the raw table would give.
 
 ## Create a rollup
 
@@ -33,9 +33,9 @@ The query must have this shape:
 - It reads one Timelake time-series table, with no `WHERE`, join, or subquery.
 - It groups by one `time_bucket` (or `date_bin`) of the table's time column, with a fixed width (seconds to days, not months) and the default origin.
 - It also groups by any of the table's series-key columns, and selects each of them under its own name.
-- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, `last_value(x ORDER BY time)`, `m4(time, x)` (below), `time_weighted_mean(time, x [, 'linear'])`, `integral(time, x [, 'linear'])`, `counter_diff(time, x)`, and `counter_rate(time, x)`. Each bucket's rows give these exactly.
+- Its aggregates are `count(*)`, `count(x)`, `sum`, `min`, `max`, `avg`, `first_value(x ORDER BY time)`, `last_value(x ORDER BY time)`, `m4(time, x)` (below), `time_weighted_mean(time, x [, 'linear'])`, `integral(time, x [, 'linear'])`, `counter_diff(time, x)`, `counter_rate(time, x)`, `gap_count(time, threshold)`, and `gap_seconds(time, threshold)`. Each bucket's rows give these exactly.
 
-Outputs the query doesn't name get names like `bucket`, `avg_temp`, and `count`. Grouping only by series-key columns keeps a reading in the same group when a newer write replaces it (see [Rows sent twice](/docs/querying#rows-sent-twice)), so a rollup only ever gains rows.
+Outputs the query doesn't name get names like `bucket`, `avg_temp`, `count`, and `gap_count_300s`. Grouping only by series-key columns keeps a reading in the same group when a newer write replaces it (see [Rows sent twice](/docs/querying#rows-sent-twice)), so a rollup only ever gains rows.
 
 `WITH` sets the rollup table's options:
 
@@ -85,6 +85,22 @@ $ timelake sql "EXPLAIN SELECT device_id, time_bucket(INTERVAL '1 hour', time) A
 
 Here the half hour from 00:30 comes from the raw table, and every whole hour after it from the rollup.
 
+### Time ranges without a bucket
+
+A query grouped by some of the rollup's columns but by no `time_bucket`, such as each tag's average over the last day,
+is answered per bucket of the rollup's width the same way, then merged: averages from the buckets' sums and counts,
+so the rollup needs `sum` and `count` of the column for `avg`, and the other aggregates as for wider buckets. On the
+industrial benchmark with an hourly rollup, each tag's statistics over 30 days took 55 ms instead of 1.75 s, and its
+gaps 44 ms instead of 1.34 s.
+
+### Which rollup
+
+When several rollups could answer, the widest goes first: it has the fewest rows. A rollup answers a time-weighted
+average, an integral or a counter only where it holds 32 readings or more per row on average, and `m4` or the gap
+aggregates where it holds 4 or more: merging a bucket's stored run costs about what reading 25 to 50 readings does,
+so a 1-minute rollup of one-second readings answers daily averages faster than the readings (0.29 s against 1.9 s)
+but daily time-weighted means slower (3.6 s against 2.0 s), and an hourly rollup answers both faster.
+
 Buckets older than the raw table's retention are never read from the rollup: the raw table has no rows there, so neither does the answer. Query the rollup table to see that history.
 
 `SET timelake.rollup_routing = false` turns this off for a session, and the table setting `rollup-routing` for one raw table. A session that reads without dedup (`timelake.read_dedup = false`) isn't routed either, since a rollup counts each reading once.
@@ -128,6 +144,12 @@ as they would from the readings. One stored state answers all four for its colum
 `time_weighted_mean(time, x)` also answers `integral(time, x)` and the counters, and the counters from a linear one
 too.
 
+## Gaps
+
+A rollup with `gap_count(time, threshold)` or `gap_seconds(time, threshold)` stores each bucket's run of reading times
+with its gaps for that threshold, which answers both for the same threshold, merged across buckets: a gap from one
+bucket's last reading to the next bucket's first counts too.
+
 ## Rollups of rollups
 
 Define every rollup on the raw table. When a table has several, each is computed from a narrower one where that one is
@@ -159,7 +181,7 @@ print(report["rollups_refreshed"], report["rollup_rows"])
 
 ## Not yet
 
-- Aggregates that need stored state: percentiles, time-weighted averages.
+- Percentiles.
 - Calendar buckets (months), filters in the definition, and routing in plain DuckDB.
 
 The design is in [spec 27](/spec/0027-rollups).

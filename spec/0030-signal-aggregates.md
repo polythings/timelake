@@ -53,7 +53,8 @@ reading).
   generic (`query/runs.rs`: a `Run` trait, the runs of a group and the accumulators), shared with the signal
   aggregates at no cost (hourly means 3.58 → 3.50 s, all four 4.80 → 4.68 s, interleaved runs on a loaded machine).
   IIoT gaps of 100 one-second tags, same answers as the benchmark's `lead()` window form: a day 226 → 77 ms, 30 days
-  17.8 → 1.36 s. Rollups don't store the gap state yet.
+  17.8 → 1.36 s. Rollups store the gap state ([spec 27](0027-rollups.md)): from an hourly rollup, 30 days
+  of gaps in 44 ms.
 
 ## Open questions and issues
 

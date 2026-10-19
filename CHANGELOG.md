@@ -31,6 +31,12 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   stopped for longer than `threshold` (an interval, such as `INTERVAL '5 minutes'`), and how long those gaps lasted in
   all, exact over each group's first to last reading. The gaps of 100 one-second tags: a day 226 → 77 ms, 30 days
   17.8 → 1.4 s against the same query written with `lead()`.
+- Rollups answer queries over a time range without a `time_bucket`, grouped by some of their columns (each tag's
+  average over the last day): the rollup's buckets inside the range, the raw rows at its edges, merged. Averages need
+  the rollup's `sum` and `count` of the column. With an hourly rollup on the industrial benchmark, 30 days of
+  statistics per tag take 55 ms instead of 1.75 s, of time-weighted means 0.15 s instead of 1.5 s.
+- Rollups store `gap_count` and `gap_seconds` (as their state for the threshold) and answer both from it; 30 days of
+  gaps per tag from an hourly rollup: 44 ms instead of 1.34 s.
 - Setting `window-series-order` (`auto`, `true`, `false`): a window over each series in time order
   (`lead(…) OVER (PARTITION BY <series key> ORDER BY time)`) reads the files merged in series order, so they are
   neither redistributed nor sorted. `auto` does so when the files are in one time partition: IIoT `gaps` 260 → 215 ms,
@@ -51,6 +57,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `groupby-orderby-limit`: 254 → 115 ms.
 - Appends to tables with many series extend the last-value index by merging it with the append's newest rows instead
   of sorting both: a 100,000-row append to a table of 1,000,000 series takes 171 ms instead of 264 ms.
+- When several rollups could answer a query, the widest is used. A rollup answers time-weighted averages, integrals
+  and counters only where it holds 32 readings or more per row, `m4` and gaps at 4: daily time-weighted means from a
+  1-minute rollup of one-second readings took 3.6 s, against 2.0 s from the readings, and now read the readings.
+- **Breaking:** default names of rollup columns use `_` where they had `:` (`integral_linear_value`, not
+  `integral:linear_value`). Existing rollups keep their names.
 - Float columns are written with a dictionary, falling back to byte-stream-split once it outgrows its page, instead
   of byte-stream-split alone (setting `float-encoding`). IIoT readings take a third of the space (5 days: 366 → 119
   MB) and TSBS DevOps scans run up to twice as fast (`high-cpu-all` 274 → 136 ms, 38% more space); random doubles cost

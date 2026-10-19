@@ -47,7 +47,9 @@ rollups, join filters, planning. Was P10 of the performance plan.
   ([spec 6](../0006-last-value-index.md)); an index for mostly idle series (#120).
 - A join's runtime filter lists at most 150 keys, so a dashboard over thousands of devices prunes by bounds only
   ([spec 24](../0024-in-list-pruning.md), #121).
-- IIoT `gaps` grows with rows (88 s at 400k series), a rollup case (#122).
+- IIoT `gaps` grows with rows (88 s at 400k series), a rollup case (#122). Since 2026-10-19 it is an aggregate
+  (`gap_count`, `gap_seconds`: a month 13× faster) that rollups store and answer time ranges from (a month from an
+  hourly rollup: 1.34 s → 44 ms on IIoT small); to measure at 400k.
 - Rollup refresh and planning per series ([spec 27](../0027-rollups.md)).
 
 ## History

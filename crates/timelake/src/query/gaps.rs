@@ -16,7 +16,8 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{
-    DataType, Field, FieldRef, Fields, Int64Type, IntervalUnit, TimeUnit, TimestampMicrosecondType,
+    DataType, Field, FieldRef, Fields, Int64Type, IntervalMonthDayNano, IntervalUnit, TimeUnit,
+    TimestampMicrosecondType,
 };
 use datafusion::common::{ScalarValue, exec_err, plan_err};
 use datafusion::error::Result as DfResult;
@@ -24,6 +25,7 @@ use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 use datafusion::physical_expr::expressions::Literal;
+use datafusion::prelude::{Expr, lit};
 
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
@@ -58,6 +60,41 @@ pub(crate) fn udaf(output: Output) -> AggregateUDF {
     AggregateUDF::from(GapAggregate { output, signature: Signature::user_defined(Volatility::Immutable) })
 }
 
+/// A gap aggregate as a rollup names it, with its threshold: `gap_count:300s` (whole seconds) or
+/// `gap_count:1500us`.
+pub(crate) fn rollup_name(output: Output, threshold: i64) -> String {
+    match threshold % 1_000_000 {
+        0 => format!("{}:{}s", output.name(), threshold / 1_000_000),
+        _ => format!("{}:{threshold}us", output.name()),
+    }
+}
+
+/// The gap aggregate and threshold (µs) a rollup's function names.
+pub(crate) fn of_rollup(function: &str) -> Option<(Output, i64)> {
+    let (name, threshold) = function.split_once(':')?;
+    let output = Output::of(name)?;
+    let threshold = match threshold.strip_suffix("us") {
+        Some(us) => us.parse().ok()?,
+        None => threshold.strip_suffix('s')?.parse::<i64>().ok()?.checked_mul(1_000_000)?,
+    };
+    Some((output, threshold))
+}
+
+/// A threshold (µs) as the interval literal the aggregates take.
+pub(crate) fn threshold_literal(threshold: i64) -> Expr {
+    lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 0, threshold * 1_000))))
+}
+
+/// The threshold (µs) of an interval literal without months, as the aggregates take it.
+pub(crate) fn threshold_of_literal(value: &ScalarValue) -> Option<i64> {
+    match value {
+        ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 && i.days >= 0 && i.nanoseconds >= 0 => {
+            Some(i64::from(i.days) * 86_400_000_000 + i.nanoseconds / 1_000)
+        }
+        _ => None,
+    }
+}
+
 /// The type of one run.
 fn run_type() -> DataType {
     DataType::Struct(Fields::from(vec![
@@ -83,12 +120,10 @@ struct GapAggregate {
 /// in microseconds.
 fn threshold_of(args: &AccumulatorArgs<'_>) -> DfResult<i64> {
     let literal = args.exprs.get(1).and_then(|e| e.downcast_ref::<Literal>()).map(Literal::value);
-    match literal {
-        Some(ScalarValue::IntervalMonthDayNano(Some(i))) if i.months == 0 && i.days >= 0 && i.nanoseconds >= 0 => {
-            Ok(i64::from(i.days) * 86_400_000_000 + i.nanoseconds / 1_000)
-        }
-        _ => plan_err!("the threshold must be an interval literal without months, such as INTERVAL '5 minutes'"),
-    }
+    let Some(threshold) = literal.and_then(threshold_of_literal) else {
+        return plan_err!("the threshold must be an interval literal without months, such as INTERVAL '5 minutes'");
+    };
+    Ok(threshold)
 }
 
 impl AggregateUDFImpl for GapAggregate {
@@ -306,6 +341,17 @@ mod tests {
         times.sort_unstable();
         let gaps: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).filter(|&d| d > THRESHOLD).collect();
         (i64::try_from(gaps.len()).unwrap(), gaps.iter().sum())
+    }
+
+    #[test]
+    fn rollup_names() {
+        let names = [(Output::Count, 300_000_000, "gap_count:300s"), (Output::Seconds, 1_500, "gap_seconds:1500us")];
+        for (output, threshold, name) in names {
+            assert_eq!(rollup_name(output, threshold), name);
+            assert_eq!(of_rollup(name), Some((output, threshold)));
+        }
+        assert_eq!(of_rollup("gap_state:300s"), Some((Output::State, 300_000_000)));
+        assert_eq!(of_rollup("gap_count"), None);
     }
 
     #[test]

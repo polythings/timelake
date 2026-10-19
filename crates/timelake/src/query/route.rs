@@ -1,5 +1,7 @@
 //! Rollup routing (spec 27): a `GROUP BY time_bucket(…)` query on a raw table, answered from a
-//! rollup for the buckets the rollup has right, and from the raw table for the rest.
+//! rollup for the buckets the rollup has right, and from the raw table for the rest. A query over a
+//! time range without a bucket (`GROUP BY` keys only) is answered the same way per rollup bucket,
+//! in mergeable form, and merged once more.
 //!
 //! Which buckets a rollup has right takes I/O to find out (its record, the raw table's files), and
 //! optimizer rules can't do I/O: [`prepare`] works it out before planning, and [`RollupRewrite`]
@@ -10,20 +12,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::datasource::{provider_as_source, source_as_provider};
 use datafusion::error::Result as DfResult;
+use datafusion::functions::datetime::date_bin;
 use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
-    Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, LogicalPlan, LogicalPlanBuilder, Operator, Projection, Union,
+    Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, LogicalPlan, LogicalPlanBuilder, Operator, Projection,
+    TableScan, Union,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
-use datafusion::prelude::{cast, ident, lit};
+use datafusion::prelude::{cast, coalesce, ident, lit};
 
 use super::PLANNING_REUSE;
+use super::gaps;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
 use super::settings::SessionSettings;
@@ -53,7 +58,18 @@ struct Candidate {
     /// The buckets this version of the rollup has right: unchanged in the raw table since its
     /// refresh, and within both tables' retention. Bucket-aligned, half-open.
     clean: Ranges,
+    /// How many raw rows each rollup row stands for, on average.
+    raw_rows_per_row: u64,
 }
+
+/// The fewest raw rows per rollup row for answering from stored signal states. Merging an 80-byte
+/// state costs about what reading 25–50 readings does: daily means of the industrial benchmark's
+/// tags from a 1-minute rollup (12 readings a row) took 3.6 s against 2.0 s from the readings, a
+/// month's from an hourly rollup (515 a row) 0.15 s against 1.5 s.
+const SIGNAL_STATE_ROWS: u64 = 32;
+/// The same for the smaller gap runs and `m4` points, which cost a few readings each: a month's
+/// gaps from the 1-minute rollup 0.24 s against 1.2 s.
+const STATE_ROWS: u64 = 4;
 
 /// Routes by raw table, shared by a session and its optimizer rule.
 pub(super) type RouteMap = Arc<RwLock<HashMap<TableName, Arc<Routes>>>>;
@@ -91,6 +107,8 @@ async fn routes_for(
         raw = lake.load(name).await.ok()?;
     }
     let files = raw.files().await.ok()?;
+    let rows = |files: &[crate::table::LiveEntry]| files.iter().map(|f| f.data_file.record_count()).sum::<u64>();
+    let raw_rows = rows(&files);
     let now = chrono::Utc::now().timestamp_micros();
     let mut rollups = vec![];
     for rollup_name in &raw.contract().rollups {
@@ -111,8 +129,12 @@ async fn routes_for(
         let from = [kept(&raw), kept(&rollup)].into_iter().flatten().max();
         let from = from.map_or(-FAR, |t| ceil(t, def.width));
         let clean = complement(&dirty, from, FAR);
-        rollups.push(Candidate { def, rollup: rollup.without_check(), clean });
+        let Ok(rollup_files) = rollup.files().await else { continue };
+        let raw_rows_per_row = raw_rows / rows(&rollup_files).max(1);
+        rollups.push(Candidate { def, rollup: rollup.without_check(), clean, raw_rows_per_row });
     }
+    // The widest first: fewer rows to read and merge for the queries it answers.
+    rollups.sort_by_key(|c| std::cmp::Reverse(c.def.width));
     (!rollups.is_empty()).then_some(Routes { version: raw.version(), rollups })
 }
 
@@ -171,7 +193,8 @@ impl OptimizerRule for RollupRewrite {
 struct Query<'a> {
     table: Table,
     time: String,
-    width: i64,
+    /// The bucket width, or `None` for a query over its whole time range.
+    width: Option<i64>,
     keys: HashSet<&'a str>,
     aggregates: Vec<(String, Option<String>)>,
     /// Inclusive bounds on the time column, in microseconds.
@@ -184,6 +207,7 @@ struct Query<'a> {
 impl RollupRewrite {
     fn route(&self, a: &Aggregate, read_dedup: Option<bool>) -> DfResult<Option<LogicalPlan>> {
         let Some(q) = read_query(a) else { return Ok(None) };
+        let Some(width) = q.width else { return self.route_range(a, &q, read_dedup) };
         let contract = q.table.contract();
         if contract.dedup && read_dedup == Some(false) {
             return Ok(None);
@@ -192,12 +216,12 @@ impl RollupRewrite {
         let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
         for candidate in &routes.rollups {
             let Some(answer) = candidate.answers(&q) else { continue };
-            let Some((first, last)) = full_buckets(q.from, q.to, q.width) else { return Ok(None) };
+            let Some((first, last)) = full_buckets(q.from, q.to, width) else { return Ok(None) };
             // A query bucket comes from the rollup only if all of the rollup's buckets in it do.
             let from_rollup: Ranges = candidate
                 .clean
                 .iter()
-                .map(|&(lo, hi)| (ceil(lo, q.width).max(first), floor(hi, q.width).min(last)))
+                .map(|&(lo, hi)| (ceil(lo, width).max(first), floor(hi, width).min(last)))
                 .filter(|(lo, hi)| lo < hi)
                 .collect();
             if from_rollup.is_empty() {
@@ -207,6 +231,162 @@ impl RollupRewrite {
         }
         Ok(None)
     }
+}
+
+impl RollupRewrite {
+    /// A query over a time range without a bucket: its aggregates in mergeable form (states,
+    /// sums and counts) per bucket of a rollup's width, routed as a bucketed query, then merged by
+    /// the query's keys. The widest rollup that answers goes first.
+    fn route_range(&self, a: &Aggregate, q: &Query<'_>, read_dedup: Option<bool>) -> DfResult<Option<LogicalPlan>> {
+        let Some(parts) = a.aggr_expr.iter().map(|e| partial(e, &q.time)).collect::<Option<Vec<_>>>() else {
+            return Ok(None);
+        };
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(q.table.name()).cloned();
+        let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
+        let mut widths: Vec<i64> = routes.rollups.iter().map(|c| c.def.width).collect();
+        widths.sort_unstable_by(|x, y| y.cmp(x));
+        widths.dedup();
+        let input = Arc::new(with_column(a.input.as_ref().clone(), &q.time)?);
+        let (qualifier, _) = input.schema().qualified_field_with_unqualified_name(&q.time)?;
+        let time = Expr::Column(Column::new(qualifier.cloned(), &q.time));
+        let inputs: Vec<Expr> = parts
+            .iter()
+            .flat_map(|(exprs, _)| exprs.iter().cloned())
+            .enumerate()
+            .map(|(i, e)| e.alias(format!("__part{i}")))
+            .collect();
+        for width in widths {
+            let stride = lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 0, width * 1_000))));
+            let bucket = date_bin().call(vec![stride, time.clone()]).alias("__bucket");
+            let groups = a.group_expr.iter().cloned().chain([bucket]).collect();
+            let inner = Aggregate::try_new(input.clone(), groups, inputs.clone())?;
+            let Some(routed) = self.route(&inner, read_dedup)? else { continue };
+            // Merged by the query's keys: the inner query's grouping columns, then the merges.
+            let schema = routed.schema().clone();
+            let keys = (0..a.group_expr.len()).map(|i| Expr::Column(Column::from(schema.qualified_field(i))));
+            let mut next = 0;
+            let merges = parts.iter().map(|(exprs, merge)| {
+                let columns: Vec<Expr> = (next..next + exprs.len()).map(|i| ident(format!("__part{i}"))).collect();
+                next += exprs.len();
+                merge.finish(&columns)
+            });
+            let merged = LogicalPlanBuilder::from(routed).aggregate(keys, merges)?.build()?;
+            let merged_schema = merged.schema().clone();
+            let mut exprs = vec![];
+            for (i, (qualifier, field)) in a.schema.iter().enumerate() {
+                let mut e = Expr::Column(Column::from(merged_schema.qualified_field(i)));
+                if e.get_type(&merged_schema)? != *field.data_type() {
+                    e = e.cast_to(field.data_type(), &merged_schema)?;
+                }
+                exprs.push(e.alias_qualified(qualifier.cloned(), field.name()));
+            }
+            let plan = Projection::try_new_with_schema(exprs, Arc::new(merged), a.schema.clone())?;
+            return Ok(Some(LogicalPlan::Projection(plan)));
+        }
+        Ok(None)
+    }
+}
+
+/// `plan` (a scan under filters, aliases and projections of columns, as [`read_query`] takes it)
+/// with column `name` of the scanned table in its output, where it was projected away.
+fn with_column(plan: LogicalPlan, name: &str) -> DfResult<LogicalPlan> {
+    if plan.schema().has_column_with_unqualified_name(name) {
+        return Ok(plan);
+    }
+    plan.transform_up(|node| match node {
+        LogicalPlan::TableScan(mut scan) => {
+            let index = scan.source.schema().index_of(name)?;
+            if let Some(projection) = scan.projection.as_mut().filter(|p| !p.contains(&index)) {
+                projection.push(index);
+                let projection = Some(projection.clone());
+                let s = TableScan::try_new(scan.table_name, scan.source, projection, scan.filters, scan.fetch)?;
+                return Ok(Transformed::yes(LogicalPlan::TableScan(s)));
+            }
+            Ok(Transformed::no(LogicalPlan::TableScan(scan)))
+        }
+        LogicalPlan::Projection(p) if !p.schema.has_column_with_unqualified_name(name) => {
+            let (qualifier, _) = p.input.schema().qualified_field_with_unqualified_name(name)?;
+            let column = Expr::Column(Column::new(qualifier.cloned(), name));
+            let exprs = p.expr.into_iter().chain([column]).collect();
+            Ok(Transformed::yes(LogicalPlan::Projection(Projection::try_new(exprs, p.input)?)))
+        }
+        other => other.recompute_schema().map(Transformed::yes),
+    })
+    .map(|t| t.data)
+}
+
+/// How the per-bucket parts of an aggregate merge into its value over a whole range.
+enum Merge {
+    /// Counts add up, to 0 over no rows.
+    Count,
+    Sum,
+    Min,
+    Max,
+    /// From each bucket's sum and count: exact, where averages times counts would round.
+    Avg,
+    /// Points, or a signal's or the gaps' runs, merged by the aggregate.
+    State(Box<dyn Fn(Expr) -> Expr>),
+}
+
+impl Merge {
+    fn finish(&self, parts: &[Expr]) -> Expr {
+        let part = || parts[0].clone();
+        match self {
+            Self::Count => coalesce(vec![agg::sum(part()), lit(0i64)]),
+            Self::Sum => agg::sum(part()),
+            Self::Min => agg::min(part()),
+            Self::Max => agg::max(part()),
+            Self::Avg => {
+                let sum = |p: &Expr| cast(agg::sum(p.clone()), DataType::Float64);
+                sum(&parts[0]) / sum(&parts[1])
+            }
+            Self::State(merge) => merge(part()),
+        }
+    }
+}
+
+/// An aggregate as parts a rollup can answer per bucket, and how they merge; `None` for one that
+/// doesn't merge this way (`first_value`, `last_value`, `DISTINCT`, …).
+fn partial(e: &Expr, time: &str) -> Option<(Vec<Expr>, Merge)> {
+    let Expr::AggregateFunction(f) = unalias(e) else { return None };
+    let params = &f.params;
+    if params.distinct || params.filter.is_some() || params.null_treatment.is_some() || !params.order_by.is_empty() {
+        return None;
+    }
+    let whole = Expr::AggregateFunction(f.clone());
+    let name = f.func.name();
+    Some(match name {
+        "count" => (vec![whole], Merge::Count),
+        "sum" => (vec![whole], Merge::Sum),
+        "min" => (vec![whole], Merge::Min),
+        "max" => (vec![whole], Merge::Max),
+        "avg" => {
+            let [x] = params.args.as_slice() else { return None };
+            (vec![agg::sum(x.clone()), agg::count(x.clone())], Merge::Avg)
+        }
+        "m4" => (vec![whole], Merge::State(Box::new(|p| super::m4::m4_udaf().call(vec![p])))),
+        _ => {
+            if !matches!(params.args.first(), Some(Expr::Column(c)) if c.name == time) {
+                return None;
+            }
+            if let Some(output) = Output::of(name).filter(|o| *o != Output::State) {
+                let method = match params.args.get(2) {
+                    Some(Expr::Literal(ScalarValue::Utf8(Some(m)), _)) => Some(lit(m.clone())),
+                    Some(_) => return None,
+                    None => None,
+                };
+                let state = udaf(Output::State).call(params.args.clone());
+                let merge = move |p| udaf(output).call([p].into_iter().chain(method.clone()).collect());
+                (vec![state], Merge::State(Box::new(merge)))
+            } else {
+                let output = gaps::Output::of(name).filter(|o| *o != gaps::Output::State)?;
+                let threshold = params.args.get(1)?.clone();
+                let state = gaps::udaf(gaps::Output::State).call(params.args.clone());
+                let merge = move |p| gaps::udaf(output).call(vec![p, threshold.clone()]);
+                (vec![state], Merge::State(Box::new(merge)))
+            }
+        }
+    })
 }
 
 /// How a rollup answers a query.
@@ -224,7 +404,18 @@ impl Candidate {
     /// keys include the query's.
     fn answers(&self, q: &Query<'_>) -> Option<Answer> {
         let keys: HashSet<&str> = self.def.keys.iter().map(String::as_str).collect();
-        if q.width % self.def.width != 0 || !q.keys.is_subset(&keys) {
+        let width = q.width?;
+        if width % self.def.width != 0 || !q.keys.is_subset(&keys) {
+            return None;
+        }
+        // Stored states answer only where the rollup holds enough readings per row to be cheaper.
+        let needs = q.aggregates.iter().map(|(f, _)| match f.as_str() {
+            _ if of_rollup(f).is_some() => SIGNAL_STATE_ROWS,
+            "m4" => STATE_ROWS,
+            _ if gaps::of_rollup(f).is_some() => STATE_ROWS,
+            _ => 0,
+        });
+        if needs.max().unwrap_or(0) > self.raw_rows_per_row {
             return None;
         }
         let stored = |function: &str, column: &Option<String>| {
@@ -239,17 +430,43 @@ impl Candidate {
             let a =
                 self.def.aggregates.iter().find(|a| a.column == *column && of_rollup(&a.function).is_some_and(fits))?;
             let current = schema.field_with_name(&a.name).is_ok_and(|f| layout(f.data_type()) == layout(&state_type()));
-            current.then(|| ident(&a.name))
+            current.then(|| a.name.clone())
         };
-        let states = q.aggregates.iter().any(|(f, _)| of_rollup(f).is_some());
-        if self.def.width == q.width && keys == q.keys && !states {
-            let columns = q.aggregates.iter().map(|(f, c)| stored(f, c)).collect::<Option<_>>()?;
+        // The gap aggregates' stored state answers both for its threshold.
+        let gap_state = |threshold: i64| {
+            let a = self
+                .def
+                .aggregates
+                .iter()
+                .find(|a| gaps::of_rollup(&a.function).is_some_and(|(_, t)| t == threshold))?;
+            let current =
+                schema.field_with_name(&a.name).is_ok_and(|f| layout(f.data_type()) == layout(&gaps::state_type()));
+            current.then(|| a.name.clone())
+        };
+        // At the rollup's own buckets and keys, each row is a query row: stored values and states are
+        // read as they are. A stored state's value (a signal or gap aggregate's) has to be computed.
+        let as_stored =
+            |(function, column): &(String, Option<String>)| match (of_rollup(function), gaps::of_rollup(function)) {
+                (Some((Output::State, method)), _) => state((Output::State, method), column),
+                (None, Some((gaps::Output::State, threshold))) => gap_state(threshold),
+                (None, None) => stored(function, column),
+                _ => None,
+            };
+        if self.def.width == width
+            && keys == q.keys
+            && let Some(columns) = q.aggregates.iter().map(as_stored).collect::<Option<_>>()
+        {
             return Some(Answer::Stored(columns));
         }
         let by_bucket = || vec![ident(&self.def.bucket).sort(true, false)];
         let merged = q.aggregates.iter().map(|(function, column)| {
             Some(match function.as_str() {
-                "count" | "sum" => agg::sum(ident(stored(function, column)?)),
+                // `count(column)` is `count(*)` where the column can't be null.
+                "count" => agg::sum(ident(match column {
+                    Some(c) => stored(function, column).or_else(|| self.count_of(c, q))?,
+                    None => stored(function, column)?,
+                })),
+                "sum" => agg::sum(ident(stored(function, column)?)),
                 "min" => agg::min(ident(stored(function, column)?)),
                 "max" => agg::max(ident(stored(function, column)?)),
                 "first_value" => agg::first_value(ident(stored(function, column)?), by_bucket()),
@@ -266,14 +483,19 @@ impl Candidate {
                     };
                     cast(agg::sum(total), DataType::Float64) / cast(agg::sum(ident(n)), DataType::Float64)
                 }
-                f => {
-                    let (output, method) = of_rollup(f)?;
-                    let mut args = vec![state((output, method), column)?];
-                    if method == Method::Linear {
-                        args.push(lit("linear"));
+                f => match (of_rollup(f), gaps::of_rollup(f)) {
+                    (Some((output, method)), _) => {
+                        let mut args = vec![ident(state((output, method), column)?)];
+                        if method == Method::Linear {
+                            args.push(lit("linear"));
+                        }
+                        udaf(output).call(args)
                     }
-                    udaf(output).call(args)
-                }
+                    (None, Some((output, threshold))) => {
+                        gaps::udaf(output).call(vec![ident(gap_state(threshold)?), gaps::threshold_literal(threshold)])
+                    }
+                    (None, None) => return None,
+                },
             })
         });
         merged.collect::<Option<_>>().map(Answer::Merged)
@@ -347,7 +569,7 @@ fn read_query(a: &Aggregate) -> Option<Query<'_>> {
         let (lo, hi) = time_bounds(f, &time)?;
         (from, to) = (from.max(lo), to.min(hi));
     }
-    Some(Query { table, time, width: width?, keys, aggregates, from, to, key_filters })
+    Some(Query { table, time, width, keys, aggregates, from, to, key_filters })
 }
 
 /// The inclusive bounds (µs) a comparison of the time column with a constant puts on it.

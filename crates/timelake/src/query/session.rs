@@ -80,6 +80,11 @@ impl Session {
         } else {
             config.with_option_extension(SessionSettings::default())
         };
+        // Rollup routing unions a raw table's rows with a rollup's, whose columns carry other Iceberg
+        // field ids: DataFusion's logical union drops metadata its inputs disagree on, the physical
+        // union merges it, and its check of an aggregate's input schema rejects the difference.
+        let mut config = config;
+        config.options_mut().execution.skip_physical_aggregate_schema_check = true;
         let config = config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace);
         let routes = RouteMap::default();
         let state = SessionStateBuilder::new()
