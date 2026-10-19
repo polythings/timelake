@@ -1,7 +1,7 @@
 # Experiments of 2026-10-19 (P7, P8)
 
-Decisions measured outside timebench, with scratch builds, the CLI, DataFusion from Python or `EXPLAIN ANALYZE`; no
-run files. The numbers and decisions are in [`../../PERFORMANCE.md`](../../PERFORMANCE.md). M1 Pro laptop, release
+Decisions measured with scratch builds, the CLI, DataFusion from Python or `EXPLAIN ANALYZE`, and one set of timebench
+A/B runs (in `runs/`, below). The numbers and decisions are in [`../../PERFORMANCE.md`](../../PERFORMANCE.md). M1 Pro laptop, release
 builds, local disk, best of 7 runs of a fresh process (DataFusion from Python: best of 7 in one process).
 
 | Experiment | Data | Arms | Result | Decision (section of PERFORMANCE.md) |
@@ -16,3 +16,9 @@ builds, local disk, best of 7 runs of a fresh process (DataFusion from Python: b
 | Time in a state | IIoT `time-above-limit`, `uptime` | `lead()` window, signal aggregate of a condition | 334 → 191 ms, 33 → 31 ms, same answers | conditions as values (P7: time in a state) |
 | Last-value index per commit | 100k and 1M series, 100k-row appends | sort vs k-way merge of the indexes; ZSTD 3, ZSTD 1, LZ4, none | append 264 → 171 ms at 1M; codecs 50–78 ms | merge, ZSTD 3 (P10: extending the last-value index) |
 | Newest-first buckets | DevOps `groupby-orderby-limit`, IIoT newest rows | one or many output partitions, skipping old rows | 254 → 115 ms; rows 70 → 61 ms | many partitions for buckets, one for rows (P8: newest-first for the newest buckets) |
+
+## Timebench runs
+
+| Experiment | Workload, target | Arms (label: what differs) | Runs | Result | Decision |
+|---|---|---|---:|---|---|
+| Dictionary size limit | TSBS IoT standard; local | `dict-1m-r1/2`: Parquet's 1 MiB; `dict-128k-r1/2`, `dict-32k-r1/2`: the limit set by a scratch `TL_DICT_LIMIT`; `bss-r1/2`: byte-stream-split floats (`TL_BSS`) | 8 | Geomean first/best 21.8/10.5, 20.9/9.7, 22.0/9.5, 23.3/10.8 ms; an IIoT day 24.7 MB at 1 MiB, 71.2 MB at 128 KiB | 1 MiB stays (P8: float encoding) |

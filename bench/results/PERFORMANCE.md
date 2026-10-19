@@ -95,6 +95,22 @@ Timelake (a scratch switch), Timelake's reader, best of 7:
 | 4 M random doubles, size | 28.6 MB | 31.8 MB (falling back to byte-stream-split: 30.0) | |
 | their `avg`, `max` per device | 25.5 ms | 32.2 ms (falling back: 27.1) | |
 
+**Dictionary size limit (later the same day).** The first local TSBS runs with dictionaries (`../results/runs`,
+2026-10-19) showed TSBS IoT `latitude` and `longitude` filling 1 MiB dictionaries (490 KiB compressed per column
+chunk) before falling back, which a one-truck query reads and decodes too. A/B, TSBS IoT standard, two rounds each,
+compacted tables, geomean over the 17 queries (first run / best repeat), and one IIoT day's size:
+
+| Dictionary limit | All queries | Point queries | TSBS IoT size | IIoT day size |
+|---|---:|---:|---:|---:|
+| 1 MiB (Parquet's default) | 21.8 / 10.5 ms | 7.8 / 2.0 ms | 331 MiB | 24.7 MB |
+| 128 KiB | 20.9 / 9.7 ms | 7.2 / 1.6 ms | 331 MiB | 71.2 MB |
+| 32 KiB | 22.0 / 9.5 ms | 7.8 / 1.6 ms | 328 MiB | |
+| none (byte-stream-split) | 23.3 / 10.8 ms | 7.4 / 1.7 ms | 305 MiB | |
+
+The 1 MiB limit stays: 128 KiB is a few percent faster on TSBS IoT but makes IIoT data three times larger, its
+dictionaries being between the two. The point queries' slower first runs than on 2026-10-16 (`one-truck-latest`
+4 → 8 ms) appear with byte-stream-split too, so they come from elsewhere (open).
+
 Chosen: a dictionary, falling back to byte-stream-split once it outgrows its page (setting `float-encoding`,
 `byte-stream-split` for the old encoding). Hourly chunks cut the all-host DevOps queries 20–25% (12 of 24 files read
 whole instead of half of one file) and cost per-series queries little, but the chunk is fixed at creation; left at a
