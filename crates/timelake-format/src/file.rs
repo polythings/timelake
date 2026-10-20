@@ -465,23 +465,25 @@ fn keep(bounds: &mut BTreeMap<i32, Vec<u8>>, id: i32, value: Vec<u8>, descr: &Co
 }
 
 /// A Parquet statistic's plain encoding as an Iceberg bound. They agree for booleans, ints,
-/// longs, floats, doubles, dates, times, timestamps, strings, binary, and fixed; decimals stored as
-/// INT32 or INT64 become big-endian bytes. INT96 has no Iceberg type.
+/// longs, floats, doubles, dates, times, timestamps, strings, binary, and fixed; decimals become
+/// the shortest big-endian bytes (stored as INT32 or INT64 they are little-endian, as fixed or
+/// binary padded). INT96 has no Iceberg type.
 fn bound(plain: &[u8], stats: &Statistics, descr: &ColumnDescriptor) -> Option<Vec<u8>> {
     let decimal = matches!(descr.logical_type_ref(), Some(LogicalType::Decimal { .. }));
     match (stats, decimal) {
         (Statistics::Int96(_), _) => None,
-        (Statistics::Int32(_), true) => Some(minimal_be(i128::from(i32::from_le_bytes(plain.try_into().ok()?)))),
-        (Statistics::Int64(_), true) => Some(minimal_be(i128::from(i64::from_le_bytes(plain.try_into().ok()?)))),
+        (Statistics::Int32(_), true) => Some(minimal_be(&i32::from_le_bytes(plain.try_into().ok()?).to_be_bytes())),
+        (Statistics::Int64(_), true) => Some(minimal_be(&i64::from_le_bytes(plain.try_into().ok()?).to_be_bytes())),
+        (_, true) => Some(minimal_be(plain)),
         _ => Some(plain.to_vec()),
     }
 }
 
-/// The shortest big-endian two's complement bytes of `v` (Iceberg's decimal bound encoding).
-fn minimal_be(v: i128) -> Vec<u8> {
-    let bytes = v.to_be_bytes();
+/// The shortest big-endian two's complement bytes of the value in `bytes` (Iceberg's decimal
+/// bound encoding): leading bytes that only extend the sign are dropped.
+fn minimal_be(bytes: &[u8]) -> Vec<u8> {
     let mut start = 0;
-    while start < bytes.len() - 1 {
+    while start + 1 < bytes.len() {
         let (b, next) = (bytes[start], bytes[start + 1]);
         if (b == 0 && next & 0x80 == 0) || (b == 0xff && next & 0x80 != 0) {
             start += 1;
@@ -613,13 +615,32 @@ mod tests {
 
     #[test]
     fn decimal_bounds_are_minimal_big_endian() {
-        assert_eq!(minimal_be(0), [0]);
-        assert_eq!(minimal_be(127), [0x7f]);
-        assert_eq!(minimal_be(128), [0x00, 0x80]);
-        assert_eq!(minimal_be(-1), [0xff]);
-        assert_eq!(minimal_be(-129), [0xff, 0x7f]);
-        assert_eq!(be_value(&minimal_be(-129)), -129);
-        assert_eq!(be_value(&minimal_be(1 << 40)), 1 << 40);
+        let minimal = |v: i128| minimal_be(&v.to_be_bytes());
+        assert_eq!(minimal(0), [0]);
+        assert_eq!(minimal(127), [0x7f]);
+        assert_eq!(minimal(128), [0x00, 0x80]);
+        assert_eq!(minimal(-1), [0xff]);
+        assert_eq!(minimal(-129), [0xff, 0x7f]);
+        assert_eq!(be_value(&minimal(-129)), -129);
+        assert_eq!(be_value(&minimal(1 << 40)), 1 << 40);
+    }
+
+    /// Wide decimals, stored as fixed-length bytes, get minimal bounds too.
+    #[test]
+    fn fixed_length_decimal_bounds_are_minimal() {
+        use arrow_array::Decimal128Array;
+
+        let schema = Arc::new(Schema::new(vec![field("d", DataType::Decimal128(38, 2), 1)]));
+        let values = Decimal128Array::from(vec![-129, 5, 1 << 40]).with_precision_and_scale(38, 2).unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(values)]).unwrap();
+        let contract = Contract::from_properties(&HashMap::new()).unwrap();
+        let mut w =
+            FileWriter::new(schema.clone(), writer_properties(&schema, &contract, "test", DATA_PAGE_ROWS).unwrap())
+                .unwrap();
+        w.write(&batch).unwrap();
+        let (_, stats) = w.finish().unwrap();
+        assert_eq!(stats.lower_bounds[&1], [0xff, 0x7f]);
+        assert_eq!(stats.upper_bounds[&1], [0x01, 0, 0, 0, 0, 0]);
     }
 
     /// A level the codec doesn't have is an error, not the default level.

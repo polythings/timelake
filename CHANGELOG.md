@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- Data files recorded the bounds of a decimal column wider than 18 digits as 16 padded bytes; the Iceberg spec asks
+  for the fewest bytes that hold the value, as Timelake already wrote narrower decimals.
 - A `write.parquet.compression-level` that isn't a level of the codec (`high`, or a negative level for `gzip` or
   `brotli`) was ignored, and files were written at the default level. Setting one is now an error, and writing to a
   table that has one fails, naming the property.
