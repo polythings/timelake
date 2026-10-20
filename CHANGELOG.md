@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The WebAssembly reader compared the row-group statistics of a decimal column, stored unscaled (1.5 as 15), with a
+  query's values, so a filter on `1.5` skipped the rows holding it. Statistics of decimals, unsigned integers and other
+  types it can't compare are no longer used to skip row groups.
 - The WebAssembly reader read the file bounds of a `timestamp_ns` column in a table's head as microseconds, so a
   time range skipped files that held matching rows. It scales them as it does a manifest's.
 - Compaction from the TypeScript client dropped the table's last-value index: later appends didn't rebuild it, so

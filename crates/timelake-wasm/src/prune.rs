@@ -71,19 +71,39 @@ pub(crate) fn row_group_may_match(
 ) -> bool {
     may_match(spec, |c| {
         let Some(column) = column_index(c).map(|i| rg.column(i)) else { return (None, None) };
-        column.statistics().map_or((None, None), |s| stat_bounds(s, timestamp_unit(column.column_descr())))
+        column.statistics().map_or((None, None), |s| stat_bounds(s, stats_kind(column.column_descr())))
     })
 }
 
-/// The unit of a timestamp column; `None` for other columns.
-fn timestamp_unit(column: &ColumnDescriptor) -> Option<TimeUnit> {
+/// How a column's Parquet statistics compare with the values of a query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatsKind {
+    /// As stored: plain numbers, dates and text.
+    Plain,
+    /// Timestamps in this unit, compared in microseconds.
+    Time(TimeUnit),
+    /// Not at all: decimals (stored unscaled), unsigned integers and other logical types.
+    Opaque,
+}
+
+fn stats_kind(column: &ColumnDescriptor) -> StatsKind {
     match column.logical_type_ref() {
-        Some(LogicalType::Timestamp { unit, .. }) => Some(*unit),
-        Some(_) => None,
+        Some(LogicalType::Timestamp { unit, .. }) => StatsKind::Time(*unit),
+        Some(LogicalType::Integer { is_signed: true, .. } | LogicalType::Date | LogicalType::String) => {
+            StatsKind::Plain
+        }
+        Some(_) => StatsKind::Opaque,
         None => match column.converted_type() {
-            ConvertedType::TIMESTAMP_MILLIS => Some(TimeUnit::MILLIS),
-            ConvertedType::TIMESTAMP_MICROS => Some(TimeUnit::MICROS),
-            _ => None,
+            ConvertedType::NONE
+            | ConvertedType::UTF8
+            | ConvertedType::DATE
+            | ConvertedType::INT_8
+            | ConvertedType::INT_16
+            | ConvertedType::INT_32
+            | ConvertedType::INT_64 => StatsKind::Plain,
+            ConvertedType::TIMESTAMP_MILLIS => StatsKind::Time(TimeUnit::MILLIS),
+            ConvertedType::TIMESTAMP_MICROS => StatsKind::Time(TimeUnit::MICROS),
+            _ => StatsKind::Opaque,
         },
     }
 }
@@ -98,10 +118,14 @@ pub(crate) fn scale_to_micros(x: i64, unit: TimeUnit, upper: bool) -> i64 {
     }
 }
 
-fn stat_bounds(s: &Statistics, unit: Option<TimeUnit>) -> (Option<Bound>, Option<Bound>) {
+fn stat_bounds(s: &Statistics, kind: StatsKind) -> (Option<Bound>, Option<Bound>) {
     let str_bound = |b: Option<&parquet::data_type::ByteArray>| b?.as_utf8().ok().map(|s| Bound::Str(s.to_string()));
-    let time = |x: i64, upper| Bound::Int(unit.map_or(x, |u| scale_to_micros(x, u, upper)));
+    let time = |x: i64, upper| match kind {
+        StatsKind::Time(unit) => Bound::Int(scale_to_micros(x, unit, upper)),
+        _ => Bound::Int(x),
+    };
     match s {
+        _ if kind == StatsKind::Opaque => (None, None),
         Statistics::Int32(v) => {
             (v.min_opt().map(|x| Bound::Int(i64::from(*x))), v.max_opt().map(|x| Bound::Int(i64::from(*x))))
         }
@@ -159,5 +183,33 @@ mod tests {
         // Fractional values compare numerically; strings don't compare with ints, so keep the file.
         assert_eq!(planned(&files, &spec(json!({ "series": { "tag": [5.5] } }))), Vec::<String>::new());
         assert_eq!(planned(&files, &spec(json!({ "series": { "tag": ["x"] } }))), ["a", "b"]);
+    }
+
+    /// The metadata of a one-row Parquet file holding `column` as `c`.
+    fn row_group(column: arrow_array::ArrayRef) -> parquet::file::metadata::ParquetMetaData {
+        let batch = arrow_array::RecordBatch::try_from_iter([("c", column)]).unwrap();
+        let mut bytes = vec![];
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        parquet::file::metadata::ParquetMetaDataReader::new().parse_and_finish(&bytes::Bytes::from(bytes)).unwrap()
+    }
+
+    /// Decimals are stored unscaled (1.5 as 15) and unsigned integers as signed ones: their
+    /// statistics can't rule out a value, so the row group is read.
+    #[test]
+    fn statistics_of_decimals_and_unsigned_integers_never_prune() {
+        use arrow_array::{Decimal128Array, Int32Array, UInt32Array};
+
+        let may_match = |column: arrow_array::ArrayRef, v: serde_json::Value| {
+            let meta = row_group(column);
+            row_group_may_match(meta.row_group(0), &spec(json!({ "series": { "c": [v] } })), |_| Some(0))
+        };
+        let decimal = || std::sync::Arc::new(Decimal128Array::from(vec![15]).with_precision_and_scale(5, 1).unwrap());
+        assert!(may_match(decimal(), json!(1.5)));
+        let unsigned = std::sync::Arc::new(UInt32Array::from(vec![u32::MAX]));
+        assert!(may_match(unsigned, json!(u32::MAX)));
+        // Plain integers still prune.
+        assert!(!may_match(std::sync::Arc::new(Int32Array::from(vec![15])), json!(1.5)));
     }
 }
