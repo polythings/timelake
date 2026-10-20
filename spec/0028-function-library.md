@@ -39,8 +39,8 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Quantiles | `quantile` (exact, pandas' linear interpolation), `approx_quantile` (a t-digest: mergeable sketch state, so it could roll up across buckets) | Built; a rollup storing the digest is planned (#125) |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built but `histogram` (#126): DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
-| Finance | `ohlc` (open, high, low, close; volume is a `sum`) | Planned (#126) |
-| Downsampling | `lttb` | Planned (#126) |
+| Finance | `ohlc(time, price)` (a struct of open, high, low, close; volume is a `sum`) | Built |
+| Downsampling | `lttb(time, value, n)` | Built (keeps a group's readings; `m4` is the mergeable one) |
 | Rolling and anomalies | `rolling_mean(x, n)`, `rolling_std(x, n)` (`rolling(n).mean()`), `zscore`, flatlines: `flatline_count(time, value, threshold)`, `flatline_seconds(…)` (stuck sensors) | Built: running sums, 4× faster than a framed `avg` over 60 rows; flatlines as run aggregates, 34× faster than a window query |
 
 **Availability by engine:**
@@ -77,3 +77,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
   `rolling_std` and `zscore` (#126).
 - 2026-10-20: `flatline_count` and `flatline_seconds` (#126).
 - 2026-10-20: `quantile` and `approx_quantile` (#125).
+- 2026-10-20: `ohlc` and `lttb` (#126).

@@ -141,6 +141,22 @@ exactly across partitions.
 (`quantile(x, 0.5)` is the median). `approx_quantile(x, q)` estimates it from a t-digest in bounded memory, for very
 large groups.
 
+## Downsampling and bars
+
+For charts, `m4(time, value)` gives each group's first, smallest, largest and last points (a list of
+`{time, value}`), and `lttb(time, value, n)` downsamples a whole series to `n` points that keep its shape
+(Largest-Triangle-Three-Buckets). `m4` merges from rollups and is the cheaper of the two: 30 days of a 1-second tag,
+2.6 M readings, took 0.03 s as 2-hour `m4` buckets and 0.11 s as `lttb` to 500 points.
+
+`ohlc(time, price)` gives a group's open, high, low and close as a struct, as pandas' `ohlc`:
+
+```sql
+SELECT minute, bar['open'] AS open, bar['high'] AS high, bar['low'] AS low, bar['close'] AS close
+FROM (SELECT time_bucket(INTERVAL '1 minute', time) AS minute, ohlc(time, price) AS bar
+      FROM market.trades WHERE symbol = 'ABC' GROUP BY 1)
+ORDER BY minute
+```
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is

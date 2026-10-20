@@ -46,7 +46,7 @@ fn point(tz: Option<Arc<str>>) -> DataType {
 }
 
 /// The type `m4` returns: a list of points.
-fn points(tz: Option<Arc<str>>) -> DataType {
+pub(super) fn points(tz: Option<Arc<str>>) -> DataType {
     DataType::List(Arc::new(Field::new_list_field(point(tz), true)))
 }
 
