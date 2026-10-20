@@ -21,6 +21,7 @@ from timebench.systems import Runner, System, rows_result
 
 if TYPE_CHECKING:
     import psycopg
+    import questdb
 
     from timebench.targets import Place, StorageStats
     from timebench.workloads import TableSpec
@@ -73,6 +74,7 @@ class QuestDB(System):
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
         self._conn: psycopg.Connection | None = None
+        self._db: questdb.QuestDB | None = None
         self.specs: dict[str, TableSpec] = {}
 
     @property
@@ -81,6 +83,21 @@ class QuestDB(System):
         if self._conn is None:
             self._conn = connect()
         return self._conn
+
+    @property
+    def db(self) -> questdb.QuestDB:
+        """The writer's QWP client, kept across commits as the other databases keep theirs (until ``settle``)."""
+        if self._db is None:
+            import questdb
+
+            self._db = questdb.connect(f"ws::addr={http_addr()};")
+        return self._db
+
+    def close_db(self) -> None:
+        """Closes the QWP client, if open."""
+        if self._db is not None:
+            self._db.close()
+            self._db = None
 
     def execute(self, sql: str, params: Any = None) -> list[tuple[Any, ...]]:  # noqa: ANN401 (DB-API parameters)
         """Runs a statement built from this module's templates and the workload's names."""
@@ -131,16 +148,14 @@ class QuestDB(System):
                 rows = list(zip(*(c.to_pylist() for c in data.columns), strict=True))
                 cur.executemany(cast("LiteralString", f"INSERT INTO {table} ({names}) VALUES ({marks})"), rows)
             return
-        import questdb
-
-        with questdb.connect(f"ws::addr={http_addr()};") as db:
-            # The client's columnar path takes each column as one buffer: a batch made of several chunks (IIoT's
-            # arrivals) has its string columns in pieces, which it rejects (#154).
-            frame = data.combine_chunks().to_pandas()
-            db.dataframe(frame, table_name=table, symbols=list(spec.series_key), at=spec.time_column)
+        # The client's columnar path takes each column as one buffer: a batch made of several chunks (IIoT's
+        # arrivals) has its string columns in pieces, which it rejects (#154). It returns once the frame is committed.
+        frame = data.combine_chunks().to_pandas()
+        self.db.dataframe(frame, table_name=table, symbols=list(spec.series_key), at=spec.time_column)
 
     @override
     def settle(self) -> float:
+        self.close_db()
         start = time.monotonic()
         while time.monotonic() < start + SETTLE_TIMEOUT_S:
             pending = self.execute("SELECT count() FROM wal_tables() WHERE writerTxn < sequencerTxn")
@@ -157,6 +172,7 @@ class QuestDB(System):
     @override
     def maintain(self) -> None:
         self._conn = None  # the server closes connections left idle since ingest
+        self.close_db()
         self.settle()  # nothing to compact: deduplicated on write, partitions written in order
 
     @override

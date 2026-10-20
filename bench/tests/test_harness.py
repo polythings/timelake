@@ -438,3 +438,40 @@ def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(m
     assert min(ran) >= start_at
     assert max(ran) <= start_at + 0.3
     assert len(out["latencies"]) == len(ran)
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new client per commit puts a handshake in every commit's time, which the other databases don't pay."""
+    import types
+
+    from timebench.systems.questdb import QuestDB
+
+    clients: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self) -> None:
+            self.state: dict[str, object] = {"frames": 0, "closed": False}
+            clients.append(self.state)
+
+        def dataframe(self, *_: object, **__: object) -> None:
+            self.state["frames"] = int(str(self.state["frames"])) + 1
+
+        def close(self) -> None:
+            self.state["closed"] = True
+
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self.close()
+
+    monkeypatch.setitem(sys.modules, "questdb", types.SimpleNamespace(connect=lambda _conf: Client()))
+    questdb = QuestDB(Place(Target("local"), "tiny", "questdb"), "tiny")
+    monkeypatch.setattr(questdb, "execute", lambda *_: [(0,)])
+    questdb.specs["readings"] = TableSpec("readings", "time", ("device",))
+    data = Tiny().stream().__next__()[0][1]
+    for _ in range(3):
+        questdb.append("readings", data)
+    questdb.settle()
+    assert clients == [{"frames": 3, "closed": True}]
