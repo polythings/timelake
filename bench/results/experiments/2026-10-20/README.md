@@ -46,3 +46,12 @@ processes, interleaved), TSBS IoT standard: imported with the ingest-time column
 The ingest-time column costs at most 0.2 ms, and the streamed table is back at the 2026-10-16 run's numbers
 (one-truck-latest 4, one-truck-last-hour 7 ms): the 2026-10-19 rise to 8 and 13 ms came from a machine at load 40–100,
 not from the code. Decision: nothing to change; first runs on a busy machine aren't comparable across runs.
+
+## Declaring the sort order on byte ranges
+
+Plain scans leave DataFusion to split large files into byte ranges, and so don't declare the files' (series, time)
+order. A prototype split each sorted file into byte ranges itself, one per partition, and declared the order, so
+aggregates by series could stream instead of hashing. TSBS IoT standard, interleaved, best of 5, same answers: worse
+on most queries, as DataFusion then chooses order-preserving plans (avg-daily-driving-duration 100 → 185 ms,
+daily-activity 145 → 261, breakdown-frequency 121 → 211, avg-load 61 → 74), better only on
+avg-vs-projected-fuel-consumption (122 → 101). Decision: not kept.
