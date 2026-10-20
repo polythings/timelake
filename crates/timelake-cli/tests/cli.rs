@@ -123,6 +123,20 @@ fn as_written_by_timelake_0_2(metadata: &Path) {
 }
 
 #[test]
+fn info_shows_sub_day_retention() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let create = ["create", "iot.r", "--schema", "time:timestamp,device:int", "--time-column", "time"];
+    timelake(&warehouse, &[&create[..], &["--prop", "retention=12h"]].concat());
+
+    let (out, _) = timelake(&warehouse, &["info", "iot.r"]);
+    assert!(out.lines().any(|l| l == "retention  12h"), "{out}");
+    let (out, _) = timelake(&warehouse, &["info", "iot.r", "--json"]);
+    let info: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(info["retention"], "12h");
+}
+
+#[test]
 fn settings_and_alter() {
     let dir = tempfile::tempdir().unwrap();
     let warehouse = dir.path().join("warehouse");

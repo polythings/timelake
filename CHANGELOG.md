@@ -77,6 +77,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   float. Where `JSON.rawJSON` is missing (runtimes before ES2025), such a value is an error.
 - Settings given at creation by their short names (`--prop retention=90d`, `properties={"read-dedup": "false"}`) were
   stored under that name and ignored. They are now read as `alter` reads them, and an unknown setting is an error.
+- `timelake info` showed a retention shorter than a day as `0d`. It shows the duration as set (`12h`), and the JSON's
+  `retention_days` is now `retention`, the same string.
 
 ### Changed
 

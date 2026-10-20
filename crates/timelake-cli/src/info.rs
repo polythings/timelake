@@ -5,7 +5,7 @@ use std::fmt;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use timelake::{Chunk, Contract, Table, file_partition, summary};
+use timelake::{Chunk, Contract, Table, file_partition, format_duration, summary};
 
 /// Partitions listed in text output; JSON lists all.
 const TEXT_PARTITIONS: usize = 10;
@@ -13,7 +13,6 @@ const TEXT_PARTITIONS: usize = 10;
 const TEXT_SNAPSHOTS: usize = 5;
 /// Snapshots listed in JSON output, newest first.
 const JSON_SNAPSHOTS: usize = 50;
-const DAY_SECS: u64 = 86_400;
 
 /// Everything `info` shows about a table version.
 pub(crate) struct TableInfo {
@@ -132,7 +131,7 @@ impl TableInfo {
             "chunk": c.chunk.map(Chunk::as_str),
             "dedup": c.dedup,
             "ingest_time_column": c.ingest_time_column,
-            "retention_days": c.retention.map(|d| d.as_secs() / DAY_SECS),
+            "retention": c.retention.map(format_duration),
             "schema": self.columns.iter().map(|(name, ty, nullable)| json!({ "name": name, "type": ty, "nullable": nullable })).collect::<Vec<_>>(),
             "rows": self.rows,
             "files": self.files,
@@ -171,8 +170,7 @@ impl fmt::Display for TableInfo {
             writeln!(f, "series key {key}")?;
             writeln!(f, "dedup      {}", c.dedup)?;
             writeln!(f, "inserted   {}", c.ingest_time_column.as_deref().unwrap_or("-"))?;
-            let retention =
-                c.retention.map_or_else(|| "forever".to_string(), |d| format!("{}d", d.as_secs() / DAY_SECS));
+            let retention = c.retention.map_or_else(|| "forever".to_string(), format_duration);
             writeln!(f, "retention  {retention}")?;
         } else {
             writeln!(f, "kind       plain table (no time column)")?;
