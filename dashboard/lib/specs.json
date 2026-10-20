@@ -18,11 +18,11 @@
     "title": "Commits",
     "area": "Tables and storage",
     "status": "done",
-    "updated": "2026-10-13",
-    "versions": ["0.1.0", "0.2.0"],
+    "updated": "2026-10-20",
+    "versions": ["0.1.0", "0.2.0", "unreleased"],
     "summary": "Every append, compaction and upgrade is one atomic Iceberg commit, made by Timelake's own commit layer on iceberg-rust's public types. Concurrent writers are safe without a catalog service: a conflicting commit is rebased and retried. Commits take two steps: everything uploaded in parallel, then one conditional write.",
     "related": [1, 3, 11],
-    "issues": [21, 26, 39, 47, 48, 51],
+    "issues": [26, 39, 47, 48, 51],
     "milestones": ["v0", "fast-first-queries", "real-data", "technical-preview"]
   },
   {
@@ -252,11 +252,11 @@
     "title": "Maintenance runs, retention and expiry",
     "area": "Maintenance",
     "status": "in-progress",
-    "updated": "2026-10-17",
-    "versions": ["0.1.0", "0.3.0", "0.5.0"],
+    "updated": "2026-10-20",
+    "versions": ["0.1.0", "0.3.0", "0.5.0", "unreleased"],
     "summary": "The jobs Timelake replaces Glue with (compaction, rollup refresh, retention, snapshot expiry and file cleanup) run inline after appends when thresholds are met, or as one stateless `timelake maintain` command. Nothing outside Timelake has to be scheduled. Orphan-file cleanup and sharded runs are open.",
     "related": [13, 19, 27],
-    "issues": [13, 18, 46, 50],
+    "issues": [13, 18, 50],
     "milestones": ["v0", "real-data", "technical-preview"]
   },
   {

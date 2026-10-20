@@ -3,15 +3,15 @@ number: 2
 title: Commits
 area: Tables and storage
 status: done
-updated: 2026-10-13
-versions: [0.1.0, 0.2.0]
+updated: 2026-10-20
+versions: [0.1.0, 0.2.0, unreleased]
 related: [1, 3, 11]
-issues: [21, 26, 39, 47, 48, 51]
+issues: [26, 39, 47, 48, 51]
 ---
 
 # 2. Commits
 
-**Done** · updated 2026-10-13 · versions 0.1.0, 0.2.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
+**Done** · updated 2026-10-20 · versions 0.1.0, 0.2.0, unreleased · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 1](0001-iceberg-tables.md), [spec 3](0003-object-store-catalog.md), [spec 11](0011-appends.md)
 
 ## Summary
@@ -28,6 +28,14 @@ and optimistic retry, on iceberg-rust's public types. Iceberg v2 by default.
 **Concurrency.** A commit writes `vN+1.metadata.json` with put-if-absent ([spec 3](0003-object-store-catalog.md)). A
 writer that loses the race reloads the table, rebases its change onto the new version (reusing its data files) and
 tries again.
+
+**Uncertain outcomes.** A conditional write can land and still report a failure: the store client retries a request
+whose response was lost and gets "already exists" for the file it just created, and a timeout says nothing. After a
+failed or refused write the writer reads `vN+1.metadata.json` back. Its own bytes there are the commit; another
+writer's mean it lost. When that can't be told (the file can't be read, or is missing after an error, so the write may
+still land), the commit fails as "commit outcome unknown" and deletes nothing it wrote: orphans only take space, while
+deleting files a committed version references breaks the table. Metadata the writer couldn't load itself is never
+written.
 
 **Idempotency.** Each batch carries an ID that is recorded in the snapshot summary, so a retried commit is a no-op and
 an append of a batch already committed reports 0 rows.
@@ -54,7 +62,6 @@ commit layer on iceberg-rust's public types (D13). Details: `spikes/iceberg-writ
 
 ## Open questions and issues
 
-- [#21](https://github.com/polythings/timelake/issues/21) Commit: an uncertain conditional PUT can delete a committed version's manifests
 - [#26](https://github.com/polythings/timelake/issues/26) Tests: crash at every step of a commit
 - [#39](https://github.com/polythings/timelake/issues/39) Commit: specify how each pair of concurrent operations resolves
 - [#47](https://github.com/polythings/timelake/issues/47) Commit: carry Timelake state forward on every commit, compaction included
@@ -67,3 +74,5 @@ commit layer on iceberg-rust's public types (D13). Details: `spikes/iceberg-writ
 - 2026-10-12: built in v0
 - 2026-10-13: two-step commit (P4)
 - 2026-10-19: moved from SPEC.md into spec 3, then into this spec when the specs were regrouped one per feature.
+- 2026-10-20: uncertain outcomes: a failed or refused metadata write is read back before anything is deleted (#21,
+  #165).

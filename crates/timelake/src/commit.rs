@@ -158,6 +158,8 @@ async fn commit_with(
             }
             // Another writer committed first: rebase onto it.
             Ok(Attempt::Lost) => writer.discard().await,
+            // The metadata may be in the table: what it references stays.
+            Err(e @ Error::CommitUnknown(_)) => return Err(e),
             Err(e) => {
                 writer.discard().await;
                 return Err(e);
@@ -190,6 +192,12 @@ fn is_duplicate(base: &Table, change: &Change, props: &HashMap<String, String>) 
 
 /// Commits new table metadata as version N+1. `Ok(None)` if another writer got there first.
 /// `files` are the new version's live files, if known without reading its manifests.
+///
+/// A conditional PUT that reports failure may have landed all the same: a retry after a first
+/// try that landed gets "already exists", and a timeout says nothing. The version is then read
+/// back: our own metadata there is the commit, another writer's means it lost. If that can't be
+/// told, the error is [`Error::CommitUnknown`], and callers must not delete what the metadata
+/// references.
 pub(crate) async fn publish(
     base: &Table,
     metadata: TableMetadata,
@@ -198,12 +206,29 @@ pub(crate) async fn publish(
     writable(base)?;
     let storage = base.lake().storage();
     let version = base.version() + 1;
+    let uri = metadata_uri(base.location(), version);
     let bytes = Bytes::from(serde_json::to_vec(&metadata)?);
-    if !storage.write_if_absent(&metadata_uri(base.location(), version), bytes).await? {
-        return Ok(None);
-    }
+    let unknown = |e: &dyn std::fmt::Display| Error::CommitUnknown(format!("{} v{version}: {e}", base.name()));
+    // Built first: metadata this Timelake can't load is never committed.
     let mut table =
         Table::new(base.lake().clone(), base.name().clone(), base.location().to_string(), version, metadata)?;
+    let ours = match storage.write_if_absent(&uri, bytes.clone()).await {
+        Ok(true) => true,
+        // Ours (an earlier try landed) or another writer's. Absent now, it was never ours: our
+        // version would still be there.
+        Ok(false) => match storage.read_opt(&uri).await {
+            Ok(found) => found.is_some_and(|found| found == bytes),
+            Err(e) => return Err(unknown(&e)),
+        },
+        // Absent now, the PUT may still land.
+        Err(e) => match storage.read_opt(&uri).await {
+            Ok(Some(found)) => found == bytes,
+            Ok(None) | Err(_) => return Err(unknown(&e)),
+        },
+    };
+    if !ours {
+        return Ok(None);
+    }
     if let Some(files) = files {
         table = table.with_files(files);
     }
@@ -555,7 +580,7 @@ impl<'a> SnapshotWriter<'a> {
 mod tests {
     use std::time::Duration;
 
-    use crate::testing::{Op, T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{Op, T0, batch, faulty_lake, opts, reopen, schema};
     use crate::{AppendOptions, Error};
 
     fn no_maintenance() -> AppendOptions {
@@ -604,11 +629,23 @@ mod tests {
         };
         let t = lake.create_table("iot.patch", &schema(), opts()).await.unwrap();
         let t = set_format(t, newer(1, 0)).await.unwrap();
-        t.append(&[batch(&[(T0, 1, 1.0)])], no_maintenance()).await.unwrap();
+        let (t, _) = t.append(&[batch(&[(T0, 1, 1.0)])], no_maintenance()).await.unwrap();
 
-        let t = set_format(t, newer(0, 1)).await;
-        let err = t.map(|_| ()).unwrap_err();
+        // This Timelake doesn't commit a version it can't read.
+        let err = set_format(t.clone(), newer(0, 1)).await.map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Invalid(ref m) if m.contains("upgrade Timelake")), "{err}");
+        assert_eq!(lake.table("iot.patch").await.unwrap().version(), t.version());
+        // A newer one does.
+        let props = [(crate::property::FORMAT_VERSION.to_string(), newer(0, 1))].into();
+        let previous = Some(crate::lake::metadata_uri(t.location(), t.version()));
+        let metadata = iceberg::spec::TableMetadataBuilder::new_from_metadata(t.metadata().clone(), previous)
+            .set_properties(props)
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+        let uri = crate::lake::metadata_uri(t.location(), t.version() + 1);
+        lake.storage().write(&uri, serde_json::to_vec(&metadata).unwrap().into()).await.unwrap();
         let err = lake.table("iot.patch").await.map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Invalid(ref m) if m.contains("newer than this Timelake reads")), "{err}");
     }
@@ -651,6 +688,50 @@ mod tests {
         let err = t.append(&[batch(&[(T0, 1, 1.0)])], no_maintenance()).await.unwrap_err();
         assert!(matches!(err, Error::Conflict(_)), "{err}");
         assert_eq!(store.paths().await, before);
+    }
+
+    /// A commit whose metadata PUT landed but reported a failure (a retry's 412, or a timeout)
+    /// is the commit: the batch is in the table once, and nothing it references is deleted.
+    #[tokio::test]
+    async fn a_metadata_put_that_landed_is_the_commit() {
+        for fault in [Op::LandThenLose, Op::LandThenFail] {
+            let (lake, store) = faulty_lake();
+            let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+            store.fail(fault, "v2.metadata.json");
+            let o = AppendOptions { batch_id: Some("b1".into()), ..no_maintenance() };
+            let (t, r) = t.append(&[batch(&[(T0, 1, 1.0), (T0, 2, 2.0)])], o.clone()).await.unwrap();
+            assert_eq!((t.version(), r.commit.attempts, r.commit.duplicate), (2, 1, false), "{fault:?}");
+            store.heal();
+            crate::flush().await;
+            let (t, r) =
+                reopen(&store).table("iot.r").await.unwrap().append(&[batch(&[(T0, 1, 1.0)])], o).await.unwrap();
+            assert!(r.commit.duplicate, "{fault:?}");
+            let files = t.files().await.unwrap();
+            assert_eq!(files.iter().map(|f| f.data_file.record_count()).sum::<u64>(), 2, "{fault:?}");
+            let paths = store.paths().await;
+            for f in &files {
+                assert!(paths.iter().any(|p| f.data_file.file_path().ends_with(p.as_str())), "{fault:?}");
+            }
+        }
+    }
+
+    /// When it can't be told whether the metadata PUT landed, the commit fails without deleting
+    /// anything it wrote: the PUT may still land, and then the version needs its files.
+    #[tokio::test]
+    async fn an_unknown_commit_outcome_deletes_nothing() {
+        let (lake, store) = faulty_lake();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        crate::flush().await;
+        let before = store.paths().await;
+        store.fail(Op::Put, "v2.metadata.json");
+        let err = t.append(&[batch(&[(T0, 1, 1.0)])], no_maintenance()).await.unwrap_err();
+        assert!(matches!(err, Error::CommitUnknown(_)), "{err}");
+        let after = store.paths().await;
+        let new: Vec<_> = after.iter().filter(|p| !before.contains(p)).collect();
+        assert!(
+            new.iter().any(|p| p.contains("/data/")) && new.iter().any(|p| p.contains("/metadata/snap-")),
+            "{new:?}"
+        );
     }
 
     /// Round trips an append waits for, one after another, on a store where each request takes

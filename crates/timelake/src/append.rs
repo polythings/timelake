@@ -9,7 +9,7 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::DataFile;
 
 use crate::commit::{Change, CommitInfo, commit};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::maintain::{MaintainOptions, MaintainReport};
 use crate::rollup::RollupRefresh;
 use crate::storage::Uploads;
@@ -87,7 +87,8 @@ impl Table {
             props.insert(summary::BATCH_ID.into(), id.clone());
         }
         let committed = commit(self, Change::Append { files, latest }, props, uploads).await;
-        if !matches!(&committed, Ok((_, info)) if !info.duplicate) {
+        if !matches!(&committed, Ok((_, info)) if !info.duplicate) && !matches!(committed, Err(Error::CommitUnknown(_)))
+        {
             // Nothing references the data files: a failed cleanup only wastes space, and the
             // commit's own outcome is what the caller needs to see.
             let _ = self.lake().storage().delete_many(paths).await;

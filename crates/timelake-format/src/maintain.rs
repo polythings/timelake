@@ -19,8 +19,8 @@ use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataR
 use parquet::file::reader::{ChunkReader, Length};
 
 use crate::append::PartitionFiles;
-use crate::commit::{Change, commit};
-use crate::error::WriteResult;
+use crate::commit::{Change, commit, put_metadata};
+use crate::error::{WriteError, WriteResult};
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
 use crate::merge::{Merge, Step};
@@ -254,8 +254,10 @@ async fn compact<H: Host>(
             Ok(table)
         }
         Err(e) => {
-            // Unreferenced: a failed cleanup only wastes space.
-            let _ = host.delete(&paths).await;
+            // Unreferenced, unless the commit's outcome is unknown: a failed cleanup only wastes space.
+            if !matches!(e, WriteError::CommitUnknown(_)) {
+                let _ = host.delete(&paths).await;
+            }
             Err(e)
         }
     }
@@ -626,21 +628,23 @@ async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainRepor
             return Ok(table);
         }
         let ids: Vec<i64> = expired.iter().map(|s| s.id).collect();
+        // What the kept snapshots use, read in full before anything changes: a file left out
+        // would be deleted.
+        let remaining: Vec<_> = snapshots.iter().filter(|s| !ids.contains(&s.id)).cloned().collect();
+        let kept = reachable(host, &remaining, Missing::Error).await?;
         let previous = metadata_uri(&table.location, table.version);
         let metadata = table.metadata.without_snapshots(&ids, &previous, host.now_ms())?;
         let version = table.version + 1;
-        if !host.put_if_absent(&metadata_uri(&table.location, version), metadata.to_json().into_bytes()).await? {
+        if !put_metadata(host, &metadata_uri(&table.location, version), metadata.to_json().into_bytes()).await? {
             table = TableState::load(host, &table.location).await?;
             continue;
         }
         report.snapshots_expired += expired.len();
-        let remaining = metadata.snapshot_list();
         let mut expired_table = table.clone();
         expired_table.version = version;
         expired_table.metadata = metadata;
         let _ = host.put(&crate::table::hint_uri(&table.location), version.to_string().into_bytes()).await;
-        let kept = reachable(host, &remaining).await?;
-        let gone = reachable(host, &expired).await?;
+        let gone = reachable(host, &expired, Missing::Skip).await?;
         let doomed: Vec<String> = gone.difference(&kept).cloned().collect();
         host.delete(&doomed).await?;
         report.objects_deleted += doomed.len();
@@ -674,8 +678,27 @@ fn expired_snapshots(
         .collect()
 }
 
+/// What [`reachable`] does with a manifest list or manifest that isn't there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// Already deleted by an earlier, interrupted expiry: nothing more to find.
+    Skip,
+    /// A snapshot that is kept can't be read: an error, so that nothing is deleted.
+    Error,
+}
+
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
-async fn reachable<H: Host>(host: &H, snapshots: &[crate::metadata::SnapshotRef]) -> WriteResult<HashSet<String>> {
+async fn reachable<H: Host>(
+    host: &H,
+    snapshots: &[crate::metadata::SnapshotRef],
+    missing: Missing,
+) -> WriteResult<HashSet<String>> {
+    let absent = |snapshot: i64, uri: &str| {
+        WriteError::NotFound(format!(
+            "{uri}, used by snapshot {snapshot}, is missing, so expiry deletes nothing; roll back past the snapshot or \
+             restore the file"
+        ))
+    };
     let mut out = HashSet::new();
     let mut manifests = BTreeMap::new();
     for s in snapshots {
@@ -683,15 +706,24 @@ async fn reachable<H: Host>(host: &H, snapshots: &[crate::metadata::SnapshotRef]
         if let Some(index) = &s.last_value_index {
             out.insert(index.clone());
         }
-        // Already deleted by an earlier, interrupted expiry: nothing more to find.
-        let Some(bytes) = host.get(&s.manifest_list).await? else { continue };
+        let Some(bytes) = host.get(&s.manifest_list).await? else {
+            if missing == Missing::Error {
+                return Err(absent(s.id, &s.manifest_list));
+            }
+            continue;
+        };
         for m in read_manifest_list(&bytes)? {
             out.insert(m.path.clone());
-            manifests.entry(m.path.clone()).or_insert(m);
+            manifests.entry(m.path.clone()).or_insert((s.id, m));
         }
     }
-    for m in manifests.values() {
-        let Some(bytes) = host.get(&m.path).await? else { continue };
+    for (snapshot, m) in manifests.values() {
+        let Some(bytes) = host.get(&m.path).await? else {
+            if missing == Missing::Error {
+                return Err(absent(*snapshot, &m.path));
+            }
+            continue;
+        };
         for e in read_manifest(m, &bytes)? {
             // Entries marked deleted only record a removal.
             if e.status != crate::iceberg::Status::Deleted {

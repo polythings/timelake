@@ -35,7 +35,16 @@ struct Faults {
     fail_data_write: AtomicUsize,
     data_writes: AtomicUsize,
     open_uploads: AtomicI64,
+    /// How the next metadata PUT fails (once): one of the `METADATA_*` constants.
+    metadata_put: AtomicUsize,
 }
+
+/// The metadata PUT lands, then reports "already exists" (a retry after a try that landed).
+const METADATA_LANDS_THEN_LOSES: usize = 1;
+/// The metadata PUT lands, then fails (a timeout).
+const METADATA_LANDS_THEN_FAILS: usize = 2;
+/// The metadata PUT fails without landing.
+const METADATA_FAILS: usize = 3;
 
 impl Faults {
     fn data_write(&self, uri: &str) -> WriteResult<()> {
@@ -104,7 +113,17 @@ impl Host for &EngineHost {
     }
 
     async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<bool> {
-        self.storage.write_if_absent(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))
+        let fault =
+            if uri.ends_with(".metadata.json") { self.faults.metadata_put.swap(0, Ordering::Relaxed) } else { 0 };
+        if fault == METADATA_FAILS {
+            return Err(WriteError::Store(format!("injected failure writing {uri}")));
+        }
+        let written = self.storage.write_if_absent(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))?;
+        match fault {
+            METADATA_LANDS_THEN_LOSES => Ok(false),
+            METADATA_LANDS_THEN_FAILS => Err(WriteError::Store(format!("injected timeout writing {uri}"))),
+            _ => Ok(written),
+        }
     }
 
     fn upload(&self, uri: &str) -> impl Future<Output = WriteResult<BufferedUpload<'static>>> {
@@ -377,4 +396,60 @@ async fn a_failed_write_aborts_its_multipart_upload() {
     assert!(write_files(&&host, &state, day, &rows).await.is_err());
     assert!(host.faults.data_writes.load(Ordering::Relaxed) >= 2, "an upload was started");
     assert_eq!(host.faults.open_uploads.load(Ordering::Relaxed), 0, "the upload was aborted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_commit_whose_metadata_landed_is_the_commit() {
+    for fault in [METADATA_LANDS_THEN_LOSES, METADATA_LANDS_THEN_FAILS] {
+        let (dir, lake) = temp_lake();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        let host = EngineHost::new(&lake);
+        let state = TableState::load(&&host, t.location()).await.unwrap();
+        host.faults.metadata_put.store(fault, Ordering::Relaxed);
+        let o = SharedAppend { batch_id: Some("b1".into()), ..shared_no_maintenance() };
+        let (_, report) = append(&&host, state, &[batch(T0, 2, 1, 2, |_, _| 1.0)], &o).await.unwrap();
+        let c = report.commit;
+        assert_eq!((c.version, c.attempts, c.duplicate), (t.version() + 1, 1, false), "fault {fault}");
+        assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 4, "fault {fault}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_shared_commit_outcome_deletes_nothing() {
+    let (_dir, lake) = temp_lake();
+    let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+    let host = EngineHost::new(&lake);
+    let state = TableState::load(&&host, t.location()).await.unwrap();
+    host.faults.metadata_put.store(METADATA_FAILS, Ordering::Relaxed);
+    let err = append(&&host, state, &[batch(T0, 2, 1, 2, |_, _| 1.0)], &shared_no_maintenance()).await.unwrap_err();
+    assert!(matches!(err, WriteError::CommitUnknown(_)), "{err}");
+    let data = (&&host).list(&format!("{}/data/", t.location())).await.unwrap();
+    let lists = (&&host).list(&format!("{}/metadata/snap-", t.location())).await.unwrap();
+    assert_eq!((data.len(), lists.len()), (1, 1), "the data file and the manifest list stay");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_expiry_deletes_nothing_when_a_kept_snapshot_is_broken() {
+    use timelake_format::maintain::{MaintainOptions as SharedMaintain, maintain};
+
+    let (dir, lake) = temp_lake();
+    let mut o = opts();
+    o.properties.insert(timelake::property::SNAPSHOT_RETENTION.into(), "0s".into());
+    o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
+    let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+    let host = EngineHost::new(&lake);
+    let mut state = TableState::load(&&host, t.location()).await.unwrap();
+    for i in 0..3 {
+        state = append(&&host, state, &[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], &shared_no_maintenance()).await.unwrap().0;
+    }
+    let data = || async { (&&host).list(&format!("{}/data/", t.location())).await.unwrap().len() };
+    assert_eq!(data().await, 3);
+    let current = reopen(&dir).table("iot.r").await.unwrap().metadata().current_snapshot().unwrap().clone();
+    (&&host).delete(&[current.manifest_list().to_string()]).await.unwrap();
+
+    let expire_only = SharedMaintain { compact: false, retention: false, ..SharedMaintain::default() };
+    let err = maintain(&&host, state, &expire_only).await.unwrap_err().to_string();
+    assert!(err.contains(&current.snapshot_id().to_string()), "names the broken snapshot: {err}");
+    assert_eq!(data().await, 3, "every data file is still there");
+    assert_eq!(reopen(&dir).table("iot.r").await.unwrap().metadata().snapshots().count(), 3, "nothing expired");
 }

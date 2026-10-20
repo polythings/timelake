@@ -140,8 +140,35 @@ pub async fn commit<H: Host, S: BuildHasher>(
     Err(WriteError::Conflict(format!("{}: gave up after {MAX_ATTEMPTS} attempts", base.location)))
 }
 
+/// Writes table metadata `bytes` at `uri` unless a version is there; `false` if another writer's
+/// is.
+///
+/// A conditional PUT that reports failure may have landed all the same: a retry after a first try
+/// that landed gets "already exists", and a timeout says nothing. The version is then read back:
+/// our own metadata there is the commit, another writer's means it lost. If that can't be told,
+/// the error is [`WriteError::CommitUnknown`], and callers must not delete what the metadata
+/// references.
+pub(crate) async fn put_metadata<H: Host>(host: &H, uri: &str, bytes: Vec<u8>) -> WriteResult<bool> {
+    let unknown = |e: &dyn std::fmt::Display| WriteError::CommitUnknown(format!("{uri}: {e}"));
+    match host.put_if_absent(uri, bytes.clone()).await {
+        Ok(true) => Ok(true),
+        // Ours (an earlier try landed) or another writer's. Absent now, it was never ours: our
+        // version would still be there.
+        Ok(false) => match host.get(uri).await {
+            Ok(found) => Ok(found.is_some_and(|found| found == bytes)),
+            Err(e) => Err(unknown(&e)),
+        },
+        // Absent now, the PUT may still land.
+        Err(e) => match host.get(uri).await {
+            Ok(Some(found)) => Ok(found == bytes),
+            Ok(None) | Err(_) => Err(unknown(&e)),
+        },
+    }
+}
+
 /// One attempt: writes the snapshot's files and publishes it. `None` if another writer committed
-/// this version first (this attempt's files are deleted).
+/// this version first (this attempt's files are deleted). With an unknown outcome
+/// ([`put_metadata`]), nothing is deleted.
 async fn attempt_commit<H: Host, S: BuildHasher>(
     host: &H,
     base: &mut TableState,
@@ -188,15 +215,17 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
         };
         let previous = metadata_uri(&base.location, base.version);
         let metadata = base.metadata.with_snapshot(&snapshot, &previous, now)?;
+        let contract = metadata.contract()?;
         let version = base.version + 1;
-        let committed =
-            host.put_if_absent(&metadata_uri(&base.location, version), metadata.to_json().into_bytes()).await?;
-        Ok::<_, WriteError>(committed.then_some((metadata, version, index)))
+        let ours = put_metadata(host, &metadata_uri(&base.location, version), metadata.to_json().into_bytes()).await?;
+        Ok::<_, WriteError>(ours.then_some((metadata, contract, version, index)))
     }
     .await;
-    let Ok(Some((metadata, version, index))) = result else {
-        let written: Vec<String> = uploads.into_iter().map(|(uri, _)| uri).collect();
-        let _ = host.delete(&written).await;
+    let Ok(Some((metadata, contract, version, index))) = result else {
+        if !matches!(result, Err(WriteError::CommitUnknown(_))) {
+            let written: Vec<String> = uploads.into_iter().map(|(uri, _)| uri).collect();
+            let _ = host.delete(&written).await;
+        }
         return result.map(|_| None);
     };
 
@@ -226,7 +255,7 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
         location: base.location.clone(),
         version,
         schema: base.schema.clone(),
-        contract: base.metadata.contract()?,
+        contract,
         metadata,
         files,
         last_values,

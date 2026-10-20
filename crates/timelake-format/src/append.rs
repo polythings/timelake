@@ -8,7 +8,7 @@ use arrow_array::RecordBatch;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataWriter};
 
 use crate::commit::{Change, CommitInfo, commit};
-use crate::error::WriteResult;
+use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
 use crate::host::{Host, Upload, uuid_v7};
 use crate::iceberg::DataFile;
@@ -90,7 +90,9 @@ pub async fn append<H: Host>(
         props.insert(summary::BATCH_ID.into(), id.clone());
     }
     let committed = commit(host, table, &Change::Append { files, latest }, &props).await;
-    if !matches!(&committed, Ok((_, info)) if !info.duplicate) {
+    if !matches!(&committed, Ok((_, info)) if !info.duplicate)
+        && !matches!(committed, Err(WriteError::CommitUnknown(_)))
+    {
         // Nothing references the data files.
         let _ = host.delete(&paths).await;
     }

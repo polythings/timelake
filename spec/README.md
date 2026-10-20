@@ -57,7 +57,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | # | Spec | Status | Versions | Updated |
 |---:|---|---|---|---|
 | 1 | [Iceberg tables](0001-iceberg-tables.md) | Done | 0.1.0 | 2026-10-13 |
-| 2 | [Commits](0002-commits.md) | Done | 0.1.0, 0.2.0 | 2026-10-13 |
+| 2 | [Commits](0002-commits.md) | Done | 0.1.0, 0.2.0, unreleased | 2026-10-20 |
 | 3 | [Object-store catalog](0003-object-store-catalog.md) | Done | 0.1.0 | 2026-10-12 |
 | 4 | [Time-series table contract](0004-table-contract.md) | In progress | 0.1.0, 0.5.0 | 2026-10-18 |
 | 5 | [File layout and encodings](0005-file-layout.md) | In progress | 0.1.0, 0.6.0, 0.7.0, unreleased | 2026-10-19 |
@@ -85,7 +85,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | # | Spec | Status | Versions | Updated |
 |---:|---|---|---|---|
 | 19 | [Compaction](0019-compaction.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0 | 2026-10-17 |
-| 20 | [Maintenance runs, retention and expiry](0020-maintenance.md) | In progress | 0.1.0, 0.3.0, 0.5.0 | 2026-10-17 |
+| 20 | [Maintenance runs, retention and expiry](0020-maintenance.md) | In progress | 0.1.0, 0.3.0, 0.5.0, unreleased | 2026-10-20 |
 
 ### Reading
 

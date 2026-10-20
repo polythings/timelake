@@ -213,7 +213,7 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
             Err(e)
         }
     };
-    if committed.is_err() {
+    if committed.as_ref().is_err_and(|e| !matches!(e, Error::CommitUnknown(_))) {
         // Unreferenced: a failed cleanup only wastes space, and the original error matters more.
         let _ = table.lake().storage().delete_many(paths).await;
     }
@@ -388,6 +388,11 @@ async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
             return Ok(table);
         }
         let ids: Vec<i64> = expired.iter().map(|s| s.snapshot_id()).collect();
+        // What the kept snapshots use, read in full before anything changes: a file left out
+        // would be deleted.
+        let remaining: Vec<SnapshotRef> =
+            snapshots.iter().filter(|s| !ids.contains(&s.snapshot_id())).cloned().collect();
+        let kept = reachable(&table, &remaining, Missing::Error).await?;
         let previous = Some(metadata_uri(table.location(), table.version()));
         let metadata = TableMetadataBuilder::new_from_metadata(table.metadata().clone(), previous)
             .remove_snapshots(&ids)
@@ -402,8 +407,7 @@ async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
         report.snapshots_expired += expired.len();
 
         // Files reachable from the expired snapshots but not from the remaining ones.
-        let remaining: Vec<SnapshotRef> = expired_table.metadata().snapshots().cloned().collect();
-        let (kept, gone) = futures::try_join!(reachable(&expired_table, &remaining), reachable(&table, &expired))?;
+        let gone = reachable(&table, &expired, Missing::Skip).await?;
         let storage = table.lake().storage();
         report.objects_deleted += storage.delete_many(gone.difference(&kept).cloned().collect()).await?;
         report.objects_deleted += prune_metadata_files(&expired_table).await?;
@@ -435,7 +439,16 @@ fn expired_snapshots(table: &Table, newest_first: &[SnapshotRef]) -> Vec<Snapsho
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) a set of snapshots uses.
-async fn reachable(table: &Table, snapshots: &[SnapshotRef]) -> Result<HashSet<String>> {
+/// What [`reachable`] does with a manifest list that isn't there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// Already deleted by an earlier, interrupted expiry: nothing more to find.
+    Skip,
+    /// A snapshot that is kept can't be read: an error, so that nothing is deleted.
+    Error,
+}
+
+async fn reachable(table: &Table, snapshots: &[SnapshotRef], missing: Missing) -> Result<HashSet<String>> {
     let lake = table.lake();
     let mut out = HashSet::new();
     for s in snapshots {
@@ -448,8 +461,14 @@ async fn reachable(table: &Table, snapshots: &[SnapshotRef]) -> Result<HashSet<S
     let lists = snapshots.iter().map(|s| async move {
         match lake.manifest_list(s.manifest_list(), version).await {
             Ok(list) => Ok(Some(list)),
-            // Already deleted by an earlier, interrupted expiry: nothing more to find.
-            Err(Error::ObjectStore(object_store::Error::NotFound { .. })) => Ok(None),
+            Err(Error::ObjectStore(object_store::Error::NotFound { .. })) if missing == Missing::Skip => Ok(None),
+            Err(Error::ObjectStore(object_store::Error::NotFound { .. })) => Err(Error::NotFound(format!(
+                "{}: the manifest list of snapshot {} ({}) is missing, so expiry deletes nothing; roll back past \
+                 it or restore the file",
+                table.name(),
+                s.snapshot_id(),
+                s.manifest_list(),
+            ))),
             Err(e) => Err(e),
         }
     });

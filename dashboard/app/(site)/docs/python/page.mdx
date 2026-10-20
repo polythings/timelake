@@ -60,7 +60,7 @@ The package ships type information (`py.typed` and a stub), so editors complete 
 | `FileExistsError` | Creating a table that already exists. |
 | `ValueError` | Invalid input or configuration: a column not in the table, a missing required column, a value that can't be cast to the column type, an unknown storage option, a bad duration (`retention="90 parsecs"`), chunk name, or property value. |
 | `timelake.ConflictError` | Another writer kept committing first and the change could not be rebased (a subclass of `RuntimeError`). |
-| `RuntimeError` | Storage and query failures. |
+| `RuntimeError` | Storage and query failures. A commit whose outcome can't be told (its write may have landed) says “commit outcome unknown”: load the table again to see whether it committed. |
 
 ## Examples
 

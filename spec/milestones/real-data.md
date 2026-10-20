@@ -23,9 +23,9 @@ performance plan, after the scan tuning and the remaining rollup work.
 
 | # | Spec | Status | Versions |
 |---:|---|---|---|
-| 2 | [Commits](../0002-commits.md) | Done | 0.1.0, 0.2.0 |
+| 2 | [Commits](../0002-commits.md) | Done | 0.1.0, 0.2.0, unreleased |
 | 11 | [Appends](../0011-appends.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0 |
-| 20 | [Maintenance runs, retention and expiry](../0020-maintenance.md) | In progress | 0.1.0, 0.3.0, 0.5.0 |
+| 20 | [Maintenance runs, retention and expiry](../0020-maintenance.md) | In progress | 0.1.0, 0.3.0, 0.5.0, unreleased |
 
 <!-- specs:end -->
 

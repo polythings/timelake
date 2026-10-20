@@ -239,3 +239,35 @@ async fn dimension_tables_and_schema_alignment() {
     let names: Vec<_> = lake.all_tables().await.unwrap().iter().map(ToString::to_string).collect();
     assert_eq!(names, ["iot.r", "iot.tags"]);
 }
+
+/// Expiry deletes nothing when a snapshot it keeps can't be read: that snapshot's files would
+/// count as unused, and the table could no longer be repaired.
+#[tokio::test(flavor = "multi_thread")]
+async fn expiry_deletes_nothing_when_a_kept_snapshot_is_broken() {
+    let (dir, lake) = temp_lake();
+    let mut o = opts();
+    o.properties.insert(property::SNAPSHOT_RETENTION.into(), "0s".into());
+    o.properties.insert(property::MIN_SNAPSHOTS.into(), "1".into());
+    let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+    let no_maintenance = AppendOptions { maintain: Some(false), ..AppendOptions::default() };
+    for i in 0..3 {
+        t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance.clone()).await.unwrap().0;
+    }
+    let data_files = || {
+        std::fs::read_dir(dir.path().join("iot/r/data"))
+            .unwrap()
+            .flat_map(|d| std::fs::read_dir(d.unwrap().path()).unwrap())
+            .count()
+    };
+    assert_eq!(data_files(), 3);
+    let current = t.metadata().current_snapshot().unwrap().clone();
+    std::fs::remove_file(current.manifest_list().strip_prefix("file://").unwrap()).unwrap();
+
+    // Another process: nothing cached.
+    let lake = timelake::Lake::open(dir.path().to_str().unwrap(), std::collections::HashMap::new()).unwrap();
+    let only_expire = MaintainOptions { compact: false, retention: false, ..Default::default() };
+    let err = lake.table("iot.r").await.unwrap().maintain(only_expire).await.unwrap_err().to_string();
+    assert!(err.contains(&current.snapshot_id().to_string()), "names the broken snapshot: {err}");
+    assert_eq!(data_files(), 3, "every data file is still there");
+    assert_eq!(lake.table("iot.r").await.unwrap().metadata().snapshots().count(), 3, "nothing expired");
+}

@@ -41,7 +41,9 @@ This is Iceberg’s Hadoop-catalog convention, which is why DuckDB’s `iceberg_
 
 1. Load the current version (see Head object below). The hint and the head are written after a commit and may lag, so the newest `vN.metadata.json` is what counts.
 2. Encode data files, a manifest for them, the last-value index, and a new manifest list, then upload them all at once. A large data file’s earlier parts are uploaded while it is written.
-3. Create `vN+1.metadata.json` with put-if-absent. If it already exists, another writer won: delete this attempt’s manifests, reload, and retry on top of the new version (up to 10 attempts, with jittered backoff). Data files are reused across retries.
+3. Create `vN+1.metadata.json` with put-if-absent. If it already exists, another writer won: delete this attempt’s manifests, reload, and retry on top of the new version (up to 10 attempts, with jittered backoff). Data files are reused across retries. A metadata file this Timelake couldn’t load is never written.
+
+   A conditional write can land and still report a failure: the store client retries a request whose response was lost, and the retry finds the file it just created; a timeout says nothing either way. So after a failed or refused write, the writer reads `vN+1.metadata.json` back. Its own bytes there mean the commit landed, and it returns as committed. Another writer’s mean it lost, as above. If the file can’t be read, or is still missing after an error (the write may land later), the commit fails with “commit outcome unknown” and deletes nothing it wrote: unreferenced files only take space, deleting referenced ones would break the table. Load the table again to see whether it committed.
 4. Overwrite `version-hint.text` with `N+1` and write the new head, in the background. The commit doesn’t wait for them; the CLI and the Python package wait for them before the process exits (`timelake::flush` in Rust).
 
 So a commit waits for two round trips to the store: the uploads, then the conditional write.
@@ -84,7 +86,7 @@ On each append, the newest row of every series in the new data is merged with th
 
 ## Snapshot expiry
 
-Snapshots older than `timelake.snapshot-retention` are expired, keeping at least `timelake.min-snapshots` and at most `timelake.max-snapshots`. Files reachable only from expired snapshots (data files, manifests, manifest lists, indexes) are deleted, along with metadata files older than the metadata log. Inline, expiry runs in batches of about 20 snapshots.
+Snapshots older than `timelake.snapshot-retention` are expired, keeping at least `timelake.min-snapshots` and at most `timelake.max-snapshots`. Files reachable only from expired snapshots (data files, manifests, manifest lists, indexes) are deleted, along with metadata files older than the metadata log. What the kept snapshots use is read in full before anything changes: if a manifest list or manifest of a kept snapshot is missing, expiry stops with an error that names it, and deletes nothing. Inline, expiry runs in batches of about 20 snapshots.
 
 ## Reader
 

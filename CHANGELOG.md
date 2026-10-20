@@ -88,6 +88,14 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - A failed write from the TypeScript client (or its compaction) left the multipart upload it had started open, and
   the files it had already finished in the table's directory; S3 and R2 keep and bill such parts. It now aborts the
   upload and deletes the files.
+- A commit whose metadata write landed but reported a failure (a retried request that got "already exists", or a
+  timeout) was taken as lost or failed, and its cleanup deleted the manifests (and for an append, the data files)
+  the committed version uses, leaving the table pointing at missing files. The writer now reads the version back: its
+  own metadata there is the commit. When that can't be told, the commit fails with "commit outcome unknown" and
+  deletes nothing. Timelake also no longer commits metadata it couldn't load itself.
+- Snapshot expiry treated a kept snapshot whose manifest list was missing as using no files, and deleted every file it
+  shared with the expired snapshots. It now reads what the kept snapshots use before changing anything, and stops with
+  an error that names the broken snapshot.
 
 ### Changed
 

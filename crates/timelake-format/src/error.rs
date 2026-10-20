@@ -15,6 +15,9 @@ pub enum WriteError {
     Invalid(String),
     /// Another writer changed the table in a way this commit can't build on.
     Conflict(String),
+    /// A commit whose outcome can't be told: its metadata may be in the table. Nothing it wrote
+    /// was deleted; load the table again to see whether it committed.
+    CommitUnknown(String),
     /// An object the table needs is missing.
     NotFound(String),
     /// The store failed.
@@ -41,6 +44,7 @@ impl fmt::Display for WriteError {
         match self {
             Self::Invalid(m) => write!(f, "invalid: {m}"),
             Self::Conflict(m) => write!(f, "conflict: {m}"),
+            Self::CommitUnknown(m) => write!(f, "commit outcome unknown: {m}"),
             Self::NotFound(m) => write!(f, "not found: {m}"),
             Self::Store(m) => write!(f, "store: {m}"),
             Self::Corrupt(m) => write!(f, "unexpected file contents: {m}"),

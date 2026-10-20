@@ -36,6 +36,11 @@ pub(crate) enum Op {
     Put,
     /// Put-if-absent reports "already exists", as if another writer won the commit race.
     LoseCreate,
+    /// Put-if-absent writes the object, then reports "already exists": a retry after a first try
+    /// that landed but returned an error.
+    LandThenLose,
+    /// Put-if-absent writes the object, then fails: a timeout after the write landed.
+    LandThenFail,
 }
 
 /// Fails `op` on every path containing `pattern`.
@@ -94,8 +99,8 @@ impl FaultyStore {
         }
         let path = path.to_string();
         Err(match op {
-            Op::LoseCreate => object_store::Error::AlreadyExists { path, source: "injected".into() },
-            Op::Get | Op::Put => {
+            Op::LoseCreate | Op::LandThenLose => object_store::Error::AlreadyExists { path, source: "injected".into() },
+            Op::Get | Op::Put | Op::LandThenFail => {
                 object_store::Error::Generic { store: "faulty", source: format!("{op:?} {path}").into() }
             }
         })
@@ -120,6 +125,11 @@ impl ObjectStore for FaultyStore {
         self.check(Op::Put, location)?;
         if opts.mode == PutMode::Create {
             self.check(Op::LoseCreate, location)?;
+            let landed = [Op::LandThenLose, Op::LandThenFail].map(|op| self.check(op, location));
+            if let Some(Err(e)) = landed.into_iter().find(Result::is_err) {
+                self.inner.put_opts(location, payload, opts).await?;
+                return Err(e);
+            }
         }
         self.inner.put_opts(location, payload, opts).await
     }

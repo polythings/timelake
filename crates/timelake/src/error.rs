@@ -24,6 +24,10 @@ pub enum Error {
     /// Another writer committed first and the operation could not be rebased.
     #[error("commit conflict: {0}")]
     Conflict(String),
+    /// A commit whose outcome can't be told: its metadata may be in the table. Nothing it wrote
+    /// was deleted; load the table again to see whether it committed.
+    #[error("commit outcome unknown: {0}")]
+    CommitUnknown(String),
     /// An invalid table contract property, duration, or partition value.
     #[error(transparent)]
     Format(#[from] timelake_format::FormatError),
@@ -69,6 +73,7 @@ impl From<timelake_format::error::WriteError> for Error {
         match e {
             W::Invalid(m) => Self::Invalid(m),
             W::Conflict(m) => Self::Conflict(m),
+            W::CommitUnknown(m) => Self::CommitUnknown(m),
             W::NotFound(m) => Self::NotFound(m),
             W::Store(m) | W::Corrupt(m) => Self::Io(std::io::Error::other(m)),
             W::Format(e) => Self::Format(e),
