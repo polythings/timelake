@@ -133,7 +133,7 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-        assert_eq!(t.contract().retention, Some(std::time::Duration::from_secs(12 * 3600)));
+        assert_eq!(t.contract().retention, Some(std::time::Duration::from_hours(12)));
         assert!(!t.contract().read_dedup);
         let props = t.metadata().properties();
         assert!(!props.contains_key("retention"), "{props:?}");
