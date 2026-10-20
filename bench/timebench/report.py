@@ -98,7 +98,7 @@ def markdown(run: Run) -> str:
     lines.extend(
         f"| {r['kind']} | {r['system']} | {cell(r, 'seconds')} | {cell(r, 'commits')} | "
         f"{cell(r, 'commit_ms_p50')} | {cell(r, 'commit_ms_p95')} | {cell(r, 'objects')} | "
-        f"{cell(r, 'bytes')} | {cell(r, 'requests')} | {r['status']} |"
+        f"{cell(r, 'bytes')} | {'not counted' if r.get('uncounted') else cell(r, 'requests')} | {r['status']} |"
         for r in run.ingest + run.maintain
     )
     for checkpoint in run.checkpoints():

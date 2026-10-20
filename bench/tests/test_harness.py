@@ -19,7 +19,7 @@ from timebench.cost import PRICES, phase_cost, query_cost, requests_cost, storag
 from timebench.live import Commit, Prober, lag
 from timebench.queries import apply_dialect
 from timebench.report import Run, markdown
-from timebench.results import QueryRecord, read_jsonl
+from timebench.results import QueryRecord, append_jsonl, read_jsonl
 from timebench.s3 import PROBE_PROXY, PROXY
 from timebench.systems import DIALECTS
 from timebench.systems.iceberg import Iceberg
@@ -505,3 +505,28 @@ def test_timelake_reader_settings_reach_the_python_reader(monkeypatch: pytest.Mo
     assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 120
     monkeypatch.setenv("TIMEBENCH_TIMELAKE_SETTINGS", "read_dedup=false")
     assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 240
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_lance_maintenance_past_the_counting_proxy_is_marked_uncounted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With BENCH_LANCE_DIRECT, Lance compacts through the uncounted endpoint: its few counted requests aren't its
+    maintenance's, so the record says so instead of comparing them with other systems' (#164)."""
+    from timebench.systems.lance import Lance
+
+    proxy = FakeProxy()
+    monkeypatch.setattr(harness, "PROXY", proxy)
+    monkeypatch.setenv("BENCH_LANCE_DIRECT", "1")
+    lance = Lance(Place(Target("s3"), "tiny", "lance"), "tiny")
+    lance.place.save_state({"tables": {}})
+    monkeypatch.setattr(lance, "maintain", lambda: None)
+    monkeypatch.setattr(lance, "stats", lambda: {"objects": 1, "bytes": 1, "data_files": 1, "data_bytes": 1})
+    record = harness.maintain(lance)
+    assert record["status"] == "ok", record
+    assert record.get("uncounted") is True
+    assert "requests" not in record
+    assert "usd" not in record
+    run = harness.RUNS / "run.jsonl"
+    spec = harness.RunSpec(workload=Tiny(), target=Target("s3"), systems=[])
+    append_jsonl(run, harness.run_header(spec, dt.datetime.now(dt.UTC)))
+    append_jsonl(run, record)
+    assert "| not counted |" in markdown(Run(run))

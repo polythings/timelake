@@ -526,6 +526,8 @@ def maintain(system: System) -> IngestRecord:
         out.update(system.maintain_extras())
     except Exception as e:  # noqa: BLE001 (as in ingest)
         out.update(status="error", error=f"{type(e).__name__}: {e}"[:300])
+    if out.get("uncounted"):  # the counts aren't this phase's
+        before = None
     return priced({**out, **proxy_delta(before)}, system)
 
 

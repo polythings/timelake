@@ -13,6 +13,7 @@ from timebench.systems import Runner, System, arrow_result, duckdb_connection, d
 if TYPE_CHECKING:
     import pyarrow as pa
 
+    from timebench.results import IngestRecord
     from timebench.targets import Place
     from timebench.workloads import TableSpec
 
@@ -52,16 +53,22 @@ class Lance(System):
         lance.write_dataset(data, self.uri(table), mode=mode, storage_options=self.options)
         self.created.add(table)
 
+    @property
+    def direct(self) -> bool:
+        """Whether maintenance goes around the counting proxy (``BENCH_LANCE_DIRECT``).
+
+        Lance's multipart uploads fail through tools/s3proxy on RustFS, so this compacts directly against it; its
+        requests then aren't counted, and the maintenance record says so (``uncounted``).
+        """
+        return self.options is not None and bool(os.environ.get("BENCH_LANCE_DIRECT"))
+
     @override
     def maintain(self) -> None:
         import lance
 
         if not self.tuned:
             return
-        options = self.options
-        if options and os.environ.get("BENCH_LANCE_DIRECT"):
-            # Lance's multipart uploads fail through tools/s3proxy on RustFS; compact directly against it.
-            options = SETUP_PROXY.lance_options()
+        options = SETUP_PROXY.lance_options() if self.direct else self.options
         state = self.place.load_state()
         for table in state["tables"]:
             lance.dataset(self.uri(table), storage_options=options).optimize.compact_files()
@@ -72,6 +79,10 @@ class Lance(System):
                 ds.create_scalar_index(column, "BTREE")
             if spec.get("time_column"):
                 ds.create_scalar_index(spec["time_column"], "ZONEMAP")
+
+    @override
+    def maintain_extras(self) -> IngestRecord:
+        return {"uncounted": True} if self.direct and self.tuned else {}
 
     @override
     def state(self) -> dict[str, Any]:
