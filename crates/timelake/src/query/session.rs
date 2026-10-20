@@ -106,6 +106,7 @@ impl Session {
         ctx.register_udaf(super::m4::m4_udaf());
         ctx.register_udaf(super::ohlc::udaf());
         ctx.register_udaf(super::lttb::udaf());
+        ctx.register_udaf(super::histogram::udaf());
         for f in super::selection::udafs().into_iter().chain(super::moments::udafs()).chain(super::quantile::udafs()) {
             ctx.register_udaf(f);
         }

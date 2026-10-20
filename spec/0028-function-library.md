@@ -37,7 +37,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Gaps | `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how often and how long the readings stopped for longer than a threshold ([spec 30](0030-signal-aggregates.md)) | Built |
 | Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built, names for ordered `first_value` and `last_value`; ASOF JOIN planned (#124) |
 | Quantiles | `quantile` (exact, pandas' linear interpolation), `approx_quantile` (a t-digest: mergeable sketch state, so it could roll up across buckets) | Built; a rollup storing the digest is planned (#125) |
-| Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built but `histogram` (#126): DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them |
+| Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built: DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them; `histogram(x, low, high, bins)` as numpy's |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
 | Finance | `ohlc(time, price)` (a struct of open, high, low, close; volume is a `sum`) | Built |
 | Downsampling | `lttb(time, value, n)` | Built (keeps a group's readings; `m4` is the mergeable one) |
@@ -77,4 +77,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
   `rolling_std` and `zscore` (#126).
 - 2026-10-20: `flatline_count` and `flatline_seconds` (#126).
 - 2026-10-20: `quantile` and `approx_quantile` (#125).
-- 2026-10-20: `ohlc` and `lttb` (#126).
+- 2026-10-20: `ohlc`, `lttb` and `histogram`; #126 done.

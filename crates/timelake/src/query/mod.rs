@@ -21,6 +21,7 @@ mod dedup;
 mod flatline;
 mod gapfill;
 mod gaps;
+mod histogram;
 mod in_list;
 mod lttb;
 mod m4;

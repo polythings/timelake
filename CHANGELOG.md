@@ -10,8 +10,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
-- Aggregates `ohlc(time, price)`, a group's open, high, low and close, and `lttb(time, value, n)`, a series
-  downsampled to `n` points for a chart (Largest-Triangle-Three-Buckets).
+- Aggregates `ohlc(time, price)`, a group's open, high, low and close; `lttb(time, value, n)`, a series downsampled
+  to `n` points for a chart (Largest-Triangle-Three-Buckets); and `histogram(x, low, high, bins)`, counts per bin as
+  numpy's.
 - Aggregates `quantile(x, q)`, exact with pandas' linear interpolation (DataFusion's `percentile_cont` drifts in the
   sixth digit), and `approx_quantile(x, q)`, a name for the t-digest `approx_percentile_cont`.
 - Aggregates `flatline_count(time, value, threshold)` and `flatline_seconds(…)`: how often and how long a series kept

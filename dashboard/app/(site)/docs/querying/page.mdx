@@ -141,6 +141,9 @@ exactly across partitions.
 (`quantile(x, 0.5)` is the median). `approx_quantile(x, q)` estimates it from a t-digest in bounded memory, for very
 large groups.
 
+`histogram(x, low, high, bins)` counts the values in each of `bins` equal-width bins from `low` to `high`, as numpy's
+`histogram` with a range: a list of counts, the last bin including `high`.
+
 ## Downsampling and bars
 
 For charts, `m4(time, value)` gives each group's first, smallest, largest and last points (a list of
