@@ -398,8 +398,8 @@ def ingest(
     before = PROXY.stats() if counted(system) else None
     stages: dict[str, StageRecord] = {}
     try:
+        system.reset()  # not timed: its cost depends on what the last run left
         start = time.perf_counter()
-        system.reset()
         for t in workload.tables:
             system.create(t, workload.schema(t.name))
         if system.tuned:

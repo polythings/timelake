@@ -285,3 +285,20 @@ def test_streamed_windows_match_the_in_memory_split(tmp_path: Path, *, ordered: 
     pq.write_table(table, path, row_group_size=4)  # windows span row groups
     expected = windows(table, 5)
     assert [t.to_pylist() for t in stream_windows(str(path), 5)] == [t.to_pylist() for t in expected]
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """How long deleting the previous run's tables takes depends on what that run left, not on this system."""
+    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
+    system = spec.system("parquet")
+    reset = system.reset
+
+    def slow_reset() -> None:
+        time.sleep(2)
+        reset()
+
+    monkeypatch.setattr(system, "reset", slow_reset)
+    done, _ = harness.ingest(spec, system, lambda _: None)
+    assert done["status"] == "ok", done
+    assert done["seconds"] < 2
