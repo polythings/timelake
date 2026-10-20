@@ -116,17 +116,22 @@ are names for `first_value(value ORDER BY time)` and `last_value(value ORDER BY 
 
 ### ASOF JOIN
 
-`ASOF JOIN` matches each left row with the right row of the same keys whose time is the nearest at or before its own,
-written as in Snowflake:
+`ASOF JOIN` matches each left row with the right row of the same keys whose time is the nearest at or before its own.
+It takes DuckDB's form and Snowflake's:
 
 ```sql
+-- DuckDB: ASOF LEFT JOIN keeps every left row, ASOF JOIN only those with a match
 SELECT p.time, p.value AS pressure, s.value AS state
-FROM iot.readings p
-ASOF JOIN iot.states s MATCH_CONDITION (p.time >= s.time) ON p.machine = s.machine
+FROM iot.readings p ASOF LEFT JOIN iot.states s ON p.machine = s.machine AND p.time >= s.time
+
+-- Snowflake: every left row is kept
+SELECT p.time, p.value AS pressure, s.value AS state
+FROM iot.readings p ASOF JOIN iot.states s MATCH_CONDITION (p.time >= s.time) ON p.machine = s.machine
 ```
 
-Every left row is kept, with nulls where nothing matches. `MATCH_CONDITION` compares a left time with a right time by
-`>=` or `>` (the latest right row at or before), or `<=` or `<` (the earliest at or after); `ON` takes equalities. The
+Unmatched rows that are kept get nulls. The match condition (DuckDB's one inequality in `ON`) compares a left time with
+a right time by `>=` or `>` (the latest right row at or before), or `<=` or `<` (the earliest at or after); the rest of
+`ON` is equalities. The
 right side is held in memory, sorted by time per key, and each left row finds its match by binary search: a day of the
 industrial benchmark's one-second readings (8.6 M rows) with their machines' states took 0.23 s, against 78 s as a
 range join.

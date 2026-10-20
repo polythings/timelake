@@ -198,8 +198,6 @@ impl Session {
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
             futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None))).await;
         }
-        let mut statement = statement;
-        super::asof::rewrite_statement(&mut statement);
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)
     }

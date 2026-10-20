@@ -35,7 +35,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | States and uptime | Time in a state and uptime: `integral(time, condition)` and `time_weighted_mean(time, condition)`, a condition counting 1 while true ([spec 30](0030-signal-aggregates.md); instead of `state_duration` and `uptime`) | Built |
 | Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points ([spec 31](0031-m4.md)) | Built |
 | Gaps | `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how often and how long the readings stopped for longer than a threshold ([spec 30](0030-signal-aggregates.md)) | Built |
-| Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built: names for ordered `first_value` and `last_value`; ASOF JOIN in Snowflake's form (`MATCH_CONDITION`), DuckDB's form to decide (#124) |
+| Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built: names for ordered `first_value` and `last_value`; ASOF JOIN in DuckDB's form (`ASOF [LEFT] JOIN … ON keys AND l.t >= r.t`) and Snowflake's (`MATCH_CONDITION`) |
 | Quantiles | `quantile` (exact, pandas' linear interpolation), `approx_quantile` (a t-digest: mergeable sketch state, so it could roll up across buckets) | Built; a rollup storing the digest is planned (#125) |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built: DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them; `histogram(x, low, high, bins)` as numpy's |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
@@ -80,3 +80,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 - 2026-10-20: `ohlc`, `lttb` and `histogram`; #126 done.
 - 2026-10-20: ASOF JOIN (Snowflake's form): a node of its own, the right side sorted per key and searched; 0.23 s
   where a range join took 78 s (#124).
+- 2026-10-20: ASOF JOIN in DuckDB's form too; #124 done.

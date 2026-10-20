@@ -1,12 +1,14 @@
 //! ASOF JOIN (spec 28): each left row with the right row of the same keys whose time is the
-//! nearest at or before its own (or after, by the match condition), as Snowflake writes it:
+//! nearest at or before its own (or after, by the match condition), as Snowflake writes it, or as
+//! DuckDB does (`ASOF [LEFT] JOIN r ON p.machine = r.machine AND p.time >= r.time`):
 //!
 //! ```sql
 //! SELECT p.time, p.value AS pressure, s.value AS state
 //! FROM readings p ASOF JOIN states s MATCH_CONDITION (p.time >= s.time) ON p.machine = s.machine
 //! ```
 //!
-//! Every left row is kept, with nulls where no right row matches. The match condition compares a
+//! Snowflake's form and DuckDB's `ASOF LEFT JOIN` keep every left row, with nulls where no right row
+//! matches; DuckDB's `ASOF JOIN` leaves those rows out. The match condition compares a
 //! left time with a right time by `>=`, `>`, `<=` or `<`; the `ON` keys are equalities.
 //!
 //! DataFusion has no ASOF JOIN: [`rewrite_statement`] turns one into a left join whose condition
@@ -47,77 +49,140 @@ use datafusion::physical_plan::{
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 use datafusion::sql::sqlparser::ast::{
     self, Function, FunctionArg, FunctionArgExpr, FunctionArgumentList, FunctionArguments, Ident, JoinConstraint,
-    JoinOperator, ObjectName, Query, SetExpr, TableFactor, TableWithJoins, VisitMut, VisitorMut,
+    JoinOperator, ObjectName, Query, SetExpr, Spanned, TableFactor, TableWithJoins, VisitMut, VisitorMut,
 };
+use datafusion::sql::sqlparser::tokenizer::Location;
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::OnceCell;
 
 /// The marker the rewritten join condition wraps the match condition in.
 const MARKER: &str = "timelake_asof";
 
-/// Rewrites each `ASOF JOIN … MATCH_CONDITION (c) ON k` in `statement` into
-/// `LEFT JOIN … ON k AND timelake_asof(c)`, which [`AsofRule`] turns back into an ASOF join.
-pub(super) fn rewrite_statement(statement: &mut datafusion::sql::parser::Statement) {
-    struct Rewrite;
-    impl VisitorMut for Rewrite {
-        type Break = ();
-        fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<()> {
-            rewrite_set_expr(&mut query.body);
-            ControlFlow::Continue(())
+/// Rewrites each ASOF join in `statement` into `[LEFT] JOIN … ON keys AND timelake_asof(c)`, which
+/// [`AsofRule`] turns back into an ASOF join. Snowflake's form, `ASOF JOIN … MATCH_CONDITION (c)
+/// ON keys`, keeps unmatched left rows. DuckDB's form, `ASOF [LEFT] JOIN r ON keys AND c` (with its
+/// `ASOF` taken out before parsing), is found by where its right side starts (`duckdb`, each with
+/// whether it is a `LEFT` join): the one inequality in its `ON` is the match condition.
+pub(super) fn rewrite_statement(
+    statement: &mut datafusion::sql::parser::Statement,
+    duckdb: &[(Location, bool)],
+) -> Result<(), String> {
+    struct Rewrite<'a>(&'a [(Location, bool)]);
+    impl VisitorMut for Rewrite<'_> {
+        type Break = String;
+        fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<String> {
+            match rewrite_set_expr(&mut query.body, self.0) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(e) => ControlFlow::Break(e),
+            }
         }
     }
     match statement {
-        datafusion::sql::parser::Statement::Statement(s) => {
-            let _ = s.visit(&mut Rewrite);
-        }
-        datafusion::sql::parser::Statement::Explain(e) => rewrite_statement(&mut e.statement),
-        _ => {}
+        datafusion::sql::parser::Statement::Statement(s) => match s.visit(&mut Rewrite(duckdb)) {
+            ControlFlow::Break(e) => Err(e),
+            ControlFlow::Continue(()) => Ok(()),
+        },
+        datafusion::sql::parser::Statement::Explain(e) => rewrite_statement(&mut e.statement, duckdb),
+        _ => Ok(()),
     }
 }
 
-fn rewrite_set_expr(body: &mut SetExpr) {
+fn rewrite_set_expr(body: &mut SetExpr, duckdb: &[(Location, bool)]) -> Result<(), String> {
     match body {
-        SetExpr::Select(select) => select.from.iter_mut().for_each(rewrite_joins),
+        SetExpr::Select(select) => select.from.iter_mut().try_for_each(|f| rewrite_joins(f, duckdb)),
         SetExpr::SetOperation { left, right, .. } => {
-            rewrite_set_expr(left);
-            rewrite_set_expr(right);
+            rewrite_set_expr(left, duckdb)?;
+            rewrite_set_expr(right, duckdb)
         }
-        _ => {}
+        _ => Ok(()),
     }
 }
 
-fn rewrite_joins(from: &mut TableWithJoins) {
+fn rewrite_joins(from: &mut TableWithJoins, duckdb: &[(Location, bool)]) -> Result<(), String> {
     if let TableFactor::NestedJoin { table_with_joins, .. } = &mut from.relation {
-        rewrite_joins(table_with_joins);
+        rewrite_joins(table_with_joins, duckdb)?;
     }
     for join in &mut from.joins {
         if let TableFactor::NestedJoin { table_with_joins, .. } = &mut join.relation {
-            rewrite_joins(table_with_joins);
+            rewrite_joins(table_with_joins, duckdb)?;
         }
-        let JoinOperator::AsOf { match_condition, constraint } = &join.join_operator else { continue };
-        let marker = ast::Expr::Function(Function {
-            name: ObjectName::from(vec![Ident::new(MARKER)]),
-            uses_odbc_syntax: false,
-            parameters: FunctionArguments::None,
-            args: FunctionArguments::List(FunctionArgumentList {
-                duplicate_treatment: None,
-                args: vec![FunctionArg::Unnamed(FunctionArgExpr::Expr(match_condition.clone()))],
-                clauses: vec![],
-            }),
-            filter: None,
-            null_treatment: None,
-            over: None,
-            within_group: vec![],
-        });
-        let on = match constraint {
-            JoinConstraint::On(keys) => ast::Expr::BinaryOp {
-                left: Box::new(ast::Expr::Nested(Box::new(keys.clone()))),
-                op: ast::BinaryOperator::And,
-                right: Box::new(marker),
-            },
-            _ => marker,
+        if let JoinOperator::AsOf { match_condition, constraint } = &join.join_operator {
+            let keys = match constraint {
+                JoinConstraint::On(keys) => Some(keys.clone()),
+                _ => None,
+            };
+            join.join_operator = marked(keys, match_condition.clone(), true);
+            continue;
+        }
+        let start = join.relation.span().start;
+        let Some(&(_, left)) = duckdb.iter().find(|(at, _)| *at == start) else { continue };
+        let on = match &join.join_operator {
+            JoinOperator::Join(JoinConstraint::On(on))
+            | JoinOperator::Inner(JoinConstraint::On(on))
+            | JoinOperator::Left(JoinConstraint::On(on))
+            | JoinOperator::LeftOuter(JoinConstraint::On(on)) => on.clone(),
+            _ => return Err("ASOF JOIN takes ON with its keys and one comparison of times".into()),
         };
-        join.join_operator = JoinOperator::LeftOuter(JoinConstraint::On(on));
+        let mut parts = vec![];
+        conjuncts(on, &mut parts);
+        let comparison = |e: &ast::Expr| {
+            use ast::BinaryOperator as B;
+            matches!(e, ast::Expr::BinaryOp { op: B::GtEq | B::Gt | B::LtEq | B::Lt, .. })
+        };
+        let (comparisons, keys): (Vec<_>, Vec<_>) = parts.into_iter().partition(comparison);
+        let [time] = <[ast::Expr; 1]>::try_from(comparisons)
+            .map_err(|_| "ASOF JOIN's ON takes one comparison of times (>=, >, <= or <)".to_owned())?;
+        let keys = keys.into_iter().reduce(|a, b| ast::Expr::BinaryOp {
+            left: Box::new(a),
+            op: ast::BinaryOperator::And,
+            right: Box::new(b),
+        });
+        join.join_operator = marked(keys, time, left);
+    }
+    Ok(())
+}
+
+/// `e`'s parts joined by `AND`, parentheses taken off.
+fn conjuncts(e: ast::Expr, out: &mut Vec<ast::Expr>) {
+    match e {
+        ast::Expr::BinaryOp { left, op: ast::BinaryOperator::And, right } => {
+            conjuncts(*left, out);
+            conjuncts(*right, out);
+        }
+        ast::Expr::Nested(e) => conjuncts(*e, out),
+        other => out.push(other),
+    }
+}
+
+/// The join an ASOF join is planned as: on `keys` and the marked match condition, a left join if
+/// unmatched left rows are kept, else an inner one.
+fn marked(keys: Option<ast::Expr>, match_condition: ast::Expr, keep_unmatched: bool) -> JoinOperator {
+    let marker = ast::Expr::Function(Function {
+        name: ObjectName::from(vec![Ident::new(MARKER)]),
+        uses_odbc_syntax: false,
+        parameters: FunctionArguments::None,
+        args: FunctionArguments::List(FunctionArgumentList {
+            duplicate_treatment: None,
+            args: vec![FunctionArg::Unnamed(FunctionArgExpr::Expr(match_condition))],
+            clauses: vec![],
+        }),
+        filter: None,
+        null_treatment: None,
+        over: None,
+        within_group: vec![],
+    });
+    let on = match keys {
+        Some(keys) => ast::Expr::BinaryOp {
+            left: Box::new(ast::Expr::Nested(Box::new(keys))),
+            op: ast::BinaryOperator::And,
+            right: Box::new(marker),
+        },
+        None => marker,
+    };
+    if keep_unmatched {
+        JoinOperator::LeftOuter(JoinConstraint::On(on))
+    } else {
+        JoinOperator::Inner(JoinConstraint::On(on))
     }
 }
 
@@ -573,5 +638,34 @@ mod tests {
         assert_eq!(matched, ["| a | 20 | x |", "| a | 35 | y |"]);
         let bad = format!("{TABLES} SELECT * FROM l ASOF JOIN r MATCH_CONDITION (l.t = r.t) ON l.k = r.k");
         assert!(answer(&bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn duckdb_form() {
+        // ASOF LEFT JOIN keeps every left row; ASOF JOIN only the matched ones.
+        let left = answer(&format!(
+            "{TABLES} SELECT l.k, l.t, r.s FROM l ASOF LEFT JOIN r ON l.k = r.k AND l.t >= r.t ORDER BY l.k, l.t"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(left, ["| a | 10 | x |", "| a | 20 | x |", "| a | 35 | y |", "| b | 5  |   |", "| c | 40 |   |"]);
+        let inner = answer(&format!(
+            "{TABLES} SELECT l.k, l.t, r.s FROM l asof join r ON r.t <= l.t AND l.k = r.k ORDER BY l.k, l.t"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(inner, ["| a | 10 | x |", "| a | 20 | x |", "| a | 35 | y |"]);
+        // Both forms in one query, the second ASOF JOIN with a derived table on its right.
+        let both = answer(&format!(
+            "{TABLES} SELECT l.t, r.s, r2.s AS next FROM l
+             ASOF JOIN r MATCH_CONDITION (l.t >= r.t) ON l.k = r.k
+             ASOF LEFT JOIN (SELECT k, t, s FROM r) r2 ON l.k = r2.k AND l.t < r2.t
+             WHERE l.k = 'a' ORDER BY l.t"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(both, ["| 10 | x | y    |", "| 20 | x | y    |", "| 35 | y |      |"]);
+        let two = format!("{TABLES} SELECT * FROM l ASOF JOIN r ON l.k = r.k AND l.t >= r.t AND l.t < r.t + 100");
+        assert!(answer(&two).await.is_err());
     }
 }

@@ -56,18 +56,55 @@ pub(super) fn parse(sql: &str, dialect: &dyn Dialect, recursion_limit: usize) ->
             out.push(Statement::Rollup(rollup_statement(sql, &offsets, &words)?));
             continue;
         }
-        let text = &sql[offsets.at(first.span.start)..offsets.at(last.span.end)];
+        let (text, duckdb_asof) = without_asof(&sql[offsets.at(first.span.start)..offsets.at(last.span.end)], dialect)?;
+        let text = text.as_str();
         let mut statements = DFParserBuilder::new(text)
             .with_dialect(dialect)
             .with_recursion_limit(recursion_limit)
             .build()?
             .parse_statements()?;
         match statements.pop_front() {
-            Some(s) if statements.is_empty() => out.push(Statement::Sql(Box::new(s))),
+            Some(mut s) if statements.is_empty() => {
+                super::asof::rewrite_statement(&mut s, &duckdb_asof).map_err(Error::invalid)?;
+                out.push(Statement::Sql(Box::new(s)));
+            }
             _ => return Err(Error::invalid(format!("can't parse {text:?} as one statement"))),
         }
     }
     Ok(out)
+}
+
+/// `text` with the `ASOF` of each of DuckDB's `ASOF [LEFT] JOIN r ON …` blanked out (which
+/// DataFusion's parser can't read), and where each such join's right side starts, with whether it
+/// is a `LEFT` join. Snowflake's `ASOF JOIN … MATCH_CONDITION (…)` is left as it is.
+fn without_asof(text: &str, dialect: &dyn Dialect) -> Result<(String, Vec<(Location, bool)>)> {
+    let tokens = Tokenizer::new(dialect, text).tokenize_with_location().map_err(|e| Error::invalid(e.to_string()))?;
+    let words: Vec<&TokenWithSpan> = tokens.iter().filter(|t| !matches!(t.token, Token::Whitespace(_))).collect();
+    let offsets = LineOffsets::new(text);
+    let mut blanked = text.to_owned();
+    let mut found = vec![];
+    for (i, w) in words.iter().enumerate() {
+        if !is_word(w, "ASOF") {
+            continue;
+        }
+        let rest = &words[i + 1..];
+        let (left, join) = match rest {
+            [l, o, j, ..] if is_word(l, "LEFT") && is_word(o, "OUTER") && is_word(j, "JOIN") => (true, 3),
+            [l, j, ..] if is_word(l, "LEFT") && is_word(j, "JOIN") => (true, 2),
+            [j, ..] if is_word(j, "JOIN") => (false, 1),
+            _ => continue,
+        };
+        // Snowflake's form names its match condition before the next ASOF.
+        let next = rest.iter().position(|t| is_word(t, "ASOF")).unwrap_or(rest.len());
+        if rest[..next].iter().any(|t| is_word(t, "MATCH_CONDITION")) {
+            continue;
+        }
+        let Some(right) = rest.get(join) else { continue };
+        let (start, end) = (offsets.at(w.span.start), offsets.at(w.span.end));
+        blanked.replace_range(start..end, &" ".repeat(end - start));
+        found.push((right.span.start, left));
+    }
+    Ok((blanked, found))
 }
 
 /// Byte offsets of the tokenizer's line and column locations.
