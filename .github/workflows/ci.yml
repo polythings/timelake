@@ -131,6 +131,7 @@ jobs:
           go-version-file: bench/tools/s3proxy/go.mod
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
+      - run: go test ./...
 
   release:
     name: Release workflow matches dist

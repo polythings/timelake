@@ -6,8 +6,9 @@ package main
 // s3://bench/... paths as with the local RustFS. The proxy maps the client-facing bucket to the real one,
 // re-signs each request with the default AWS credentials (SigV4; S3 Express via CreateSession), and counts
 // requests by kind and response bytes. Requests for any other bucket go to that bucket in the same region
-// (e.g. the storage behind an S3 Tables table, whose metadata names it). Each client connection gets its own upstream connection, so a fresh
-// client process pays its own DNS, TCP and TLS setup as it would talking to S3 directly.
+// (e.g. the storage behind an S3 Tables table, whose metadata names it). Each client connection gets its own
+// upstream connection, so a fresh client process pays its own DNS, TCP and TLS setup as it would talking to S3
+// directly.
 //
 //	s3proxy -aws-bucket my-bucket -aws-region us-east-2
 //	s3proxy -aws-bucket my-bucket--use2-az1--x-s3 -aws-region us-east-2

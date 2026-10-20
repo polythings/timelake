@@ -1,8 +1,8 @@
 // s3proxy: a counting proxy for benchmarking against S3.
 //
-// Default mode is a TCP proxy in front of a local S3-compatible store (RustFS). It delays the first response byte of every HTTP request by a configurable time-to-first-byte
-// (modelling S3 request latency), optionally caps each response's throughput (S3 streams one request at roughly
-// 50–90 MiB/s), and counts requests and response bytes.
+// Default mode is a TCP proxy in front of a local S3-compatible store (RustFS). It delays the first response byte
+// of every HTTP request by a configurable time-to-first-byte (modelling S3 request latency), optionally caps each
+// response's throughput (S3 streams one request at roughly 50–90 MiB/s), and counts requests and response bytes.
 //
 //	s3proxy -listen :59100 -upstream localhost:59000 -admin :59101 -ttfb 20ms -mibps 50
 //	curl localhost:59101/stats            -> {"requests":N,"bytes":B,"ttfb_ms":20,"mibps":50}
@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"log"
@@ -34,6 +35,9 @@ var (
 	ttfbMs   atomic.Int64
 	mibps    atomic.Int64
 )
+
+// wait pays the time to first byte; tests replace it to count the waits.
+var wait = time.Sleep
 
 func main() {
 	listen := flag.String("listen", ":59100", "proxy listen address")
@@ -67,13 +71,32 @@ func serveTCP(listen, upstream string, counted bool) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Fatal(proxyTCP(ln, upstream, counted))
+}
+
+// proxyTCP proxies every connection ln accepts to upstream, until ln fails.
+func proxyTCP(ln net.Listener, upstream string, counted bool) error {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		go handle(c, upstream, counted)
 	}
+}
+
+// finalResponse reports whether a response that starts with b is a request's final one: interim responses
+// (1xx, such as the 100 Continue a PUT with "Expect: 100-continue" gets before it sends its body) are skipped, so
+// the request is counted and pays the time to first byte once.
+func finalResponse(b []byte) bool {
+	for bytes.HasPrefix(b, []byte("HTTP/1.")) && len(b) > 9 && b[9] == '1' {
+		end := bytes.Index(b, []byte("\r\n\r\n"))
+		if end < 0 {
+			return false
+		}
+		b = b[end+4:]
+	}
+	return len(b) > 0
 }
 
 func handle(client net.Conn, upstream string, counted bool) {
@@ -114,9 +137,9 @@ func handle(client net.Conn, upstream string, counted bool) {
 		for {
 			n, err := server.Read(buf)
 			if n > 0 {
-				if awaiting.CompareAndSwap(true, false) {
+				if awaiting.Load() && finalResponse(buf[:n]) && awaiting.CompareAndSwap(true, false) {
 					if d := ttfbMs.Load(); d > 0 {
-						time.Sleep(time.Duration(d) * time.Millisecond)
+						wait(time.Duration(d) * time.Millisecond)
 					}
 					started, sent = time.Now(), 0
 				}
