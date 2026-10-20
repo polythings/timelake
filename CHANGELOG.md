@@ -69,6 +69,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 - Compaction from the TypeScript client dropped the table's last-value index: later appends didn't rebuild it, so
   `latest` queries read every file from then on. Compaction and retention now keep it, as the engine's do.
+- Appending nanosecond timestamps to a microsecond column (or a `date64` with a time of day to a date column)
+  truncated them, so two distinct times could become one row. Converting to a coarser unit is now checked like other
+  conversions: a value it would change is an error. A supplied `_ingest_ts` that doesn't parse is an error too; it was
+  replaced with the time of the append.
 - The CLI prints a failed query's error once: DataFusion's errors repeat their cause, and each was printed again.
 - `time_weighted_mean` over a span of several files per scan partition, such as a month of daily files grouped by
   tag, failed with "runs that overlap in time": each partition now reads a stretch of time, kept to its files. Files

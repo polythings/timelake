@@ -58,7 +58,7 @@ enum Conversion {
     /// parse) rather than making it null.
     Checked,
     /// Each value must come back unchanged when cast back (between integers, floats and decimals,
-    /// where a cast may round).
+    /// where a cast may round, and to a coarser time unit, where it truncates).
     RoundTrip,
 }
 
@@ -86,8 +86,10 @@ fn conversion(from: &DataType, to: &DataType) -> Option<Conversion> {
             let each = a.iter().zip(b).map(|(x, y)| conversion(x.data_type(), y.data_type()));
             each.collect::<Option<Vec<_>>>()?.into_iter().max().unwrap_or(Conversion::Checked)
         }
-        (Null, _) | (Timestamp(..) | Date32 | Date64, Timestamp(..)) | (Date32 | Date64, Date32 | Date64) => {
-            Conversion::Checked
+        (Null, _) => Conversion::Checked,
+        // A finer unit holds every value (a cast errs on overflow); a coarser one truncates.
+        (Timestamp(..) | Date32 | Date64, Timestamp(..)) | (Date32 | Date64, Date32 | Date64) => {
+            if tick_nanos(from)? >= tick_nanos(to)? { Conversion::Checked } else { Conversion::RoundTrip }
         }
         _ if int(from) && int(to) => Conversion::Checked,
         _ if float_bits(from).zip(float_bits(to)).is_some_and(|(f, t)| f <= t) => Conversion::Checked,
@@ -96,6 +98,18 @@ fn conversion(from: &DataType, to: &DataType) -> Option<Conversion> {
             Conversion::Checked
         }
         (Binary | LargeBinary | BinaryView, Binary | LargeBinary | BinaryView) => Conversion::Checked,
+        _ => return None,
+    })
+}
+
+/// Nanoseconds in one unit of a date or timestamp type.
+fn tick_nanos(t: &DataType) -> Option<i64> {
+    Some(match t {
+        DataType::Date32 => 86_400_000_000_000,
+        DataType::Date64 | DataType::Timestamp(TimeUnit::Millisecond, _) => 1_000_000,
+        DataType::Timestamp(TimeUnit::Second, _) => 1_000_000_000,
+        DataType::Timestamp(TimeUnit::Microsecond, _) => 1_000,
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => 1,
         _ => return None,
     })
 }
@@ -138,7 +152,8 @@ pub fn with_ingest_time(batch: &RecordBatch, column: &str, now: i64) -> WriteRes
     if batch.column(i).null_count() == 0 {
         return Ok(batch.clone());
     }
-    let given = cast(batch.column(i), &ty)?;
+    // Strict, so a value that doesn't convert is an error rather than a null stamped with `now`.
+    let given = cast_with_options(batch.column(i), &ty, &CastOptions { safe: false, ..CastOptions::default() })?;
     let filled = zip(&arrow_arith::boolean::is_not_null(&given)?, &given, &fill())?;
     let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
     fields[i] = Arc::new(Field::new(column, filled.data_type().clone(), false));
@@ -471,7 +486,7 @@ mod tests {
     #[test]
     fn converts_only_without_loss() {
         use arrow_array::{
-            BooleanArray, Date32Array, DictionaryArray, Float32Array, Float64Array, Int8Array, Int64Array,
+            BooleanArray, Date32Array, Date64Array, DictionaryArray, Float32Array, Float64Array, Int8Array, Int64Array,
             LargeStringArray, TimestampNanosecondArray, types::Int8Type,
         };
         let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into()));
@@ -486,6 +501,9 @@ mod tests {
             (Arc::new(StringArray::from(vec!["2026-01-01T00:00:00Z"])), ts.clone()),
             (Arc::new(StringArray::from(vec!["12", "-4"])), DataType::Int32),
             (Arc::new(Date32Array::from(vec![20_454])), ts.clone()),
+            (Arc::new(TimestampNanosecondArray::from(vec![2_000, 3_000])), ts.clone()),
+            (Arc::new(Date64Array::from(vec![2 * 86_400_000])), DataType::Date32),
+            (Arc::new(Date32Array::from(vec![2])), DataType::Date64),
             (Arc::new(LargeStringArray::from(vec!["a"])), DataType::Utf8),
             (Arc::new(DictionaryArray::<Int8Type>::from_iter(["a", "b", "a"])), DataType::Utf8),
             (new_null_array(&DataType::Null, 2), DataType::Float64),
@@ -505,6 +523,9 @@ mod tests {
             (Arc::new(StringArray::from(vec!["yesterday"])), ts.clone(), "can't be cast"),
             (Arc::new(BooleanArray::from(vec![true])), DataType::Int32, "can't be written"),
             (Arc::new(TimestampNanosecondArray::from(vec![1])), DataType::Int64, "can't be written"),
+            // Two values a truncating cast would make one.
+            (Arc::new(TimestampNanosecondArray::from(vec![1_001, 1_002])), ts.clone(), "not exactly"),
+            (Arc::new(Date64Array::from(vec![86_400_000 + 1])), DataType::Date32, "not exactly"),
             (Arc::new(Int32Array::from(vec![1])), DataType::Utf8, "can't be written"),
         ];
         for (values, to, msg) in rejected {
@@ -512,6 +533,15 @@ mod tests {
             let err = convert(values, to.clone()).map(|_| ()).unwrap_err().to_string();
             assert!(err.contains("column \"c\"") && err.contains(msg), "{from} → {to}: {err}");
         }
+    }
+
+    /// A supplied insertion time that doesn't parse is an error, not a null stamped with `now`.
+    #[test]
+    fn a_bad_ingest_time_is_an_error() {
+        let schema = Schema::new(vec![Field::new("_ingest_ts", DataType::Utf8, true)]);
+        let given = StringArray::from(vec![Some("2026-01-01T00:00:00Z"), None, Some("soon")]);
+        let b = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(given)]).unwrap();
+        assert!(with_ingest_time(&b, "_ingest_ts", 7).is_err());
     }
 
     #[test]

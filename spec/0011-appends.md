@@ -59,4 +59,4 @@ are safe (optimistic commits), but each conflict costs a retry, and many tiny ap
 - 2026-10-17: dedup within an append; columns encoded in parallel
 - 2026-10-18: appends past 1 GiB sorted in groups and merged
 - 2026-10-19: moved from SPEC.md into spec 9, then into this spec when the specs were regrouped one per feature.
-- 2026-10-20: lossy type conversions on append are errors (#22)
+- 2026-10-20: lossy type conversions on append are errors (#22), a timestamp to a coarser unit too
