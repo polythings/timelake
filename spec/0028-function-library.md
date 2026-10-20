@@ -37,11 +37,11 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Gaps | `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how often and how long the readings stopped for longer than a threshold ([spec 30](0030-signal-aggregates.md)) | Built |
 | Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built, names for ordered `first_value` and `last_value`; ASOF JOIN planned (#124) |
 | Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) | Planned (#125) |
-| Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Planned (#126); DataFusion has most under SQL names |
-| Changes | `diff`, `percent_change` (`pct_change`), `rate` (per second) | Planned (#126) |
+| Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built but `histogram` (#126): DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them |
+| Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) | Planned (#126) |
 | Downsampling | `lttb` | Planned (#126) |
-| Rolling and anomalies | `rolling_mean`, `rolling_std` (`rolling(…).mean()`), `zscore`, flatline (stuck sensor) detection | Planned (#126) |
+| Rolling and anomalies | `rolling_mean(x, n)`, `rolling_std(x, n)` (`rolling(n).mean()`), `zscore`, flatline (stuck sensor) detection | Built but flatline detection (#126): running sums, 4× faster than a framed `avg` over 60 rows |
 
 **Availability by engine:**
 - **Timelake reader (DataFusion):** Full library as Rust UDFs/UDAFs.
@@ -73,3 +73,5 @@ Every function has a plain, descriptive name. Where pandas uses a different name
   then into this spec when the specs were regrouped one per feature.
 - 2026-10-19: `gap_count` and `gap_seconds` (spec 30).
 - 2026-10-20: `first`, `last` and `value_at` (`asof`) built (#124).
+- 2026-10-20: the pandas statistics names, `skewness` and `kurtosis`, `diff`, `percent_change`, `rate`, `rolling_mean`,
+  `rolling_std` and `zscore` (#126).

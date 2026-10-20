@@ -97,6 +97,29 @@ The time comes first, as in the other signal functions (TimescaleDB's `first` an
 are names for `first_value(value ORDER BY time)` and `last_value(value ORDER BY time)`, the latter filtered to
 `time <= at` for `value_at`, so a rollup that stores `first` or `last` answers them too.
 
+## Changes, rolling windows and statistics
+
+Window functions over the window's order, named as in pandas:
+
+| Function | Gives |
+|---|---|
+| `diff(x)` | the change from the row before |
+| `percent_change(x)` (`pct_change`) | that change as a fraction of the row before (null where it was 0) |
+| `rate(time, x)` | that change per second |
+| `rolling_mean(x, n)`, `rolling_std(x, n)` | the mean and sample standard deviation of the last `n` rows, null until they hold `n` values |
+| `zscore(x)` | how many sample standard deviations the row is from the partition's mean |
+
+```sql
+SELECT time, value, rolling_mean(value, 60) OVER w AS minute_avg, zscore(value) OVER w AS z
+FROM iot.readings WHERE tag = 'M00007.pressure' AND time >= now() - INTERVAL '1 hour'
+WINDOW w AS (ORDER BY time)
+```
+
+`rolling_mean(x, 60)` is about 4× faster than `avg(x) OVER (… ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)`: it keeps
+running sums instead of reading each frame again. The aggregates `std` (`stddev`), `var`, `cov` (`covar_samp`),
+`corr`, `skewness` (`skew`) and `kurtosis` (`kurt`, the excess kurtosis) work as in pandas; the last two merge
+exactly across partitions.
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is

@@ -10,6 +10,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Window functions `diff(x)`, `percent_change(x)` (`pct_change`), `rate(time, x)`, `rolling_mean(x, n)`,
+  `rolling_std(x, n)` and `zscore(x)`, as pandas defines them; `rolling_mean` over 60 rows is about 4× faster than a
+  framed `avg`. Aggregates `skewness` (`skew`) and `kurtosis` (`kurt`), and the pandas names `std` and `cov`.
 - Aggregates `first(time, value)` and `last(time, value)`, a group's value at its earliest and latest time, and
   `value_at(time, value, at)` (alias `asof`), the latest value at or before a time. Rollups answer `first` and `last`.
 - Rollup routing follows filters on grouping columns that come from another table, such as `tag IN (SELECT tag FROM

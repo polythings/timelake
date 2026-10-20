@@ -104,11 +104,22 @@ impl Session {
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
         ctx.register_udaf(super::m4::m4_udaf());
-        for f in super::selection::udafs() {
+        for f in super::selection::udafs().into_iter().chain(super::moments::udafs()) {
             ctx.register_udaf(f);
         }
+        // pandas' names for DataFusion's sample standard deviation and covariance.
+        ctx.register_udaf(
+            datafusion::functions_aggregate::stddev::stddev_udaf().as_ref().clone().with_aliases(["std"]),
+        );
+        ctx.register_udaf(
+            datafusion::functions_aggregate::covariance::covar_samp_udaf().as_ref().clone().with_aliases(["cov"]),
+        );
         ctx.register_udtf("time_buckets", Arc::new(super::gapfill::TimeBuckets));
-        for f in super::gapfill::window_udfs() {
+        for f in super::gapfill::window_udfs()
+            .into_iter()
+            .chain(super::changes::window_udfs())
+            .chain(super::rolling::window_udfs())
+        {
             ctx.register_udwf(f);
         }
         for output in super::signal::Output::ALL {

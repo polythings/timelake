@@ -16,14 +16,17 @@
 //! - Namespaces as SQL schemas: `SELECT … FROM iot.readings`.
 
 mod catalog;
+mod changes;
 mod dedup;
 mod gapfill;
 mod gaps;
 mod in_list;
 mod m4;
+mod moments;
 mod newest;
 mod provider;
 mod rewrite;
+mod rolling;
 mod rollup;
 mod route;
 mod runs;
