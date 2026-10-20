@@ -291,15 +291,31 @@ impl RollupRewrite {
     }
 }
 
+/// `plan` rewritten bottom-up by `f`, as `transform_up` does, but for the right side of semi-joins:
+/// that subquery only filters the query's rows, its scans and columns aren't the query's.
+fn transform_rows(
+    plan: LogicalPlan,
+    f: &mut impl FnMut(LogicalPlan) -> DfResult<Transformed<LogicalPlan>>,
+) -> DfResult<Transformed<LogicalPlan>> {
+    let node = match plan {
+        LogicalPlan::Join(mut join) if join.join_type == JoinType::LeftSemi => {
+            let left = transform_rows(Arc::unwrap_or_clone(join.left), f)?;
+            join.left = Arc::new(left.data);
+            Transformed::new_transformed(LogicalPlan::Join(join), left.transformed)
+        }
+        other => other.map_children(|child| transform_rows(child, f))?,
+    };
+    node.transform_parent(f)
+}
+
 /// `plan` (a scan under filters, semi-joins, aliases and projections of columns, as [`read_query`] takes it)
 /// with column `name` of the scanned table in its output, where it was projected away.
 fn with_column(plan: LogicalPlan, name: &str) -> DfResult<LogicalPlan> {
     if plan.schema().has_column_with_unqualified_name(name) {
         return Ok(plan);
     }
-    plan.transform_up(|node| match node {
+    transform_rows(plan, &mut |node| match node {
         LogicalPlan::TableScan(mut scan) => {
-            // Only the scanned table has it, not the right side of a semi-join.
             let Ok(index) = scan.source.schema().index_of(name) else {
                 return Ok(Transformed::no(LogicalPlan::TableScan(scan)));
             };
@@ -783,9 +799,10 @@ fn rollup_rows(
     Ok(builder)
 }
 
-/// `plan` with its Timelake scan marked as routed, so the rule leaves it alone from now on.
+/// `plan` with its Timelake scan marked as routed, so the rule leaves it alone from now on; not the
+/// scans of a semi-join's subquery, which may still be routed themselves.
 fn mark_routed(plan: LogicalPlan) -> DfResult<LogicalPlan> {
-    plan.transform_up(|node| {
+    transform_rows(plan, &mut |node| {
         let LogicalPlan::TableScan(scan) = &node else { return Ok(Transformed::no(node)) };
         let provider = source_as_provider(&scan.source)?;
         let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else {

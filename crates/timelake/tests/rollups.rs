@@ -5,9 +5,11 @@
 
 mod common;
 
-use arrow::array::RecordBatch;
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
 use common::{DAY, T0, batch, opts, rows, scalar_i64, temp_lake};
-use timelake::{AppendOptions, Lake, Session, property};
+use timelake::{AppendOptions, Lake, Session, TableOptions, property};
 
 const HOUR: i64 = DAY / 24;
 const MINUTE: i64 = HOUR / 60;
@@ -84,6 +86,18 @@ const QUERIES: &[(&str, bool)] = &[
     (
         "SELECT device, time_weighted_mean(time, value), max(value) FROM iot.r
          WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND device IN (SELECT d FROM (VALUES (2)) AS v(d))
+         GROUP BY device",
+        true,
+    ),
+    // Keys from a table: a projection without the time column on the semi-join's right side.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), count(*) FROM iot.r
+         WHERE device IN (SELECT device FROM iot.devices WHERE kind = 'pump') GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, max(value), count(*) FROM iot.r
+         WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND device IN (SELECT device FROM iot.devices WHERE kind = 'pump')
          GROUP BY device",
         true,
     ),
@@ -175,6 +189,13 @@ async fn lake_with_rollup() -> (tempfile::TempDir, Lake) {
     let b = batch(T0, 2 * 24 * 60, MINUTE, 4, |d, i| f64::from(d) * 10_000.0 + i as f64);
     t.append(&[b], AppendOptions::default()).await.unwrap();
     let s = Session::new(lake.clone());
+    let kinds = RecordBatch::try_from_iter([
+        ("device", Arc::new(Int32Array::from(vec![0, 1, 3])) as ArrayRef),
+        ("kind", Arc::new(StringArray::from(vec!["fan", "pump", "pump"]))),
+    ])
+    .unwrap();
+    let devices = lake.create_table("iot.devices", &kinds.schema(), TableOptions::default()).await.unwrap();
+    devices.append(&[kinds], AppendOptions::default()).await.unwrap();
     let created = rows(&s, CREATE).await;
     let text = arrow::util::pretty::pretty_format_batches(&created).unwrap().to_string();
     assert!(text.contains("iot.r_1h") && text.contains("192"), "4 devices × 48 hours\n{text}");
