@@ -30,3 +30,19 @@ TSBS IoT standard (1,004 of the trucks in the `South` fleet), CLI, interleaved, 
 against 10,000 (the filter lists the keys). The fleet's trucks are spread through every file, so listing them prunes
 nothing and costs a hash lookup per row: avg-load 55 → 189 ms, avg-daily-driving-duration 94 → 258, daily-activity
 112 → 262, long-daily-sessions 37 → 68; the queries without a fleet join unchanged. Decision: keep 150.
+
+## First runs of point queries (#132)
+
+On a quiet machine (load average 2–3), the release CLI's in-process first run (`--bench-runs 1`, median of 15 fresh
+processes, interleaved), TSBS IoT standard: imported with the ingest-time column, imported without it
+(`--no-ingest-time`), and the benchmark's own streamed and maintained table.
+
+| Query | With | Without | Streamed |
+|---|---:|---:|---:|
+| one-truck-latest | 3.20 ms | 2.96 ms | 4.44 ms |
+| one-truck-last-hour | 8.13 ms | 8.16 ms | 6.79 ms |
+| last-loc | 5.08 ms | 5.07 ms | 6.49 ms |
+
+The ingest-time column costs at most 0.2 ms, and the streamed table is back at the 2026-10-16 run's numbers
+(one-truck-latest 4, one-truck-last-hour 7 ms): the 2026-10-19 rise to 8 and 13 ms came from a machine at load 40–100,
+not from the code. Decision: nothing to change; first runs on a busy machine aren't comparable across runs.
