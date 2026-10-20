@@ -90,9 +90,9 @@ class RunSpec:
     skip_after_timeout: bool = True
     """A query that timed out on a system's reader is skipped at that system's later checkpoints (status
     ``skipped``), instead of waiting out the timeout again."""
-    ttfb_ms: int | None = None
+    ttfb_ms: int = 0
     """Latency the proxy adds per request (local object stores)."""
-    mibps: int | None = None
+    mibps: int = 0
     """Throughput cap per response in MiB/s the proxy applies, 0 for none (local object stores)."""
     label: str = ""
     reuse: bool = False
@@ -138,10 +138,7 @@ def run(spec: RunSpec) -> Path:
     """Runs everything and returns the run file."""
     if not spec.reuse:  # the tables exist; the data files may not
         spec.workload.prepare()
-    if spec.target.s3 and spec.ttfb_ms is not None:
-        set_proxy("ttfb", f"ms={spec.ttfb_ms}")
-    if spec.target.s3 and spec.mibps is not None:
-        set_proxy("mibps", f"v={spec.mibps}")
+    configure_proxy(spec)
     started = dt.datetime.now(dt.timezone.utc)
     header = run_header(spec, started)
     path = RUNS / f"{header['id']}.jsonl"
@@ -257,10 +254,8 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
         "runs": spec.runs,
         "tuning": spec.tuning,
     }
-    if target.s3 and spec.ttfb_ms is not None:
-        header["ttfb_ms"] = spec.ttfb_ms
-    if target.s3 and spec.mibps is not None:
-        header["mibps"] = spec.mibps
+    if target.s3:
+        header.update(ttfb_ms=spec.ttfb_ms, mibps=spec.mibps)
     if spec.live_interval:
         header["live_interval_s"] = spec.live_interval
     if spec.pace:
@@ -681,6 +676,13 @@ def concurrency_line(r: ConcurrencyRecord) -> str:
     p50, p95 = r.get("p50_s"), r.get("p95_s")
     times = f"p50 {p50:.3f}s p95 {p95:.3f}s" if p50 is not None and p95 is not None else "no queries"
     return f"clients  {r['system']}+{r['reader']} x{r['clients']}: {r['qps']} q/s, {times}, {r['errors']} errors"
+
+
+def configure_proxy(spec: RunSpec) -> None:
+    """Sets the counting proxy's latency and throughput cap for an S3 run: every one, since it keeps the last run's."""
+    if spec.target.s3:
+        set_proxy("ttfb", f"ms={spec.ttfb_ms}")
+        set_proxy("mibps", f"v={spec.mibps}")
 
 
 def set_proxy(setting: str, query: str) -> None:

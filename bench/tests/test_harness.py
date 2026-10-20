@@ -475,3 +475,14 @@ def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch) -> No
         questdb.append("readings", data)
     questdb.settle()
     assert clients == [{"frames": 3, "closed": True}]
+
+
+def test_an_s3_run_sets_and_records_every_proxy_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The proxy keeps what the last run set: a run that doesn't name a setting gets none, not the last run's."""
+    settings: list[tuple[str, str]] = []
+    monkeypatch.setattr(harness, "set_proxy", lambda setting, query: settings.append((setting, query)))
+    spec = harness.RunSpec(workload=Tiny(), target=Target("s3"), systems=[], ttfb_ms=20)
+    harness.configure_proxy(spec)
+    assert settings == [("ttfb", "ms=20"), ("mibps", "v=0")]
+    header = harness.run_header(spec, dt.datetime.now(dt.UTC))
+    assert (header["ttfb_ms"], header["mibps"]) == (20, 0)

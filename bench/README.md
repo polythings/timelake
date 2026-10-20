@@ -136,7 +136,8 @@ uv run timebench run tsbs-iot --scale small --target s3 --ttfb-ms 20 --mibps 50
 ```
 Create the bucket `bench` first (any S3 client against `localhost:59000`). `--ttfb-ms` is the latency the proxy adds
 before each response, `--mibps` caps each response's throughput (S3 serves one request at roughly 50–90 MiB/s;
-`0` for no cap), so request sizes and concurrency matter as they do on S3.
+`0` for no cap), so request sizes and concurrency matter as they do on S3. Both default to 0, and every S3 run sets
+both and records them, so a run never inherits the last one's.
 
 ## Real AWS S3
 From this machine (`run_aws.sh`) or from an instance in the region, including the weekly run: see
