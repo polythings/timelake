@@ -58,7 +58,7 @@ CLICKHOUSE: Dialect = {
     "B10M": "toStartOfInterval({}, INTERVAL 10 MINUTE)",
     "B1D": "toStartOfDay({})",
     "B1H": "toStartOfHour({})",
-    "EPOCH": "(toUnixTimestamp64Micro({}) / 1000000.0)",
+    "EPOCH": "(toUnixTimestamp64Micro(toDateTime64({}, 6, 'UTC')) / 1000000.0)",  # buckets can be DateTime
     "TS": "toDateTime64({}, 6, 'UTC')",
 }
 QUESTDB: Dialect = {

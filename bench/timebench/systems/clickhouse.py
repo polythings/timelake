@@ -1,4 +1,4 @@
-"""ClickHouse: MergeTree tables loaded with Arrow inserts; maintenance merges every partition (``OPTIMIZE ... FINAL``).
+"""ClickHouse: MergeTree tables loaded with Arrow inserts; a tuned run merges every partition (``OPTIMIZE ... FINAL``).
 
 Any ClickHouse server works (``bench/infra/servers.sh`` starts one); set ``BENCH_CLICKHOUSE_URL`` (default
 ``http://default:bench@localhost:58123``). Each dataset gets a database ``bench_<dataset>`` that a run drops and
@@ -43,8 +43,12 @@ def connect(database: str | None = None) -> Client:
     )
 
 
-def ch_type(field: pa.Field, spec: TableSpec) -> str:
-    """The ClickHouse type of an Arrow column: the time column and series key never null, other floats nullable."""
+def ch_type(field: pa.Field, spec: TableSpec, key: str) -> str:
+    """The ClickHouse type of an Arrow column: nullable, but for the columns that order the table.
+
+    Those are the time column and the series key, or a dimension table's first column (``key``). TSBS's readings
+    and tags hold nulls, which a plain column would store as 0 or an empty string.
+    """
     t = field.type
     if pa.types.is_timestamp(t):
         base = "DateTime64(6, 'UTC')"
@@ -63,17 +67,25 @@ def ch_type(field: pa.Field, spec: TableSpec) -> str:
             msg = f"no ClickHouse type for {t}"
             raise TypeError(msg)
         base = types[t]
-    nullable = pa.types.is_floating(t) and not spec.time_column
-    return f"Nullable({base})" if nullable else base
+    ordering = field.name in spec.series_key or field.name in (spec.time_column, key)
+    return base if ordering else f"Nullable({base})"
 
 
 class ClickHouse(System):
-    """MergeTree ordered by (series key, time) and partitioned by month; ReplacingMergeTree where rows repeat."""
+    """MergeTree tables, ReplacingMergeTree ordered by (series key, time) where rows repeat.
+
+    Where rows repeat that is both tunings' layout: the answers are wrong without it.
+
+    Default: ordered by time, unpartitioned, no maintenance (ClickHouse merges in the background). Tuned, as its
+    docs recommend: ordered by (series key, time), partitioned by month, the workload's materialized views
+    (``tunings/<workload>/clickhouse.sql``) where they stay exact, and maintenance that merges every partition.
+    """
 
     name = "clickhouse"
     title = "ClickHouse"
     readers = ("clickhouse",)
     server = True
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -96,15 +108,23 @@ class ClickHouse(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        columns = ", ".join(f"{f.name} {ch_type(f, spec)}" for f in schema)
+        columns = ", ".join(f"{f.name} {ch_type(f, spec, schema[0].name)}" for f in schema)
         if spec.time_column:
             engine = "ReplacingMergeTree" if spec.dedup else "MergeTree"
-            order = ", ".join([*spec.series_key, spec.time_column])
-            layout = f"ENGINE = {engine} PARTITION BY toYYYYMM({spec.time_column}) ORDER BY ({order})"
+            # Replacing removes rows with the same sort key, so it needs the series key in it.
+            by_series = self.tuned or spec.dedup
+            order = ", ".join([*spec.series_key, spec.time_column]) if by_series else spec.time_column
+            partition = f"PARTITION BY toYYYYMM({spec.time_column}) " if self.tuned else ""
+            layout = f"ENGINE = {engine} {partition}ORDER BY ({order})"
         else:
             layout = f"ENGINE = MergeTree ORDER BY {schema[0].name}"
         self.client.command(f"CREATE TABLE {self.database}.{spec.name} ({columns}) {layout}")
         self.specs[spec.name] = spec
+
+    @override
+    def tune(self, statements: list[str]) -> None:
+        for sql in statements:
+            self.client.command(sql.replace("{database}", self.database))
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -112,14 +132,18 @@ class ClickHouse(System):
 
     @override
     def maintain(self) -> None:
+        if not self.tuned:
+            return
         for table in self.place.load_state()["tables"]:
             self.client.command(f"OPTIMIZE TABLE {self.database}.{table} FINAL")
 
     @override
     def state(self) -> dict[str, Any]:
-        tables = list(self.specs) or self.place.load_state()["tables"]
-        dedup = any(s.dedup for s in self.specs.values()) or self.place.load_state().get("final", False)
-        return {"database": self.database, "tables": tables, "final": dedup}
+        if not self.specs:  # a later process (maintenance): as the ingest saved it
+            saved = self.place.load_state()
+            return {"database": self.database, "tables": saved["tables"], "final": saved.get("final", False)}
+        dedup = any(s.dedup for s in self.specs.values())
+        return {"database": self.database, "tables": list(self.specs), "final": dedup}
 
     @override
     def stats(self) -> StorageStats:

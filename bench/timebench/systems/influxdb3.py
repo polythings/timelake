@@ -95,7 +95,12 @@ def line_protocol(table: str, data: pa.Table, spec: TableSpec) -> pa.ChunkedArra
 
 
 class InfluxDB3(System):
-    """InfluxDB 3 Core: tuned with the query file limit raised, default as shipped."""
+    """InfluxDB 3 Core.
+
+    Default: as shipped, tables created by the first write. Tuned: the query file limit raised (its server), and each
+    time-series table created up front with a last value cache keyed by its series key, which the tuned latest-value
+    queries (``[influxdb3 tuned]``) read with ``last_cache()``.
+    """
 
     name = "influxdb3"
     title = "InfluxDB 3 Core"
@@ -141,7 +146,20 @@ class InfluxDB3(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        self.specs[spec.name] = spec  # tables are created by the first write
+        self.specs[spec.name] = spec  # the default's tables are created by the first write
+        if not (self.tuned and spec.time_column):
+            return
+        json_headers = {"Content-Type": "application/json"}
+        fields = [
+            {"name": f.name, "type": influx_type(f.type)}
+            for f in schema
+            if f.name not in spec.series_key and f.name != spec.time_column
+        ]
+        table = {"db": self.database, "table": spec.name, "tags": list(spec.series_key), "fields": fields}
+        self.request("POST", "/api/v3/configure/table", json.dumps(table).encode(), json_headers)
+        keys = list(spec.series_key)
+        cache = {"db": self.database, "table": spec.name, "name": f"{spec.name}_last", "key_columns": keys}
+        self.request("POST", "/api/v3/configure/last_cache", json.dumps(cache).encode(), json_headers)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -186,6 +204,17 @@ class InfluxDB3(System):
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
         return lambda sql: arrow_result(query(state["url"], state["database"], sql))
+
+
+def influx_type(t: pa.DataType) -> str:
+    """A field's type as InfluxDB's table API names it."""
+    if pa.types.is_integer(t):
+        return "int64"
+    if pa.types.is_floating(t):
+        return "float64"
+    if pa.types.is_boolean(t):
+        return "bool"
+    return "utf8"
 
 
 def server_url(tuning: str) -> str:

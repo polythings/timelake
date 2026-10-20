@@ -56,12 +56,19 @@ def qdb_type(field: pa.Field, spec: TableSpec) -> str:
 
 
 class QuestDB(System):
-    """Day-partitioned WAL tables with a designated timestamp; dimension tables without one."""
+    """Day-partitioned WAL tables with a designated timestamp; dimension tables without one.
+
+    Tables whose rows may arrive twice deduplicate on write (``DEDUP UPSERT KEYS``) in both tunings: the answers are
+    wrong without it. Default: the series key a plain ``SYMBOL``. Tuned, as QuestDB's docs recommend: the symbol
+    indexed, and the workload's materialized views (``tunings/<workload>/questdb.sql``), which a run waits for
+    whenever it waits for the tables.
+    """
 
     name = "questdb"
     title = "QuestDB"
     readers = ("questdb",)
     server = True
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -96,7 +103,10 @@ class QuestDB(System):
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
         self.execute(f"DROP TABLE IF EXISTS {spec.name}")
-        columns = ", ".join(f"{f.name} {qdb_type(f, spec)}" for f in schema)
+        columns = ", ".join(
+            f"{f.name} {qdb_type(f, spec)}{' INDEX' if self.tuned and f.name in spec.series_key else ''}"
+            for f in schema
+        )
         sql = f"CREATE TABLE {spec.name} ({columns})"
         if spec.time_column:
             sql += f" TIMESTAMP({spec.time_column}) PARTITION BY DAY WAL"
@@ -104,6 +114,11 @@ class QuestDB(System):
                 sql += f" DEDUP UPSERT KEYS({', '.join([spec.time_column, *spec.series_key])})"
         self.execute(sql)
         self.specs[spec.name] = spec
+
+    @override
+    def tune(self, statements: list[str]) -> None:
+        for sql in statements:
+            self.execute(sql)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -129,7 +144,11 @@ class QuestDB(System):
         start = time.monotonic()
         while time.monotonic() < start + SETTLE_TIMEOUT_S:
             pending = self.execute("SELECT count() FROM wal_tables() WHERE writerTxn < sequencerTxn")
-            if not pending or pending[0][0] == 0:
+            # A materialized view refreshes after its base table's commits are applied.
+            views = self.execute(
+                "SELECT count() FROM materialized_views() WHERE refresh_base_table_txn < base_table_txn"
+            )
+            if (not pending or pending[0][0] == 0) and (not views or views[0][0] == 0):
                 return time.monotonic() - start
             time.sleep(0.1)
         msg = f"QuestDB didn't apply its WAL within {SETTLE_TIMEOUT_S}s"

@@ -86,7 +86,8 @@ def test_every_tsbs_query_is_fully_translated(suite: str, dialect: Dialect) -> N
 
 
 def test_tsbs_devops_has_the_15_query_types() -> None:
-    assert len(list(raw_queries("tsbs_devops"))) == 15
+    # Other readers' and tunings' versions (`-- name: q [reader]`) are versions of these, not more queries.
+    assert len([n for n, _ in raw_queries("tsbs_devops") if " [" not in n]) == 15
 
 
 def test_s3_tables_live_in_the_bench_bucket() -> None:

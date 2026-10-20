@@ -188,3 +188,56 @@ FROM readings
 WHERE tag LIKE '%.pressure' AND time >= @AGO(24 hours)
 GROUP BY tag
 HAVING gap_count(time, INTERVAL '5 minutes') > 0;
+
+-- name: trend-30d [postgres tuned]
+-- From the hourly continuous aggregate.
+SELECT bucket AS hour, lo, hi, total / valued AS mean, samples
+FROM readings_1h
+WHERE tag = 'M00007.pressure' AND bucket >= @AGO(30 days)
+ORDER BY hour;
+
+-- name: shift-report [postgres tuned]
+-- From the hourly continuous aggregate: one tag per machine and signal.
+SELECT t.machine, t.signal, r.bucket AS hour, r.total / r.valued AS mean, r.hi AS peak
+FROM readings_1h r JOIN tags t ON r.tag = t.tag
+WHERE t.line = 'L0003' AND t.kind = 'analog' AND r.bucket >= @AGO(8 hours);
+
+-- name: daily-stats [postgres tuned]
+-- The hourly continuous aggregate's rows, merged by day.
+SELECT r.tag, time_bucket(INTERVAL '1 day', r.bucket) AS day, sum(r.samples) AS samples, sum(r.total) / sum(r.valued) AS mean
+FROM readings_1h r JOIN tags t ON r.tag = t.tag
+WHERE t.line = 'L0002' AND r.bucket >= @AGO(30 days)
+GROUP BY r.tag, time_bucket(INTERVAL '1 day', r.bucket);
+
+-- name: latest-area [questdb tuned]
+-- LATEST ON over the indexed symbol: QuestDB's latest row per series.
+SELECT r.tag, r.time, r.value, r.quality
+FROM (SELECT * FROM readings WHERE time >= @AGO(2 hours) LATEST ON time PARTITION BY tag) r
+JOIN tags t ON r.tag = t.tag
+WHERE t.area = 'A000';
+
+-- name: trend-30d [questdb tuned]
+-- From the hourly materialized view.
+SELECT time AS hour, lo, hi, total / valued AS mean, samples
+FROM readings_1h
+WHERE tag = 'M00007.pressure' AND time >= @AGO(30 days)
+ORDER BY hour;
+
+-- name: shift-report [questdb tuned]
+-- From the hourly materialized view: one tag per machine and signal.
+SELECT t.machine, t.signal, r.time AS hour, r.total / r.valued AS mean, r.hi AS peak
+FROM readings_1h r JOIN tags t ON r.tag = t.tag
+WHERE t.line = 'L0003' AND t.kind = 'analog' AND r.time >= @AGO(8 hours);
+
+-- name: daily-stats [questdb tuned]
+-- The hourly materialized view's rows, merged by day.
+SELECT r.tag, @B1D(r.time) AS day, sum(r.samples) AS samples, sum(r.total) / sum(r.valued) AS mean
+FROM readings_1h r JOIN tags t ON r.tag = t.tag
+WHERE t.line = 'L0002' AND r.time >= @AGO(30 days)
+GROUP BY r.tag, @B1D(r.time);
+
+-- name: latest-area [influxdb3 tuned]
+-- From the last value cache: the newest row of each tag.
+SELECT r.tag, r.time, r.value, r.quality
+FROM last_cache('readings', 'readings_last') r JOIN tags t ON r.tag = t.tag
+WHERE t.area = 'A000' AND r.time >= @AGO(2 hours);

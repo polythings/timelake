@@ -10,6 +10,8 @@
 --   * GROUP BY and ORDER BY use column positions; time buckets are placeholders filled per engine:
 --       @B1M(x) 1-minute bucket, @B1H(x) 1-hour bucket, @TS('...') timestamptz literal.
 --   * Names follow TSBS: single-groupby-<metrics>-<hosts>-<hours>, cpu-max-all-<hosts>, double-groupby-<metrics>.
+--   * `-- name: <query> [<reader> tuned]` is the version a tuned run of that system reads (D23), as its docs write it
+--     for its precomputation. Answers are checked like every other.
 
 -- name: single-groupby-1-1-1
 -- One host's highest user CPU per minute over an hour.
@@ -154,3 +156,75 @@ WHERE time < @TS('2026-01-03 23:00:00')
 GROUP BY 1
 ORDER BY 1 DESC
 LIMIT 5;
+
+-- name: cpu-max-all-1 [clickhouse tuned]
+-- The hourly materialized view's states, merged.
+SELECT bucket AS hour,
+       maxMerge(max_user) AS max_usage_user,
+       maxMerge(max_system) AS max_usage_system,
+       maxMerge(max_idle) AS max_usage_idle,
+       maxMerge(max_nice) AS max_usage_nice,
+       maxMerge(max_iowait) AS max_usage_iowait,
+       maxMerge(max_irq) AS max_usage_irq,
+       maxMerge(max_softirq) AS max_usage_softirq,
+       maxMerge(max_steal) AS max_usage_steal,
+       maxMerge(max_guest) AS max_usage_guest,
+       maxMerge(max_guest_nice) AS max_usage_guest_nice
+FROM cpu_1h
+WHERE hostname IN ('host_9') AND bucket >= @TS('2026-01-03 15:00:00') AND bucket < @TS('2026-01-03 23:00:00')
+GROUP BY bucket
+ORDER BY hour;
+
+-- name: cpu-max-all-8 [clickhouse tuned]
+-- The hourly materialized view's states, merged.
+SELECT bucket AS hour,
+       maxMerge(max_user) AS max_usage_user,
+       maxMerge(max_system) AS max_usage_system,
+       maxMerge(max_idle) AS max_usage_idle,
+       maxMerge(max_nice) AS max_usage_nice,
+       maxMerge(max_iowait) AS max_usage_iowait,
+       maxMerge(max_irq) AS max_usage_irq,
+       maxMerge(max_softirq) AS max_usage_softirq,
+       maxMerge(max_steal) AS max_usage_steal,
+       maxMerge(max_guest) AS max_usage_guest,
+       maxMerge(max_guest_nice) AS max_usage_guest_nice
+FROM cpu_1h
+WHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND bucket >= @TS('2026-01-03 15:00:00') AND bucket < @TS('2026-01-03 23:00:00')
+GROUP BY bucket
+ORDER BY hour;
+
+-- name: double-groupby-1 [clickhouse tuned]
+-- The hourly materialized view's states, merged.
+WITH cpu_avg AS (
+    SELECT bucket AS hour, hostname, avgMerge(avg_user) AS mean_usage_user
+    FROM cpu_1h
+    WHERE bucket >= @TS('2026-01-03 11:00:00') AND bucket < @TS('2026-01-03 23:00:00')
+    GROUP BY bucket, hostname
+)
+SELECT hour, hostname, mean_usage_user
+FROM cpu_avg
+ORDER BY hour, hostname;
+
+-- name: double-groupby-5 [clickhouse tuned]
+-- The hourly materialized view's states, merged.
+WITH cpu_avg AS (
+    SELECT bucket AS hour, hostname, avgMerge(avg_user) AS mean_usage_user, avgMerge(avg_system) AS mean_usage_system, avgMerge(avg_idle) AS mean_usage_idle, avgMerge(avg_nice) AS mean_usage_nice, avgMerge(avg_iowait) AS mean_usage_iowait
+    FROM cpu_1h
+    WHERE bucket >= @TS('2026-01-03 11:00:00') AND bucket < @TS('2026-01-03 23:00:00')
+    GROUP BY bucket, hostname
+)
+SELECT hour, hostname, mean_usage_user, mean_usage_system, mean_usage_idle, mean_usage_nice, mean_usage_iowait
+FROM cpu_avg
+ORDER BY hour, hostname;
+
+-- name: double-groupby-all [clickhouse tuned]
+-- The hourly materialized view's states, merged.
+WITH cpu_avg AS (
+    SELECT bucket AS hour, hostname, avgMerge(avg_user) AS mean_usage_user, avgMerge(avg_system) AS mean_usage_system, avgMerge(avg_idle) AS mean_usage_idle, avgMerge(avg_nice) AS mean_usage_nice, avgMerge(avg_iowait) AS mean_usage_iowait, avgMerge(avg_irq) AS mean_usage_irq, avgMerge(avg_softirq) AS mean_usage_softirq, avgMerge(avg_steal) AS mean_usage_steal, avgMerge(avg_guest) AS mean_usage_guest, avgMerge(avg_guest_nice) AS mean_usage_guest_nice
+    FROM cpu_1h
+    WHERE bucket >= @TS('2026-01-03 11:00:00') AND bucket < @TS('2026-01-03 23:00:00')
+    GROUP BY bucket, hostname
+)
+SELECT hour, hostname, mean_usage_user, mean_usage_system, mean_usage_idle, mean_usage_nice, mean_usage_iowait, mean_usage_irq, mean_usage_softirq, mean_usage_steal, mean_usage_guest, mean_usage_guest_nice
+FROM cpu_avg
+ORDER BY hour, hostname;

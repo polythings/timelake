@@ -99,8 +99,13 @@ Runs record their tuning; the weekly schedule runs both every week, over more da
 one tuning at a time with a switch per section, entries keeping their plain names. The lake systems have both
 since 2026-10-20 (a tuned run runs `bench/tunings/<workload>/<system>.sql` after creating the tables, and reads a
 query's `[<reader> tuned]` version where it has one); Timelake's tuned IIoT tables have an hourly rollup per tag. The
-database servers' runs are between the two until #150 to #153 (most already follow their docs' layout), and
-InfluxDB's two entries are its two tunings. Work: #147 (harness), #148 (site), #149 (lake systems), #150 to #153 (TimescaleDB, ClickHouse,
+database servers have both since 2026-10-20 too: TimescaleDB's continuous aggregates, QuestDB's materialized views,
+ClickHouse's materialized views (TSBS only: IIoT's rows repeat, and an insert-triggered view would count them twice),
+InfluxDB's last value cache. Where rows repeat, every system removes them in both tunings, since the answers are wrong
+otherwise. Measured on 7 days of IIoT (bench/results/experiments/2026-10-20), tuned against default after maintenance:
+TimescaleDB 378 → 59 ms, QuestDB 376 → 82 ms, ClickHouse 267 → 199 ms; InfluxDB as shipped fails 6 of 11 queries.
+TimescaleDB's continuous aggregates miss rows that arrive late into hours already materialized until the next
+refresh, so its tuned answers right after ingest are wrong where they read them. Work: #147 (harness), #148 (site), #149 (lake systems), #150 to #153 (TimescaleDB, ClickHouse,
 QuestDB, InfluxDB).
 
 ### Methodology
@@ -205,3 +210,4 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 - 2026-10-20: the weekly industrial IoT run also runs the lake systems on S3.
 - 2026-10-20: default and tuned runs of every system decided (D23); work in #147–#153.
 - 2026-10-20: default and tuned lake systems (#149): tuning statements and tuned queries in the harness.
+- 2026-10-20: default and tuned database servers (#150–#153), measured on IIoT.

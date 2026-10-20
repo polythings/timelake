@@ -105,6 +105,8 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "COPY per commit into hypertables; rows that arrive twice are skipped.",
     maintenance: "Every chunk converted to its columnstore.",
     when: "A separate step after ingest (in production, a background policy on older chunks).",
+    tuned:
+      "An index on (series, time), the columnstore, and continuous aggregates its tuned queries read. Default: the hypertable as created, row store.",
     readers: ["postgres"],
   },
   clickhouse: {
@@ -112,6 +114,8 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "Arrow inserts per commit; tables where rows can repeat use ReplacingMergeTree.",
     maintenance: "OPTIMIZE TABLE … FINAL merges every partition; repeated rows are read with FINAL until then.",
     when: "Merges run in the background while it ingests; the step after ingest forces the final merge.",
+    tuned:
+      "Ordered by (series, time), partitioned by month, merged after ingest, and materialized views where rows don't repeat. Default: ordered by time.",
     readers: ["clickhouse"],
   },
   questdb: {
@@ -119,6 +123,8 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "Its wire protocol from Python, per commit; repeated rows are removed on write (DEDUP UPSERT KEYS).",
     maintenance: "None; a checkpoint waits until every commit is applied.",
     when: "None: commits are applied in the background, and the step after ingest waits for them.",
+    tuned:
+      "The series symbol indexed, materialized views, and LATEST ON for the latest rows. Default: the tables as created.",
     readers: ["questdb"],
   },
   influxdb3: {
@@ -126,7 +132,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "Line protocol over HTTP, four requests at a time.",
     maintenance: "None: Core has no compaction.",
     when: "None.",
-    tuned: "The query file limit raised, as its docs allow. Default: as shipped, a query reads at most 432 files.",
+    tuned: "The query file limit raised and a last value cache. Default: as shipped, a query reads at most 432 files.",
     readers: ["influxdb3"],
   },
   "influxdb3-defaults": {

@@ -203,8 +203,11 @@ def test_line_protocol() -> None:
 
 def test_server_types() -> None:
     spec = TableSpec("readings", "time", ("tag",), dedup=True)
-    assert ch_type(pa.field("tag", pa.string()), spec) == "LowCardinality(String)"
-    assert ch_type(pa.field("time", pa.timestamp("us", tz="UTC")), spec) == "DateTime64(6, 'UTC')"
-    assert ch_type(pa.field("hi", pa.float64()), TableSpec("tags")) == "Nullable(Float64)"
+    assert ch_type(pa.field("tag", pa.string()), spec, "time") == "LowCardinality(String)"
+    assert ch_type(pa.field("time", pa.timestamp("us", tz="UTC")), spec, "time") == "DateTime64(6, 'UTC')"
+    assert ch_type(pa.field("value", pa.float64()), spec, "time") == "Nullable(Float64)"
+    # A dimension table: its first column orders it, the rest may be null.
+    assert ch_type(pa.field("tag", pa.string()), TableSpec("tags"), "tag") == "String"
+    assert ch_type(pa.field("hi", pa.float64()), TableSpec("tags"), "tag") == "Nullable(Float64)"
     assert qdb_type(pa.field("tag", pa.string()), spec) == "SYMBOL"
     assert qdb_type(pa.field("quality", pa.int16()), spec) == "SHORT"

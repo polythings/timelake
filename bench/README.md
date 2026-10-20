@@ -65,11 +65,11 @@ uv run timebench history --workload tsbs-iot                  # one line per run
   | `s3tables` | the same, through S3 Tables' REST endpoint (AWS only) | its managed compaction (waits up to 6 h) | sort order, compaction strategy `sort` | `duckdb` |
   | `lance` | `write_dataset(mode="append")` | none | `compact_files()`, `cleanup_old_versions()`, B-tree on the series key, zone map on time | `duckdb`, `datafusion` |
   | `parquet` | a Parquet file per commit under `day=…/` | none | one sorted file per day | `duckdb`, `datafusion` |
-  | `timescaledb` | `COPY` per commit into hypertables (via a staging table and `ON CONFLICT DO NOTHING` where rows repeat) | convert chunks to the columnstore | `postgres` |
-  | `clickhouse` | Arrow inserts into `MergeTree` (`ReplacingMergeTree` where rows repeat) | `OPTIMIZE TABLE … FINAL` | `clickhouse` (with `FINAL`) |
-  | `questdb` | QWP (`questdb.connect().dataframe`) into WAL tables, `DEDUP UPSERT KEYS` where rows repeat | none (waits for the WAL) | `questdb` (PGWire) |
-  | `influxdb3` | line protocol over HTTP, 4 concurrent requests | none (Core has no compaction) | `influxdb3` (SQL over HTTP) |
-  | `reference` | a local Parquet file per commit | none | `duckdb`, rows that arrived twice removed |
+  | `timescaledb` | `COPY` per commit into hypertables (via a staging table and `ON CONFLICT DO NOTHING` where rows repeat) | `ANALYZE` | (series, time) index, columnstore at maintenance, continuous aggregates | `postgres` |
+  | `clickhouse` | Arrow inserts into `MergeTree` ordered by time (`ReplacingMergeTree` by series and time where rows repeat) | none (background merges) | ordered by (series, time), monthly partitions, `OPTIMIZE … FINAL`, materialized views where rows don't repeat | `clickhouse` (with `FINAL`) |
+  | `questdb` | QWP (`questdb.connect().dataframe`) into WAL tables, `DEDUP UPSERT KEYS` where rows repeat | none (waits for the WAL) | indexed series symbol, materialized views | `questdb` (PGWire) |
+  | `influxdb3` | line protocol over HTTP, 4 concurrent requests | none (Core has no compaction) | query file limit raised, last value cache | `influxdb3` (SQL over HTTP) |
+  | `reference` | a local Parquet file per commit | none | the same | `duckdb`, rows that arrived twice removed |
 
   The database servers run in Docker at pinned versions: `infra/servers.sh up` starts them (data in
   `data/servers/`, ports 55432, 58123, 59900/58812, 58181, 58182), and `eval "$(infra/servers.sh env)"` sets the

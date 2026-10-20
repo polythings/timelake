@@ -174,3 +174,88 @@ JOIN (SELECT @B10M(time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day
 WHERE t.name IS NOT NULL
 GROUP BY t.fleet, t.model, @B1D(y.ten_minutes)
 ORDER BY day;
+
+-- name: long-driving-sessions [clickhouse tuned]
+-- The 10-minute materialized view's states, merged.
+SELECT t.name, t.driver
+FROM tags t
+JOIN (SELECT bucket AS ten_minutes, tags_id
+      FROM readings_10m
+      WHERE bucket >= @TS('2026-01-03 08:00:00') AND bucket < @TS('2026-01-03 12:00:00')
+      GROUP BY bucket, tags_id
+      HAVING sumMerge(velocity_sum) / countMerge(velocity_n) > 1) r ON t.id = r.tags_id
+WHERE t.name IS NOT NULL AND t.fleet = 'South'
+GROUP BY t.name, t.driver
+HAVING count(r.ten_minutes) > 22;
+
+-- name: long-daily-sessions [clickhouse tuned]
+-- The 10-minute materialized view's states, merged.
+SELECT t.name, t.driver
+FROM tags t
+JOIN (SELECT bucket AS ten_minutes, tags_id
+      FROM readings_10m
+      WHERE bucket >= @TS('2026-01-02 12:00:00') AND bucket < @TS('2026-01-03 12:00:00')
+      GROUP BY bucket, tags_id
+      HAVING sumMerge(velocity_sum) / countMerge(velocity_n) > 1) r ON t.id = r.tags_id
+WHERE t.name IS NOT NULL AND t.fleet = 'South'
+GROUP BY t.name, t.driver
+HAVING count(r.ten_minutes) > 60;
+
+-- name: avg-daily-driving-duration [clickhouse tuned]
+-- The 10-minute materialized view's states, merged.
+WITH ten_minute_driving_sessions AS (
+    SELECT bucket AS ten_minutes, tags_id
+    FROM readings_10m
+    GROUP BY bucket, tags_id
+    HAVING sumMerge(velocity_sum) / countMerge(velocity_n) > 1
+), daily_total_session AS (
+    SELECT @B1D(ten_minutes) AS day, tags_id, count(*) / 6.0 AS hours
+    FROM ten_minute_driving_sessions
+    GROUP BY 1, 2
+)
+SELECT t.fleet, t.name, t.driver, avg(d.hours) AS avg_daily_hours
+FROM daily_total_session d
+JOIN tags t ON t.id = d.tags_id
+GROUP BY t.fleet, t.name, t.driver;
+
+-- name: avg-daily-driving-session [clickhouse tuned]
+-- The 10-minute materialized view's states, merged.
+WITH driver_status AS (
+    SELECT tags_id, bucket AS ten_minutes, sumMerge(velocity_sum) / countMerge(velocity_n) > 5 AS driving
+    FROM readings_10m
+    GROUP BY 1, 2
+), driver_status_change AS (
+    SELECT tags_id, ten_minutes AS start_ts,
+           lead(ten_minutes) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_ts, driving
+    FROM (SELECT tags_id, ten_minutes, driving,
+                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving
+          FROM driver_status) x
+    WHERE x.driving <> x.prev_driving
+)
+SELECT t.name, @B1D(d.start_ts) AS day, avg(@EPOCH(d.stop_ts) - @EPOCH(d.start_ts)) AS duration_s
+FROM tags t
+JOIN driver_status_change d ON t.id = d.tags_id
+WHERE t.name IS NOT NULL AND d.driving = true
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+-- name: avg-load [clickhouse tuned]
+-- The 10-minute materialized view's states, merged over all time.
+SELECT t.fleet, t.model, t.load_capacity, avg(d.avg_load / t.load_capacity) AS avg_load_percentage
+FROM tags t
+JOIN (SELECT tags_id, sumMerge(load_sum) / countMerge(load_n) AS avg_load FROM diagnostics_10m GROUP BY tags_id) d
+  ON t.id = d.tags_id
+WHERE t.name IS NOT NULL
+GROUP BY t.fleet, t.model, t.load_capacity;
+
+-- name: daily-activity [clickhouse tuned]
+-- The 10-minute materialized view's states, merged; each bucket lies in one day.
+SELECT t.fleet, t.model, y.day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity
+FROM tags t
+JOIN (SELECT @B1D(bucket) AS day, bucket AS ten_minutes, tags_id, countMerge(n) AS ten_mins_per_day
+      FROM diagnostics_10m
+      GROUP BY 1, 2, 3
+      HAVING sumMerge(status_sum) / countMerge(status_n) < 1) y ON y.tags_id = t.id
+WHERE t.name IS NOT NULL
+GROUP BY t.fleet, t.model, y.day
+ORDER BY y.day;

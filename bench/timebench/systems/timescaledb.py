@@ -77,16 +77,22 @@ def csv_chunks(data: pa.Table, batch_rows: int = 100_000) -> Iterator[bytes]:
 
 
 class TimescaleDB(System):
-    """Hypertables partitioned by time in 12-hour chunks, indexed on (series key, time DESC) like TSBS's loader.
+    """Hypertables partitioned by time in 12-hour chunks.
 
-    Tables whose rows may arrive twice (``TableSpec.dedup``) get a unique index, and rows are inserted from a
-    staging table with ``ON CONFLICT DO NOTHING``.
+    Tables whose rows may arrive twice (``TableSpec.dedup``) get a unique index on (series key, time), and rows are
+    inserted from a staging table with ``ON CONFLICT DO NOTHING``, in both tunings: without it the answers are wrong.
+
+    Default: hypertables as ``create_hypertable`` makes them (an index on time), row store, maintenance an
+    ``ANALYZE``. Tuned: an index on (series key, time DESC) like TSBS's loader, the workload's continuous aggregates
+    (``tunings/<workload>/timescaledb.sql``), and maintenance that converts every chunk to the columnstore (segmented
+    by the series key) and refreshes the aggregates.
     """
 
     name = "timescaledb"
     title = "TimescaleDB"
     readers = ("postgres",)
     server = True
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -122,11 +128,18 @@ class TimescaleDB(System):
             self.execute(
                 f"SELECT create_hypertable('{spec.name}', by_range('{spec.time_column}', INTERVAL '{CHUNK_INTERVAL}'))"
             )
-            unique = "UNIQUE " if spec.dedup else ""
-            self.execute(f"CREATE {unique}INDEX ON {spec.name} ({', '.join(spec.series_key)}, {spec.time_column} DESC)")
+            if spec.dedup or self.tuned:
+                unique = "UNIQUE " if spec.dedup else ""
+                keys = ", ".join(spec.series_key)
+                self.execute(f"CREATE {unique}INDEX ON {spec.name} ({keys}, {spec.time_column} DESC)")
         if spec.dedup:
             self.execute(f"CREATE UNLOGGED TABLE {spec.name}_staging (LIKE {spec.name})")
         self.specs[spec.name] = spec
+
+    @override
+    def tune(self, statements: list[str]) -> None:
+        for sql in statements:
+            self.execute(sql)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -147,6 +160,9 @@ class TimescaleDB(System):
 
     @override
     def maintain(self) -> None:
+        if not self.tuned:
+            self.execute("ANALYZE")
+            return
         for table, spec in self.place.load_state()["specs"].items():
             if not spec["time_column"]:
                 continue
@@ -157,6 +173,11 @@ class TimescaleDB(System):
             )
             for (chunk,) in self.execute(f"SELECT show_chunks('{table}')"):
                 self.execute(f"CALL convert_to_columnstore('{chunk}')")
+        views = self.execute(
+            f"SELECT view_name FROM timescaledb_information.continuous_aggregates WHERE view_schema = '{self.schema}'"
+        )
+        for (view,) in views:
+            self.execute(f"CALL refresh_continuous_aggregate('{self.schema}.{view}', NULL, NULL)")
         self.execute("ANALYZE")
 
     @override
