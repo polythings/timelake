@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn values_a_column_cannot_hold_match_nothing() {
-        // B3: 1.5 used to become 0 and 2^32 + 1 wrapped to 1.
+        // Values an int column can't hold exactly match nothing: they aren't truncated or wrapped.
         assert_eq!(times(json!({ "series": { "tag": [1.5] } })), Vec::<i64>::new());
         assert_eq!(times(json!({ "series": { "tag": [4_294_967_297_i64] } })), Vec::<i64>::new());
         assert_eq!(times(json!({ "series": { "tag": [-2_147_483_649_i64] } })), Vec::<i64>::new());

@@ -81,7 +81,7 @@ pub struct ManifestFile {
     pub min_sequence_number: i64,
     /// The snapshot that wrote it.
     pub added_snapshot_id: i64,
-    /// Files and rows by status.
+    /// Files added.
     pub added_files: i32,
     /// Files carried over.
     pub existing_files: i32,
@@ -241,9 +241,9 @@ fn i64_of(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-/// Writes a manifest of `entries`, made by snapshot `snapshot_id`. Added entries leave their
-/// sequence numbers to be inherited from the manifest list (`None` in `data_sequence` means the
-/// commit's own); existing and deleted entries keep theirs.
+/// Writes a manifest of `entries` for the table `ctx` describes. Entries whose snapshot id or
+/// sequence numbers are `None` inherit them from the manifest list (the commit's own); existing
+/// and deleted entries keep theirs.
 pub fn write_manifest(ctx: &ManifestContext<'_>, entries: &[ManifestWrite]) -> WriteResult<Vec<u8>> {
     let schema = manifest_schema(ctx.partition)?;
     let mut w = Writer::with_codec(&schema, vec![], Codec::Null);
