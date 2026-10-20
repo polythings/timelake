@@ -1,12 +1,14 @@
 import Link from "next/link"
 
 import { TimelakeLockup } from "@/components/brand/timelake-mark"
+import { ScrollGuard } from "@/components/scroll-guard"
 import { SiteHeader } from "@/components/site-header"
 import { LICENSE_URL, REPO_URL } from "@/lib/site"
 
 export default function SiteLayout({ children }: LayoutProps<"/">) {
   return (
     <div className="flex min-h-svh flex-col">
+      <ScrollGuard />
       <SiteHeader />
       <main className="flex-1">{children}</main>
       <footer className="border-t">

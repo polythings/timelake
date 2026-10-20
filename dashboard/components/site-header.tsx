@@ -54,7 +54,7 @@ function MenuNav() {
 
 export function SiteHeader() {
   return (
-    <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b bg-background">
       <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4">
         <Link href="/" aria-label="Timelake home" className="flex items-center">
           <TimelakeLockup size={26} />

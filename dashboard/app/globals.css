@@ -135,6 +135,10 @@
     body {
       overscroll-behavior-y: none;
     }
+    /* While the page scrolls (components/scroll-guard.tsx), nothing under the cursor reacts to it. */
+    html[data-scrolling] body {
+      pointer-events: none;
+    }
   }
 }
 /* House style: mono labels, hairline cell grids, dim ASCII illustrations. */

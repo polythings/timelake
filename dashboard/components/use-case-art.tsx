@@ -307,11 +307,17 @@ export function UseCaseArt({ kind, cols = COLS }: { kind: ArtKind; cols?: number
     const cells = PICTURES[kind](cols).filter((p) => p.x >= 0 && p.x < cols && p.y >= 0 && p.y < ROWS)
     // How far the picture is drawn, so a theme change can redraw it as it was.
     let drawn = -1
+    // The theme's colors, read once and again on a theme change: reading them every frame of the draw-in is slow.
+    let colors = new Map<string, string>()
+    let paper = ""
+    const readColors = () => {
+      colors = new Map(cells.map((p) => [p.color, resolve(c, p.color)]))
+      paper = resolve(c, "var(--dot)")
+    }
+    readColors()
 
     const draw = (upTo: number) => {
       drawn = upTo
-      const colors = new Map(cells.map((p) => [p.color, resolve(c, p.color)]))
-      const paper = resolve(c, "var(--dot)")
       ctx.clearRect(0, 0, cols * CELL, ROWS * CELL)
       ctx.globalAlpha = 0.6
       ctx.fillStyle = paper
@@ -347,7 +353,10 @@ export function UseCaseArt({ kind, cols = COLS }: { kind: ArtKind; cols?: number
     seen.observe(c)
     const card = c.closest("[data-use-case]")
     card?.addEventListener("pointerenter", play)
-    const unwatch = watchTheme(() => draw(drawn))
+    const unwatch = watchTheme(() => {
+      readColors()
+      draw(drawn)
+    })
     return () => {
       unwatch()
       cancelAnimationFrame(frame)

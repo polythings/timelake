@@ -120,7 +120,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   sidebar. The benchmarks page lists the benchmarks in a sidebar and shows each one's query times after maintenance,
   with the rest on its own page. The requests chart is drawn complete instead of played. The home page no longer has
   a benchmarks section. Query cost is shown for one query (`$0.000021`) instead of for a million. The header's icons are evenly spaced, and with a
-  mouse or trackpad the page no longer bounces past its ends, which dragged the header along.
+  mouse or trackpad the page no longer bounces past its ends, which dragged the header along. Scrolling is smoother:
+  nothing reacts to the cursor while the page scrolls (hover effects, chart tooltips and legends, the hero), the
+  use-case pictures read their colors once instead of every frame, and the header is solid instead of blurred.
 - Setting `newest-first` also covers the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket with a
   limit: older time partitions are skipped once they can't hold a row of those buckets. TSBS DevOps
   `groupby-orderby-limit`: 254 → 115 ms.
