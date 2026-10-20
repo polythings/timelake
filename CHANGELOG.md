@@ -152,6 +152,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   through the counting proxy like every other system's (`BENCH_LANCE_DIRECT`, which sent it around the proxy, is gone).
 - With read deduplication off, `ORDER BY` the series key and time could return the rows of a file another engine wrote
   unsorted in the file's order. Such files are now sorted.
+- A `column IN (…)` list of more than 20 values with `NaN` among them could skip the parts of a file holding `NaN`
+  rows. Such lists no longer prune.
 
 ### Changed
 

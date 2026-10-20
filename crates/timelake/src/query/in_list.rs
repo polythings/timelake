@@ -60,7 +60,7 @@ pub(super) fn long_in_lists(filters: &[Expr]) -> Vec<InList> {
             .collect();
         let Some(mut values) = values else { continue };
         values.retain(|v| !v.is_null());
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        let Some(mut values) = sorted(values) else { continue };
         values.dedup();
         out.push(InList { column: column.name.clone(), values });
     }
@@ -160,15 +160,35 @@ fn overlaps(values: &[ScalarValue], mins: &ArrayRef, maxes: &ArrayRef, i: usize)
 }
 
 /// `values` cast to the statistics' type (a list of `Utf8` literals against `Utf8View` statistics,
-/// say), still sorted; `None` if a value doesn't cast.
+/// say), still sorted; `None` if a value doesn't cast or the values can't be sorted.
 fn values_as(values: &[ScalarValue], data_type: &arrow::datatypes::DataType) -> Option<Vec<ScalarValue>> {
     let cast: Option<Vec<ScalarValue>> = values
         .iter()
         .map(|v| if v.data_type() == *data_type { Some(v.clone()) } else { v.cast_to(data_type).ok() })
         .collect();
-    let mut cast = cast?;
-    cast.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    Some(cast)
+    sorted(cast?)
+}
+
+/// `values` sorted, or `None` (prune nothing) if two of them don't compare or one is NaN, which
+/// Parquet statistics leave out of a page's bounds.
+fn sorted(mut values: Vec<ScalarValue>) -> Option<Vec<ScalarValue>> {
+    let nan = |v: &ScalarValue| match v {
+        ScalarValue::Float16(Some(f)) => f.is_nan(),
+        ScalarValue::Float32(Some(f)) => f.is_nan(),
+        ScalarValue::Float64(Some(f)) => f.is_nan(),
+        _ => false,
+    };
+    if values.iter().any(nan) {
+        return None;
+    }
+    let mut comparable = true;
+    values.sort_by(|a, b| {
+        a.partial_cmp(b).unwrap_or_else(|| {
+            comparable = false;
+            Ordering::Equal
+        })
+    });
+    comparable.then_some(values)
 }
 
 /// Adapts each file's scan predicate as DataFusion's default adapter does, and adds to each long
@@ -302,6 +322,25 @@ mod tests {
         assert!(!plan.should_scan(0) && plan.should_scan(1));
         // Values in every page prune nothing.
         assert!(access_plan(&metadata, &schema, &long_in_lists(&[device_in(0..100)])).is_none());
+    }
+
+    /// Parquet statistics leave NaN out, so a list with NaN must keep a row group that holds one.
+    #[test]
+    fn a_list_with_nan_keeps_row_groups() {
+        let schema = Schema::new(vec![Field::new("x", DataType::Float64, false)]);
+        let x = arrow::array::Float64Array::from(vec![1.0, f64::NAN, 3.0]);
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(x)]).unwrap();
+        let mut out = vec![];
+        let mut writer = ArrowWriter::try_new(&mut out, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let metadata = ParquetMetaDataReader::new()
+            .with_page_index_policy(PageIndexPolicy::Optional)
+            .parse_and_finish(&Bytes::from(out))
+            .unwrap();
+        let values = [f64::NAN].into_iter().chain((10..40).map(f64::from)).map(lit).collect();
+        let lists = long_in_lists(&[col("x").in_list(values, false)]);
+        assert!(access_plan(&metadata, &schema, &lists).is_none_or(|plan| plan.should_scan(0)));
     }
 
     #[test]
