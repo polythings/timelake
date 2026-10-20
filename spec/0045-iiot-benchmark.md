@@ -3,14 +3,14 @@ number: 45
 title: Industrial IoT benchmark
 area: Benchmarks
 status: in-progress
-updated: 2026-10-15
+updated: 2026-10-20
 versions: []
 related: [44]
 ---
 
 # 45. Industrial IoT benchmark
 
-**In progress** · updated 2026-10-15 · milestone: [Benchmarks against every alternative](milestones/benchmarks.md)
+**In progress** · updated 2026-10-20 · milestone: [Benchmarks against every alternative](milestones/benchmarks.md)
 · related: [spec 44](0044-timebench.md)
 
 ## Summary
@@ -67,3 +67,4 @@ None open.
 - 2026-10-15: first version decided and built (SPEC.md §17.6)
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 33; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-20: the weekly run reads the lake systems' tables on S3 too (until then local disk only), for the cost and latency the comparisons need.

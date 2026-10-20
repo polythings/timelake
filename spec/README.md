@@ -134,8 +134,8 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 
 | # | Spec | Status | Versions | Updated |
 |---:|---|---|---|---|
-| 44 | [Benchmark harness: timebench](0044-timebench.md) | In progress | – | 2026-10-19 |
-| 45 | [Industrial IoT benchmark](0045-iiot-benchmark.md) | In progress | – | 2026-10-15 |
+| 44 | [Benchmark harness: timebench](0044-timebench.md) | In progress | – | 2026-10-20 |
+| 45 | [Industrial IoT benchmark](0045-iiot-benchmark.md) | In progress | – | 2026-10-20 |
 | 46 | [Agent benchmark](0046-agent-benchmark.md) | Planned | – | 2026-10-15 |
 
 ### Background

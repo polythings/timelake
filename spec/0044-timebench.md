@@ -3,7 +3,7 @@ number: 44
 title: Benchmark harness: timebench
 area: Benchmarks
 status: in-progress
-updated: 2026-10-19
+updated: 2026-10-20
 versions: []
 related: [45, 46]
 issues: [64, 81, 90, 94, 132, 137, 138, 139, 140]
@@ -11,7 +11,7 @@ issues: [64, 81, 90, 94, 132, 137, 138, 139, 140]
 
 # 44. Benchmark harness: timebench
 
-**In progress** · updated 2026-10-19 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Benchmarks against every alternative](milestones/benchmarks.md)
+**In progress** · updated 2026-10-20 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Benchmarks against every alternative](milestones/benchmarks.md)
 · related: [spec 45](0045-iiot-benchmark.md), [spec 46](0046-agent-benchmark.md)
 
 ## Summary
@@ -90,7 +90,7 @@ PyIceberg appends are the naive baseline (what v0 compares against today). Publi
   - **Under load (2026-10-15):** fresh readers probe each system while it ingests (query latency under writes, and whether they see every finished commit); then 1, 4 and 16 dashboard clients query at once (queries per second, p50/p95/p99). On AWS, every record carries its cost at S3 list prices; machines are not priced yet.
   - **History:** every run is one file in `bench/results/runs/` with the commit, machine, versions and all measurements. The website charts it per target. Runs from before the harness (v0, Tiger Cloud) were converted.
   - `timebench run tsbs-iot --scale small` reproduces a run; `report` and `history` read them back.
-- **Weekly regression run (decided 2026-10-15):** `bench/profiles/weekly.toml` every Monday (and `iiot.toml`, industrial IoT, every Thursday, so each fits in a day) on one fixed instance in us-east-2 (c8gd.2xlarge, local NVMe), started by a GitHub Actions workflow through a role limited to that instance. The instance stops itself when done; an hourly job commits finished runs, so a run may take longer than a GitHub job. Same workloads, scales and pinned competitor versions each week, so changes in the history come from Timelake. No benchmark runs in CI.
+- **Weekly regression run (decided 2026-10-15):** `bench/profiles/weekly.toml` every Monday (and `iiot.toml`, industrial IoT, every Thursday, so each fits in a day: the lake systems on S3, then every system on local disk, since 2026-10-20) on one fixed instance in us-east-2 (c8gd.2xlarge, local NVMe), started by a GitHub Actions workflow through a role limited to that instance. The instance stops itself when done; an hourly job commits finished runs, so a run may take longer than a GitHub job. Same workloads, scales and pinned competitor versions each week, so changes in the history come from Timelake. No benchmark runs in CI.
 - **Spike: a CI gate on request and byte counts.** Those counts don't depend on the machine, so they could catch regressions (an extra metadata read, a lost pruning step) on every push. **Measured (2026-10-15, `spikes/request-counts`):** across three identical runs, query request counts were exact or within one or two requests, bytes within 0.5%, and Timelake's ingest within 0.1%. A gate, Timelake only at `small` scale (3–4 minutes), could require exact counts after maintenance (identical in every run) and allow 5% and 3 requests elsewhere. Not built yet: weekly runs only, for now.
 
 ### Phase 0 baseline (2026-10-11)
@@ -162,3 +162,4 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 - 2026-10-19: every A/B experiment archived with an index
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 32; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-20: the weekly industrial IoT run also runs the lake systems on S3.

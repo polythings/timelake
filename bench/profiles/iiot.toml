@@ -1,5 +1,6 @@
-# The industrial IoT workload (spec 45) on the benchmark instance, every Thursday: every system on the instance's
-# disk, the database servers in Docker (infra/servers.sh). By hand: `bench/infra/weekly.sh start <commit> iiot`.
+# The industrial IoT workload (spec 45) on the benchmark instance, every Thursday: the lake systems on S3 in
+# us-east-2, with request counts and cost, then every system on the instance's disk, the database servers in Docker
+# (infra/servers.sh). By hand: `bench/infra/weekly.sh start <commit> iiot`.
 label = "iiot"
 runs = 2
 timeout = 180               # seconds per query (first run and repeats); the slowest answers take under 2 minutes
@@ -7,6 +8,13 @@ pace = 1                    # the live day: one 5-minute window per second
 live_interval = 15          # fresh readers probe each system every 15 s while it ingests live
 concurrency = [1, 4, 16]
 concurrency_seconds = 30
+
+# The lake systems where they are meant to run: their tables on S3, read from the instance.
+[[run]]
+workload = "iiot"
+scale = "small"
+target = "aws-s3"
+systems = ["timelake", "iceberg", "lance", "parquet"]
 
 [[run]]
 workload = "iiot"
