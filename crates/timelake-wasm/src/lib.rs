@@ -45,8 +45,8 @@ pub use error::{Error, Result};
 pub use file::{COALESCE_GAP, FileReader, coalesce, footer_len};
 pub use head::Head;
 pub use meta::{
-    DataFile, Field, MAX_SNAPSHOTS, ManifestContent, ManifestRef, SnapshotInfo, TableMeta, parse_manifest,
-    parse_manifest_list,
+    DataFile, Field, MAX_SNAPSHOTS, ManifestContent, ManifestRef, SnapshotInfo, TableMeta, data_manifest_paths,
+    parse_manifest, parse_manifest_list,
 };
 pub use prune::plan_files;
 pub use query::Collector;
@@ -284,11 +284,11 @@ impl Table {
         self.meta.last_value_index.clone()
     }
 
-    /// Parses the manifest list; returns the paths of the data manifests to fetch and add.
+    /// Parses the manifest list; returns the paths of the data manifests to fetch and add. Throws
+    /// for a table with delete files, which this reader doesn't apply.
     #[wasm_bindgen(js_name = addManifestList)]
     pub fn add_manifest_list(&self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {
-        let manifests = parse_manifest_list(bytes)?;
-        Ok(manifests.into_iter().filter(|m| m.content == ManifestContent::Data).map(|m| m.path).collect())
+        Ok(data_manifest_paths(bytes)?)
     }
 
     /// Adds the live data files of one data manifest.

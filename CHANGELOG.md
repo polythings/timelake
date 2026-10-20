@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- On a table with delete files (row-level deletes another engine such as Spark or Trino wrote), the TypeScript
+  client's reads skipped them, so deleted rows came back, and its commits wrote their manifests back as data
+  manifests. Both are now an error naming the delete file.
 - Snapshot expiry removed branches and tags that another engine had made on old snapshots, and deleted the files only
   they used. A snapshot a branch or tag points at is now never expired.
 - A `max-snapshots` or `min-snapshots` near 2^64 overflowed the check for inline snapshot expiry after an append, and

@@ -575,3 +575,31 @@ async fn expiry_keeps_tagged_snapshots() {
         }
     }
 }
+
+/// A table with delete files (another engine's row-level deletes) is refused by the shared writer,
+/// which would otherwise carry them over as data files.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shared_writer_refuses_tables_with_delete_files() {
+    use timelake_format::iceberg::{Content, ManifestFile, read_manifest_list, write_manifest_list};
+
+    let (_dir, lake) = temp_lake();
+    let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+    let (t, _) = t.append(&[batch(T0, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap();
+    let snapshot = t.metadata().current_snapshot().unwrap();
+    let host = EngineHost::new(&lake);
+    // Add a delete manifest to the current snapshot's manifest list, as Spark would.
+    let list = (&&host).get(snapshot.manifest_list()).await.unwrap().unwrap();
+    let mut manifests: Vec<ManifestFile> = read_manifest_list(&list).unwrap();
+    let deletes = ManifestFile {
+        path: format!("{}/metadata/d.avro", t.location()),
+        content: Content::Deletes,
+        ..manifests[0].clone()
+    };
+    manifests.push(deletes);
+    let list = write_manifest_list(&manifests, snapshot.snapshot_id(), None, snapshot.sequence_number()).unwrap();
+    (&&host).put(snapshot.manifest_list(), list).await.unwrap();
+
+    let state = TableState::load(&&host, t.location()).await.unwrap();
+    let err = append(&&host, state, &[batch(T0, 1, 1, 2, |_, _| 2.0)], &shared_no_maintenance()).await.unwrap_err();
+    assert!(err.to_string().contains("delete files"), "{err}");
+}

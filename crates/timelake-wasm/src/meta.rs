@@ -251,6 +251,22 @@ pub fn parse_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
         .collect()
 }
 
+/// The data manifests of a manifest list. Delete manifests (row-level deletes another engine
+/// wrote) are an error: this reader doesn't apply them, and rows they delete would come back.
+pub fn data_manifest_paths(bytes: &[u8]) -> Result<Vec<String>> {
+    let manifests = parse_manifest_list(bytes)?;
+    if let Some(m) = manifests.iter().find(|m| m.content == ManifestContent::Deletes) {
+        return Err(deletes_unsupported(&m.path));
+    }
+    Ok(manifests.into_iter().map(|m| m.path).collect())
+}
+
+fn deletes_unsupported(path: &str) -> Error {
+    Error::invalid(format!(
+        "the table has delete files ({path}), which this reader doesn't apply; read it with an engine that does"
+    ))
+}
+
 /// A live data file with its column bounds, keyed by column name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataFile {
@@ -296,9 +312,8 @@ pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
             continue;
         }
         let Some(df) = field(&entry, "data_file") else { continue };
-        // Timelake writes no delete files.
         if as_i64(field(df, "content")).unwrap_or(code::CONTENT_DATA) != code::CONTENT_DATA {
-            continue;
+            return Err(deletes_unsupported(&as_string(field(df, "file_path")).unwrap_or_default()));
         }
         let partition = match field(df, "partition") {
             Some(Value::Record(fs)) => fs.first().and_then(|(_, v)| match strip_union(v) {
@@ -342,6 +357,50 @@ mod tests {
         let upper = bounds(Some(&v), &by_id, true);
         assert_eq!((&lower["ns"], &upper["ns"]), (&Bound::Int(1500), &Bound::Int(1501)));
         assert_eq!((&lower["us"], &upper["us"]), (&Bound::Int(1_500_001), &Bound::Int(1_500_001)));
+    }
+
+    /// Delete manifests and delete files are errors, not skipped: their rows would come back.
+    #[test]
+    fn delete_files_are_errors() {
+        use timelake_format::iceberg::{Content, ManifestFile, write_manifest_list};
+
+        let data = ManifestFile {
+            path: "m.avro".into(),
+            length: 1,
+            content: Content::Data,
+            partition_spec_id: 0,
+            sequence_number: 1,
+            min_sequence_number: 1,
+            added_snapshot_id: 1,
+            added_files: 1,
+            existing_files: 0,
+            deleted_files: 0,
+            added_rows: 1,
+            existing_rows: 0,
+            deleted_rows: 0,
+            partitions: None,
+        };
+        let deletes = ManifestFile { path: "d.avro".into(), content: Content::Deletes, ..data.clone() };
+        let list = write_manifest_list(std::slice::from_ref(&data), 1, None, 1).unwrap();
+        assert_eq!(data_manifest_paths(&list).unwrap(), ["m.avro"]);
+        let list = write_manifest_list(&[data, deletes], 1, None, 1).unwrap();
+        assert!(data_manifest_paths(&list).unwrap_err().to_string().contains("delete files (d.avro)"));
+
+        let schema = apache_avro::Schema::parse_str(
+            r#"{"type": "record", "name": "manifest_entry", "fields": [
+                {"name": "status", "type": "int"},
+                {"name": "data_file", "type": {"type": "record", "name": "r2", "fields": [
+                    {"name": "content", "type": "int"}, {"name": "file_path", "type": "string"}
+                ]}}
+            ]}"#,
+        )
+        .unwrap();
+        let mut w = apache_avro::Writer::new(&schema, vec![]);
+        let file =
+            Value::Record(vec![("content".into(), Value::Int(1)), ("file_path".into(), Value::String("p".into()))]);
+        w.append(Value::Record(vec![("status".into(), Value::Int(1)), ("data_file".into(), file)])).unwrap();
+        let manifest = w.into_inner().unwrap();
+        assert!(parse_manifest(&manifest, &[]).unwrap_err().to_string().contains("delete files (p)"));
     }
 
     fn meta(format: &str) -> Result<TableMeta> {

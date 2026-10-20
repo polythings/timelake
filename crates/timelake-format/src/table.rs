@@ -23,7 +23,7 @@ use crate::error::{WriteError, WriteResult};
 use crate::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
 use crate::head::{FILE_NAME, HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, encode};
 use crate::host::Host;
-use crate::iceberg::{DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
+use crate::iceberg::{Content, DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 use crate::metadata::Metadata;
 use crate::rows::align_batch;
 use crate::{Contract, summary};
@@ -105,11 +105,21 @@ impl TableState {
         })
     }
 
-    /// The current snapshot's manifests.
+    /// The current snapshot's manifests. A table with delete files (row-level deletes another
+    /// engine wrote) is an error: the shared write path would carry them over as data, or
+    /// compact deleted rows back in.
     pub async fn manifests<H: Host>(&self, host: &H) -> WriteResult<Vec<ManifestFile>> {
         let Some(list) = self.metadata.manifest_list() else { return Ok(vec![]) };
         let bytes = host.get(list).await?.ok_or_else(|| WriteError::NotFound(list.to_string()))?;
-        read_manifest_list(&bytes)
+        let manifests = read_manifest_list(&bytes)?;
+        if let Some(m) = manifests.iter().find(|m| m.content == Content::Deletes) {
+            return Err(WriteError::invalid(format!(
+                "{}: the table has delete files ({}), which Timelake doesn't apply; compact them away with the engine \
+                 that wrote them first",
+                self.location, m.path
+            )));
+        }
+        Ok(manifests)
     }
 
     /// The entries of `manifest`.

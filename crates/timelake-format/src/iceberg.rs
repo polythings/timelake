@@ -66,6 +66,16 @@ pub struct Entry {
     pub file: Arc<DataFile>,
 }
 
+/// What a manifest lists: data files, or delete files (row-level deletes, which Timelake doesn't
+/// write but other engines may).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Content {
+    /// Data files.
+    Data = 0,
+    /// Position or equality delete files.
+    Deletes = 1,
+}
+
 /// An entry of a manifest list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManifestFile {
@@ -73,6 +83,8 @@ pub struct ManifestFile {
     pub path: String,
     /// Its size in bytes.
     pub length: i64,
+    /// Data or delete files.
+    pub content: Content,
     /// The partition spec its files use.
     pub partition_spec_id: i32,
     /// Sequence number of the snapshot that wrote it.
@@ -353,7 +365,7 @@ pub fn write_manifest_list(
             ("manifest_path".into(), Value::String(m.path.clone())),
             ("manifest_length".into(), Value::Long(m.length)),
             ("partition_spec_id".into(), Value::Int(m.partition_spec_id)),
-            ("content".into(), Value::Int(0)),
+            ("content".into(), Value::Int(m.content as i32)),
             ("sequence_number".into(), Value::Long(assign(m.sequence_number))),
             ("min_sequence_number".into(), Value::Long(assign(m.min_sequence_number))),
             ("added_snapshot_id".into(), Value::Long(m.added_snapshot_id)),
@@ -398,6 +410,7 @@ pub fn manifest_file(
     ManifestFile {
         path: path.to_string(),
         length: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+        content: Content::Data,
         partition_spec_id: spec_id,
         sequence_number: UNASSIGNED,
         min_sequence_number,
@@ -460,12 +473,18 @@ pub fn read_manifest_list(bytes: &[u8]) -> WriteResult<Vec<ManifestFile>> {
                 }),
                 _ => None,
             };
+            let content = match int(field(r, "content")).unwrap_or(0) {
+                0 => Content::Data,
+                1 => Content::Deletes,
+                other => return Err(WriteError::Corrupt(format!("manifest content {other}"))),
+            };
             Ok(ManifestFile {
                 path: match field(r, "manifest_path") {
                     Some(Value::String(s)) => s.clone(),
                     _ => return Err(WriteError::Corrupt("manifest list entry without a path".into())),
                 },
                 length: required(long(field(r, "manifest_length")), "length")?,
+                content,
                 partition_spec_id: int(field(r, "partition_spec_id")).unwrap_or(0),
                 sequence_number: long(field(r, "sequence_number")).unwrap_or(0),
                 min_sequence_number: long(field(r, "min_sequence_number")).unwrap_or(0),
@@ -618,6 +637,12 @@ mod tests {
         // The list assigns the snapshot's sequence number; the minimum is the explicit 2.
         mf.sequence_number = 5;
         assert_eq!(read, [mf.clone()]);
+
+        // Another engine's delete manifest stays one when the list is written again.
+        let deletes = ManifestFile { path: "d.avro".into(), content: Content::Deletes, ..mf.clone() };
+        let list = write_manifest_list(&[mf.clone(), deletes], 8, Some(7), 6).unwrap();
+        let contents: Vec<Content> = read_manifest_list(&list).unwrap().iter().map(|m| m.content).collect();
+        assert_eq!(contents, [Content::Data, Content::Deletes]);
 
         let read = read_manifest(&mf, &bytes).unwrap();
         assert_eq!((read[0].sequence_number, read[0].snapshot_id, read[0].status), (5, 7, Status::Added));
