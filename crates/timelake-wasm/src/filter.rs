@@ -8,15 +8,20 @@ use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, Scalar, StringArray};
 use arrow_cast::cast;
 use arrow_ord::cmp::{eq, gt_eq, lt};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use arrow_select::filter::filter_record_batch;
 use serde_json::Value as Json;
 
 use crate::error::Result;
 use crate::spec::QuerySpec;
 
-/// A time column as microseconds since the epoch.
+/// A time column as microseconds since the epoch, whatever unit it is stored in.
 pub(crate) fn micros(col: &ArrayRef) -> Result<Int64Array> {
+    let col = match col.data_type() {
+        DataType::Timestamp(TimeUnit::Microsecond, _) | DataType::Int64 => col,
+        DataType::Timestamp(..) => &cast(col, &DataType::Timestamp(TimeUnit::Microsecond, None))?,
+        _ => col,
+    };
     Ok(cast(col, &DataType::Int64)?.as_primitive::<Int64Type>().clone())
 }
 

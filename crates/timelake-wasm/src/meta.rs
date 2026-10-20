@@ -5,11 +5,13 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use apache_avro::types::Value;
+use parquet::basic::TimeUnit;
 use serde::{Deserialize, Serialize};
 use timelake_format::bounds::{Bound, decode};
 use timelake_format::{Contract, summary};
 
 use crate::error::{Error, Result};
+use crate::prune::scale_to_micros;
 
 /// How many snapshots [`TableMeta::snapshots`] keeps, newest first.
 pub const MAX_SNAPSHOTS: usize = 50;
@@ -261,7 +263,9 @@ pub struct DataFile {
     pub upper: HashMap<String, Bound>,
 }
 
-fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>) -> HashMap<String, Bound> {
+/// Column bounds by name; nanosecond timestamps in microseconds, as queries give times (rounded
+/// outward, so the bounds still contain every row).
+fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashMap<String, Bound> {
     let Some(Value::Array(entries)) = v else { return HashMap::new() };
     entries
         .iter()
@@ -269,7 +273,13 @@ fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>) -> HashMap<String, Bo
             let id = i32::try_from(as_i64(field(e, "key"))?).ok()?;
             let Some(Value::Bytes(b)) = field(e, "value") else { return None };
             let f = by_id.get(&id)?;
-            Some((f.name.clone(), decode(&f.ty, b)?))
+            let bound = match (f.ty.as_str(), decode(&f.ty, b)?) {
+                ("timestamp_ns" | "timestamptz_ns", Bound::Int(x)) => {
+                    Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper))
+                }
+                (_, bound) => bound,
+            };
+            Some((f.name.clone(), bound))
         })
         .collect()
 }
@@ -300,8 +310,8 @@ pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
             size: as_u64(field(df, "file_size_in_bytes")),
             records: as_u64(field(df, "record_count")),
             partition,
-            lower: bounds(field(df, "lower_bounds"), &by_id),
-            upper: bounds(field(df, "upper_bounds"), &by_id),
+            lower: bounds(field(df, "lower_bounds"), &by_id, false),
+            upper: bounds(field(df, "upper_bounds"), &by_id, true),
         });
     }
     Ok(out)
@@ -310,6 +320,26 @@ pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nanosecond_bounds_are_microseconds() {
+        let fields = [
+            Field { id: 1, name: "ns".into(), ty: "timestamptz_ns".into(), required: true },
+            Field { id: 2, name: "us".into(), ty: "timestamptz".into(), required: true },
+        ];
+        let by_id = fields.iter().map(|f| (f.id, f)).collect();
+        let entry = |id: i32, x: i64| {
+            Value::Record(vec![
+                ("key".into(), Value::Int(id)),
+                ("value".into(), Value::Bytes(x.to_le_bytes().to_vec())),
+            ])
+        };
+        let v = Value::Array(vec![entry(1, 1_500_001), entry(2, 1_500_001)]);
+        let lower = bounds(Some(&v), &by_id, false);
+        let upper = bounds(Some(&v), &by_id, true);
+        assert_eq!((&lower["ns"], &upper["ns"]), (&Bound::Int(1500), &Bound::Int(1501)));
+        assert_eq!((&lower["us"], &upper["us"]), (&Bound::Int(1_500_001), &Bound::Int(1_500_001)));
+    }
 
     fn meta(format: &str) -> Result<TableMeta> {
         let schema = r#"{"schema-id": 0, "fields": [{"id": 1, "name": "x", "type": "int", "required": false}]}"#;

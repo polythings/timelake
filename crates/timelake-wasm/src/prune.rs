@@ -2,8 +2,10 @@
 
 use std::cmp::Ordering;
 
+use parquet::basic::{ConvertedType, LogicalType, TimeUnit};
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
+use parquet::schema::types::ColumnDescriptor;
 use serde_json::Value as Json;
 use timelake_format::bounds::Bound;
 
@@ -67,16 +69,43 @@ pub(crate) fn row_group_may_match(
     spec: &QuerySpec,
     column_index: impl Fn(&str) -> Option<usize>,
 ) -> bool {
-    may_match(spec, |c| column_index(c).and_then(|i| rg.column(i).statistics()).map_or((None, None), stat_bounds))
+    may_match(spec, |c| {
+        let Some(column) = column_index(c).map(|i| rg.column(i)) else { return (None, None) };
+        column.statistics().map_or((None, None), |s| stat_bounds(s, timestamp_unit(column.column_descr())))
+    })
 }
 
-fn stat_bounds(s: &Statistics) -> (Option<Bound>, Option<Bound>) {
+/// The unit of a timestamp column; `None` for other columns.
+fn timestamp_unit(column: &ColumnDescriptor) -> Option<TimeUnit> {
+    match column.logical_type_ref() {
+        Some(LogicalType::Timestamp { unit, .. }) => Some(*unit),
+        Some(_) => None,
+        None => match column.converted_type() {
+            ConvertedType::TIMESTAMP_MILLIS => Some(TimeUnit::MILLIS),
+            ConvertedType::TIMESTAMP_MICROS => Some(TimeUnit::MICROS),
+            _ => None,
+        },
+    }
+}
+
+/// A timestamp `x` stored in `unit`, in microseconds: rounded down for a lower bound and up for
+/// an upper one, so the bounds still contain every row.
+pub(crate) fn scale_to_micros(x: i64, unit: TimeUnit, upper: bool) -> i64 {
+    match unit {
+        TimeUnit::MILLIS => x.saturating_mul(1000),
+        TimeUnit::MICROS => x,
+        TimeUnit::NANOS => x.div_euclid(1000) + i64::from(upper && x.rem_euclid(1000) != 0),
+    }
+}
+
+fn stat_bounds(s: &Statistics, unit: Option<TimeUnit>) -> (Option<Bound>, Option<Bound>) {
     let str_bound = |b: Option<&parquet::data_type::ByteArray>| b?.as_utf8().ok().map(|s| Bound::Str(s.to_string()));
+    let time = |x: i64, upper| Bound::Int(unit.map_or(x, |u| scale_to_micros(x, u, upper)));
     match s {
         Statistics::Int32(v) => {
             (v.min_opt().map(|x| Bound::Int(i64::from(*x))), v.max_opt().map(|x| Bound::Int(i64::from(*x))))
         }
-        Statistics::Int64(v) => (v.min_opt().map(|x| Bound::Int(*x)), v.max_opt().map(|x| Bound::Int(*x))),
+        Statistics::Int64(v) => (v.min_opt().map(|x| time(*x, false)), v.max_opt().map(|x| time(*x, true))),
         Statistics::Double(v) => (v.min_opt().map(|x| Bound::Float(*x)), v.max_opt().map(|x| Bound::Float(*x))),
         Statistics::ByteArray(v) => (str_bound(v.min_opt()), str_bound(v.max_opt())),
         _ => (None, None),

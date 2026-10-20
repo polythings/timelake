@@ -83,6 +83,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   the type stubs say; they raised `TypeError` for anything but a `dict`.
 - The WebAssembly module grew every vector and string by copying it into a new block: its memory-counting allocator
   left out `realloc`, so the system allocator's growth in place went unused.
+- The WebAssembly reader (the TypeScript client) treated every time column as microseconds: on a `timestamp_ns` column,
+  or a Parquet file with millisecond times, time ranges, buckets and pruning gave wrong results without an error.
 
 ### Changed
 
