@@ -359,3 +359,22 @@ def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.Mon
         [sys.executable, "-c", "from timebench.s3 import PROXY; print(PROXY.address)"], env=envs[0], text=True
     )
     assert address.strip() == PROBE_PROXY.address != PROXY.address
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_s3_tables_maintenance_fails_when_compaction_never_ran() -> None:
+    """Otherwise the run records maintenance as ok and queries uncompacted tables as ``maintained``."""
+    from timebench.systems.iceberg import S3Tables
+
+    class NoRuns:
+        def get_table_maintenance_job_status(self, **_: object) -> dict[str, object]:
+            return {"status": {"icebergCompaction": {"status": "Not_Yet_Run"}}}
+
+    s3tables = object.__new__(S3Tables)
+    s3tables.place = Place(Target("aws-s3"), "days", "s3tables")
+    s3tables.place.save_state({"ingested_at": harness.now()})
+    s3tables.namespace, s3tables.arn = "bench", "arn:aws:s3tables:::bucket/bench"
+    s3tables.client, s3tables.wait_s, s3tables.poll_seconds = NoRuns(), 0, 0
+    s3tables.time_series, s3tables.compaction = ["readings"], {}
+    with pytest.raises(TimeoutError, match="compaction"):
+        s3tables.maintain()

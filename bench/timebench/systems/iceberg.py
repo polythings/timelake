@@ -129,8 +129,8 @@ class S3Tables(Iceberg):
     """Real S3 Tables: the same appends committed through its Iceberg REST endpoint, and its own managed compaction.
 
     AWS targets only, with ``BENCH_TABLE_BUCKET_ARN`` set. Maintenance waits (up to ``BENCH_S3TABLES_WAIT_S``, 6 h by
-    default) until S3 Tables has compacted every time-series table after ingest. Default: its compaction as set up
-    (binpack). Tuned: the tables' sort order, and compaction set to sort by it.
+    default) until S3 Tables has compacted every time-series table after ingest, and fails if it hasn't by then.
+    Default: its compaction as set up (binpack). Tuned: the tables' sort order, and compaction set to sort by it.
     """
 
     name = "s3tables"
@@ -220,7 +220,9 @@ class S3Tables(Iceberg):
             if len(self.compaction) == len(names):
                 return
             time.sleep(self.poll_seconds)
-        print("  compaction did not run before the deadline", flush=True)
+        missing = [n for n in names if n not in self.compaction]
+        msg = f"S3 Tables compaction did not run within {self.wait_s} s on {', '.join(missing)}"
+        raise TimeoutError(msg)
 
     @override
     def maintain_extras(self) -> IngestRecord:
