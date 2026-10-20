@@ -453,3 +453,30 @@ async fn shared_expiry_deletes_nothing_when_a_kept_snapshot_is_broken() {
     assert_eq!(data().await, 3, "every data file is still there");
     assert_eq!(reopen(&dir).table("iot.r").await.unwrap().metadata().snapshots().count(), 3, "nothing expired");
 }
+
+/// Compaction keeps the last-value index (its rows don't change), so later appends extend it and
+/// `latest` keeps reading it instead of scanning every file.
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_compaction_keeps_the_last_value_index() {
+    use timelake_format::maintain::{MaintainOptions as SharedMaintain, maintain};
+
+    let (_dir, lake) = temp_lake();
+    let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+    let host = EngineHost::new(&lake);
+    let mut state = TableState::load(&&host, t.location()).await.unwrap();
+    for i in 0..3 {
+        state = append(&&host, state, &[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], &shared_no_maintenance()).await.unwrap().0;
+    }
+    let index = state.last_value_index();
+    assert!(index.is_some());
+    let compact = SharedMaintain { expire: false, retention: false, ..SharedMaintain::default() };
+    let (state, report) = maintain(&&host, state, &compact).await.unwrap();
+    assert_eq!(report.files_rewritten, 3);
+    assert_eq!(state.last_value_index(), index, "the same index");
+    let reloaded = TableState::load(&&host, t.location()).await.unwrap();
+    assert_eq!(reloaded.last_value_index(), index);
+
+    let (state, _) =
+        append(&&host, reloaded, &[batch(T0 + 9, 1, 1, 2, |_, _| 2.0)], &shared_no_maintenance()).await.unwrap();
+    assert!(state.last_value_index().is_some_and(|i| Some(&i) != index.as_ref()), "the next append extends it");
+}

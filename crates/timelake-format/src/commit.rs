@@ -200,7 +200,7 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
                 summary.insert(key.into(), v.clone());
             }
         }
-        if let Some((location, _)) = &index {
+        if let Some(location) = &index.location {
             summary.insert(summary::LAST_VALUE_INDEX.into(), location.clone());
         }
         summary.extend(counters(change, &base_summary));
@@ -247,9 +247,9 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
         next
     });
     let last_values = match index {
-        Some((_, batch)) => Some(batch),
-        None if matches!(change, Change::Replace { .. }) => base.last_values.clone(),
-        None => None,
+        NewIndex { written: Some(batch), .. } => Some(batch),
+        NewIndex { location: Some(_), .. } => base.last_values.clone(),
+        NewIndex { location: None, .. } => None,
     };
     let mut table = TableState {
         location: base.location.clone(),
@@ -361,41 +361,51 @@ async fn write_manifests<H: Host>(
     Ok(new)
 }
 
-/// The last-value index of the new snapshot, if it changes: extended on append, trimmed on delete.
+/// The new snapshot's last-value index: where it is, and its rows if this commit wrote it.
+struct NewIndex {
+    location: Option<String>,
+    written: Option<RecordBatch>,
+}
+
+/// The last-value index of the new snapshot: extended on append, kept on compaction, and trimmed
+/// to the retention cutoff on delete.
 async fn new_index<H: Host>(
     host: &H,
     base: &mut TableState,
     change: &Change,
     snapshot_id: i64,
     uploads: &mut Vec<(String, Vec<u8>)>,
-) -> WriteResult<Option<(String, RecordBatch)>> {
+) -> WriteResult<NewIndex> {
+    let none = NewIndex { location: None, written: None };
+    let unchanged = NewIndex { location: base.last_value_index(), written: None };
     let index = match change {
         Change::Append { latest: Some(latest), .. } => {
             // Only extend an index that covers all existing rows.
             let rows: u64 =
                 base.metadata.summary().get(summary::TOTAL_RECORDS).and_then(|v| v.parse().ok()).unwrap_or(0);
             if base.last_value_index().is_none() && rows > 0 {
-                return Ok(None);
+                return Ok(none);
             }
             let mut parts: Vec<RecordBatch> = base.last_values(host).await?.into_iter().collect();
             parts.push(latest.clone());
             merge_latest(&base.schema, &base.contract, &parts)?
         }
-        Change::Append { latest: None, .. } | Change::Replace { .. } => return Ok(None),
+        Change::Append { latest: None, .. } => return Ok(none),
+        Change::Replace { .. } => return Ok(unchanged),
         Change::Delete { lvi_cutoff, .. } => {
             let (Some(cutoff), Some(time_column)) = (lvi_cutoff, base.contract.time_column.clone()) else {
-                return Ok(None);
+                return Ok(unchanged);
             };
-            let Some(index) = base.last_values(host).await? else { return Ok(None) };
+            let Some(index) = base.last_values(host).await? else { return Ok(unchanged) };
             let times = cast(index.column(index.schema().index_of(&time_column)?), &DataType::Int64)?;
             let keep = gt_eq(&times, &Int64Array::new_scalar(*cutoff))?;
             Some(filter_record_batch(&index, &keep)?)
         }
     };
-    let Some(index) = index else { return Ok(None) };
+    let Some(index) = index else { return Ok(none) };
     let uri = format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", base.location, uuid_v4(host));
     uploads.push((uri.clone(), encode_index(&index)?));
-    Ok(Some((uri, index)))
+    Ok(NewIndex { location: Some(uri), written: Some(index) })
 }
 
 /// Iceberg's standard snapshot summary counters.
