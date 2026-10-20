@@ -3,6 +3,7 @@ import Link from "next/link"
 
 import { GithubIcon } from "@/components/github-icon"
 import { MilestoneCard } from "@/components/spec/milestone-card"
+import { StatusLegend } from "@/components/spec/status-badge"
 import { Button } from "@/components/ui/button"
 import { REPO_URL } from "@/lib/site"
 import { MILESTONE_STATUS_LABEL, MILESTONE_STATUS_MEANING, MILESTONES, type MilestoneStatus } from "@/lib/specs"
@@ -20,7 +21,7 @@ export default function RoadmapPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-14 px-4 py-12">
       <header className="max-w-3xl space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight">Roadmap</h1>
+        <h1 className="text-4xl leading-[1.05] font-light tracking-tight sm:text-5xl">Roadmap</h1>
         <p className="text-muted-foreground">
           What we&apos;re building, as milestones made of{" "}
           <Link className="underline underline-offset-4" href="/spec">
@@ -29,6 +30,7 @@ export default function RoadmapPage() {
           , one per feature. Each milestone links its specs, and each spec the releases that changed it. Updated{" "}
           {UPDATED}.
         </p>
+        <StatusLegend />
       </header>
 
       {(Object.keys(MILESTONE_STATUS_LABEL) as MilestoneStatus[]).map((status) => {

@@ -46,6 +46,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The CLI prints a failed query's error once: DataFusion's errors repeat their cause, and each was printed again.
 - `time_weighted_mean` over a span of several files per scan partition, such as a month of daily files grouped by
   tag, failed with "runs that overlap in time": each partition now reads a stretch of time, kept to its files. Files
   that need merging are merged with the files of the time they span, not with the whole table.

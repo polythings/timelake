@@ -498,6 +498,8 @@ export function HeroFlow() {
     }
 
     draw()
+    // With reduced motion the hero stays a still picture: nothing follows the pointer.
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
     const move = (e: PointerEvent) => {
       const r = c.getBoundingClientRect()
       const [x, y] = [(e.clientX - r.left) / CELL, (e.clientY - r.top) / CELL]
@@ -522,9 +524,11 @@ export function HeroFlow() {
       cursorY = null
       mode = null
     }
-    area.addEventListener("pointerenter", enter)
-    area.addEventListener("pointermove", move)
-    area.addEventListener("pointerleave", leave)
+    if (!still) {
+      area.addEventListener("pointerenter", enter)
+      area.addEventListener("pointermove", move)
+      area.addEventListener("pointerleave", leave)
+    }
     const ro = new ResizeObserver(draw)
     ro.observe(c)
     const unwatch = watchTheme(draw)

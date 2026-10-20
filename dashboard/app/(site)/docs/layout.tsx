@@ -1,4 +1,5 @@
 import { DocsSidebar } from "@/components/docs/docs-sidebar"
+import { OnThisPage } from "@/components/docs/on-this-page"
 import { DocsPager } from "@/components/docs/pager"
 
 export default function DocsLayout({ children }: LayoutProps<"/docs">) {
@@ -13,6 +14,9 @@ export default function DocsLayout({ children }: LayoutProps<"/docs">) {
           <DocsPager />
         </article>
       </div>
+      <aside className="sticky top-20 hidden h-[calc(100svh-6rem)] w-44 shrink-0 overflow-y-auto xl:block">
+        <OnThisPage />
+      </aside>
     </div>
   )
 }

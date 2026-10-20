@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
-import { StatusDot } from "@/components/spec/status-badge"
+import { StatusDot, StatusLegend } from "@/components/spec/status-badge"
 import { AREAS, BACKGROUND, SPECS } from "@/lib/specs"
 import { cn } from "@/lib/utils"
 
@@ -22,6 +22,7 @@ export function SpecSidebar() {
         <Link href="/roadmap" className="block px-2 text-muted-foreground hover:text-foreground">
           Roadmap
         </Link>
+        <StatusLegend className="px-2 pt-2" />
       </div>
       {AREAS.map((area) => (
         <div key={area} className="space-y-1">

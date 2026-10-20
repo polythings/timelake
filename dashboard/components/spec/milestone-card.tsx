@@ -31,6 +31,7 @@ export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
         <p className="text-xs text-muted-foreground tabular-nums">
           {m.versions && <>{versionsText(m.versions)} · </>}
           {done} of {specs.length} specs done
+          {m.status === "done" && done < specs.length && "; the rest continue in later milestones"}
         </p>
         <ul className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
           {specs.map((s) => (

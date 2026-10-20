@@ -133,25 +133,47 @@ async function Results({ workload }: { workload: Workload }) {
   const concurrent = latest.filter((r) => r.concurrency.length > 0)
   const costs = latest.filter((r) => costRows(r).length > 0)
   const failing = latest.filter((r) => failures(r).length > 0)
+  const queryTitle = (s: Section) =>
+    // The suite's name without its query count, which the card gives.
+    workload.suites.length > 1 ? `${s.suiteLabel.replace(/ \(.*\)$/, "")} · ${s.label}` : s.label
+  const sorted = [...querySections.values()].sort((a, b) => order(a.section) - order(b.section))
+  const jumps = [
+    ...sorted.map(({ section }) => queryTitle(section)),
+    ...(ingest.length ? ["Ingest and maintenance"] : []),
+    ...(live.length ? ["While ingesting"] : []),
+    ...(concurrent.length ? ["Concurrent dashboards"] : []),
+    ...(costs.length ? ["Cost"] : []),
+    ...(failing.length ? ["Failed or timed out"] : []),
+    "What each entry means",
+    "Over time",
+  ]
   return (
     <>
+      <nav aria-label="On this page" className="-mt-8 flex flex-wrap gap-x-1 gap-y-1 text-sm">
+        {jumps.map((j) => (
+          <a
+            key={j}
+            href={`#${slug(j)}`}
+            className="inline-flex min-h-8 items-center rounded-md border px-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            {j}
+          </a>
+        ))}
+      </nav>
       {checked && (
         <p className="-mt-8 text-sm text-muted-foreground">
           Answers are checked against a copy of the data with each row once. Each section shows the newest run on the
           storage you pick.
         </p>
       )}
-      {[...querySections.values()]
-        .sort((a, b) => order(a.section) - order(b.section))
-        .map(({ section: s, variants }) => (
-          <ResultSection
-            key={`${s.suite}|${s.checkpoint}`}
-            // The suite's name without its query count, which the card gives.
-            title={workload.suites.length > 1 ? `${s.suiteLabel.replace(/ \(.*\)$/, "")} · ${s.label}` : s.label}
-            note={CHECKPOINT_NOTES[s.checkpoint]}
-            variants={variants}
-          />
-        ))}
+      {sorted.map(({ section: s, variants }) => (
+        <ResultSection
+          key={`${s.suite}|${s.checkpoint}`}
+          title={queryTitle(s)}
+          note={CHECKPOINT_NOTES[s.checkpoint]}
+          variants={variants}
+        />
+      ))}
       <ResultSection
         title="Ingest and maintenance"
         note="How each system took the data in and kept it in shape: load rate, commit times, maintenance, and what it stored."
@@ -199,7 +221,7 @@ function EntriesSection({ latest }: { latest: Run[] }) {
   const order = Object.keys(SYSTEM_INFO)
   const listed = [...systems].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
   return (
-    <section className="flex flex-col gap-4">
+    <section id={slug("What each entry means")} className="flex scroll-mt-20 flex-col gap-4">
       <SectionHead label="What each entry means">
         Each system is written, maintained, and read the way its own docs suggest, on the same data. An entry in a
         ranking is a system, or a system and the reader that queried it, such as Lance + DuckDB.
@@ -293,7 +315,7 @@ function ResultSection({ title, note, variants }: { title: string; note?: string
   if (variants.length === 0) return null
   const tunings = [...new Set(variants.map((v) => tuningOf(v.run)))]
   return (
-    <section className="flex flex-col gap-4">
+    <section id={slug(title)} className="flex scroll-mt-20 flex-col gap-4">
       <SectionHead label={title}>{note}</SectionHead>
       {tunings.length > 1 ? (
         <Tabs defaultValue={tunings[0]} className="gap-4">
@@ -429,7 +451,7 @@ const CHECKPOINT_NOTES: Record<string, string> = {
 function OverTime({ runs, latest, workload }: { runs: Run[]; latest: Run[]; workload: Workload }) {
   const all = runs.filter((r) => r.header.workload === workload.id).toReversed()
   return (
-    <section className="flex flex-col gap-4">
+    <section id={slug("Over time")} className="flex scroll-mt-20 flex-col gap-4">
       <SectionHead label="Over time">
         Each system&apos;s own reader after maintenance: the geometric mean of first runs over the queries it completed
         in each run. The weekly run adds a point each week.
@@ -493,6 +515,13 @@ const seconds = (s: number | undefined) =>
 const ms = (v: number | undefined) => (v == null ? "—" : `${Math.round(v)} ms`)
 
 const systemName = (system: string) => SYSTEMS[system] ?? system
+
+/** A section title as a fragment id: "TSBS IoT · After maintenance" -> "tsbs-iot-after-maintenance". */
+const slug = (title: string) =>
+  title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
 
 /** A table's first column stays in place while the rest scrolls sideways on narrow screens. */
 const FIRST = "sticky left-0 z-10 max-w-32 min-w-24 bg-card whitespace-normal sm:max-w-none"

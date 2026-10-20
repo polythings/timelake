@@ -14,7 +14,7 @@ export default function SpecsPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-10 px-4 py-12">
       <header className="max-w-3xl space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight">Specs</h1>
+        <h1 className="text-4xl leading-[1.05] font-light tracking-tight sm:text-5xl">Specs</h1>
         <p className="text-muted-foreground">
           Timelake&apos;s design, one numbered spec per feature: what it does and why, what was measured to decide it,
           how far it is built, and the releases that changed it. The specs live in the repository&apos;s{" "}

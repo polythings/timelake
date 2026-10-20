@@ -171,9 +171,26 @@ async fn main() {
     // Version hints are updated in the background: let them land before exiting.
     timelake::flush().await;
     if let Err(e) = result {
-        eprintln!("Error: {e:#}");
+        eprintln!("Error: {}", report(&e));
         std::process::exit(1);
     }
+}
+
+/// An error and its causes, joined by ": ", leaving out a cause the messages before it already say: DataFusion's errors
+/// repeat their source in their own message.
+fn report(e: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for cause in e.chain() {
+        let text = cause.to_string();
+        if out.contains(&text) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(": ");
+        }
+        out.push_str(&text);
+    }
+    out
 }
 
 async fn run(cli: Cli) -> Result<()> {

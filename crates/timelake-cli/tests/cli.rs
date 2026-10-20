@@ -144,6 +144,9 @@ fn settings_and_alter() {
     };
     assert!(fails(&["alter", "iot.r", "--set", "chunk-interval=hour"]).contains("fixed when the table is created"));
     assert!(fails(&["sql", "--set", "timelake.nope=1", "SELECT 1"]).contains("unknown setting"));
+    // A query error says its message once, not once per layer that wraps it.
+    let err = fails(&["sql", "SELECT nope FROM iot.r"]);
+    assert_eq!(err.matches("No field named nope").count(), 1, "{err}");
 }
 
 #[test]

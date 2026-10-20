@@ -35,7 +35,7 @@ export function BenchCards({ run, queries = true }: { run: Run; queries?: boolea
   })
   const trucks = run.queries.find((q) => q.query === "last-loc" && q.system === "timelake")?.rows
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
       {rankings(run)
         .filter((r) => queries || r.queries === undefined)
         .map((r) => (

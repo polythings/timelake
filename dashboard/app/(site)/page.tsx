@@ -147,10 +147,18 @@ export default function Home() {
           </div>
         </div>
         {/* Publish on the left by hovering the chart; the store in the middle; readers as tabs on the right. */}
-        <div className="cells">
-          <div className="relative h-[160px] overflow-hidden sm:h-[176px]">
-            <HeroFlow />
+        <div className="flex flex-col gap-2">
+          <div className="cells">
+            <div className="relative h-[160px] overflow-hidden sm:h-[176px]">
+              <HeroFlow />
+            </div>
           </div>
+          <p className="text-xs text-muted-foreground motion-reduce:hidden">
+            <span className="pointer-coarse:hidden">
+              Hover the chart to write data, and the tabs on the right to pick a reader.
+            </span>
+            <span className="hidden pointer-coarse:inline">Drag across the chart to write data.</span>
+          </p>
         </div>
       </section>
 

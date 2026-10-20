@@ -59,7 +59,7 @@ async function SpecBody({ params }: Props) {
             <p className="text-sm text-muted-foreground">
               Spec {spec.number} · {spec.area}
             </p>
-            <h1 className="text-3xl font-semibold tracking-tight">{spec.title}</h1>
+            <h1 className="text-3xl font-light tracking-tight">{spec.title}</h1>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
               <StatusBadge status={spec.status} />
               <span className="tabular-nums">Updated {spec.updated}</span>
@@ -123,7 +123,7 @@ async function SpecBody({ params }: Props) {
         ) : (
           <>
             <p className="text-sm text-muted-foreground">Background</p>
-            <h1 className="text-3xl font-semibold tracking-tight">{page?.title}</h1>
+            <h1 className="text-3xl font-light tracking-tight">{page?.title}</h1>
           </>
         )}
       </header>
