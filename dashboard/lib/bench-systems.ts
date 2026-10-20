@@ -46,61 +46,77 @@ export const SYSTEM_COLORS: Record<string, string> = {
 export const engineLabel = (engine: string) => ENGINES[engine] ?? engine
 
 /** What a system is in the benchmarks: one line, how it's written, and its maintenance (bench/README.md, "Systems"). */
-export type SystemInfo = { summary: string; writes: string; maintenance: string; readers: string[] }
+export type SystemInfo = {
+  summary: string
+  writes: string
+  maintenance: string
+  /** When its maintenance happens: while it ingests, as a separate step after, or not at all. */
+  when: string
+  readers: string[]
+}
 
 export const SYSTEM_INFO: Record<string, SystemInfo> = {
   timelake: {
     summary: "Timelake's own writer: Iceberg tables of sorted Parquet, compacted as it appends.",
     writes: "Table.append per commit, with inline maintenance (compaction, dedup, retention).",
     maintenance: "timelake maintain: each partition rewritten into one sorted file, rollups refreshed.",
+    when: "While it ingests: each append compacts what it can. The step after ingest only finishes what's left.",
     readers: ["timelake", "duckdb"],
   },
   iceberg: {
     summary: "Plain Iceberg tables written by PyIceberg appends: what a Firehose stream into S3 Tables writes.",
     writes: "PyIceberg append per commit, tables partitioned by day.",
     maintenance: "A bin-pack rewrite of small files, S3 Tables' default compaction.",
+    when: "A separate job after ingest; until it runs, readers see every small file.",
     readers: ["duckdb"],
   },
   s3tables: {
     summary: "The same appends into Amazon S3 Tables, AWS's managed Iceberg.",
     writes: "PyIceberg append per commit, through S3 Tables' Iceberg REST endpoint.",
     maintenance: "S3 Tables' own managed compaction; the run waits for it, up to 6 hours.",
+    when: "Managed by AWS, hours after ingest.",
     readers: ["duckdb"],
   },
   lance: {
     summary: "Lance datasets, appended commit by commit.",
     writes: "write_dataset in append mode per commit.",
     maintenance: "compact_files, then cleanup_old_versions.",
+    when: "A separate job after ingest.",
     readers: ["duckdb", "datafusion"],
   },
   parquet: {
     summary: "Parquet files without a table format: a new file per commit, as an S3 sink writes them.",
     writes: "A Parquet file per commit in a folder per day.",
     maintenance: "Each day rewritten into one sorted file.",
+    when: "A separate job after ingest.",
     readers: ["duckdb", "datafusion"],
   },
   timescaledb: {
     summary: "TimescaleDB, a PostgreSQL database for time series, on its server's own disk.",
     writes: "COPY per commit into hypertables; rows that arrive twice are skipped.",
     maintenance: "Every chunk converted to its columnstore.",
+    when: "A separate step after ingest (in production, a background policy on older chunks).",
     readers: ["postgres"],
   },
   clickhouse: {
     summary: "ClickHouse MergeTree tables on its server's disk, ordered by series key and time.",
     writes: "Arrow inserts per commit; tables where rows can repeat use ReplacingMergeTree.",
     maintenance: "OPTIMIZE TABLE … FINAL merges every partition; repeated rows are read with FINAL until then.",
+    when: "Merges run in the background while it ingests; the step after ingest forces the final merge.",
     readers: ["clickhouse"],
   },
   questdb: {
     summary: "QuestDB WAL tables partitioned by day, on its server's disk.",
     writes: "Its wire protocol from Python, per commit; repeated rows are removed on write (DEDUP UPSERT KEYS).",
     maintenance: "None; a checkpoint waits until every commit is applied.",
+    when: "None: commits are applied in the background, and the step after ingest waits for them.",
     readers: ["questdb"],
   },
   influxdb3: {
     summary: "InfluxDB 3 Core with its query file limit raised, as its docs allow, so long time ranges can be queried.",
     writes: "Line protocol over HTTP, four requests at a time.",
     maintenance: "None: Core has no compaction.",
+    when: "None.",
     readers: ["influxdb3"],
   },
   "influxdb3-defaults": {
@@ -108,6 +124,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
       "InfluxDB 3 Core as shipped: a query reads at most 432 Parquet files, about 3 days of data, so longer ones fail.",
     writes: "Line protocol over HTTP, four requests at a time.",
     maintenance: "None: Core has no compaction.",
+    when: "None.",
     readers: ["influxdb3"],
   },
 }

@@ -109,9 +109,18 @@ async function Results({ workload }: { workload: Workload }) {
     for (const s of sections(r, workload)) {
       const key = `${s.suite}|${s.checkpoint}`
       const entry = querySections.get(key) ?? { section: s, variants: [] }
+      const results = <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} />
       entry.variants.push({
         run: r,
-        node: <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} />,
+        node:
+          s.checkpoint === "maintained" ? (
+            <>
+              <MaintenancePanel run={r} />
+              {results}
+            </>
+          ) : (
+            results
+          ),
       })
       querySections.set(key, entry)
     }
@@ -205,6 +214,8 @@ function EntriesSection({ latest }: { latest: Run[] }) {
                       <dd>{info.writes}</dd>
                       <dt className="text-muted-foreground">Maintenance</dt>
                       <dd>{info.maintenance}</dd>
+                      <dt className="text-muted-foreground">When</dt>
+                      <dd>{info.when}</dd>
                     </>
                   )}
                   <dt className="text-muted-foreground">Read by</dt>
@@ -223,6 +234,36 @@ function EntriesSection({ latest }: { latest: Run[] }) {
         })}
       </div>
     </section>
+  )
+}
+
+/** When each system maintained its tables before the queries after maintenance, and how long its step after ingest took. */
+function MaintenancePanel({ run }: { run: Run }) {
+  const steps = run.phases.filter((p) => p.kind === "maintain" && p.status === "ok")
+  if (steps.length === 0) return null
+  return (
+    <Panel
+      title="Maintenance before these queries"
+      note="When each system maintains its tables, and how long its step after the last commit took."
+    >
+      <ul className="flex flex-col divide-y">
+        {steps.map((p) => (
+          <li key={p.system} className="grid gap-x-4 gap-y-1 py-2 sm:grid-cols-[14rem_minmax(0,1fr)_5rem]">
+            <span className={p.system === "timelake" ? "text-sm" : "text-sm text-muted-foreground"}>
+              {systemName(p.system)}
+            </span>
+            <span className="text-xs text-muted-foreground">{SYSTEM_INFO[p.system]?.when}</span>
+            <span className="font-mono text-xs tabular-nums sm:text-right">
+              {p.system === "s3tables"
+                ? "managed"
+                : SYSTEM_INFO[p.system]?.when.startsWith("None")
+                  ? "—"
+                  : seconds(p.seconds)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   )
 }
 
@@ -305,7 +346,7 @@ function FailedPanel({ failed }: { failed: ReturnType<typeof failures> }) {
 /** What each checkpoint measures, under its section's title. */
 const CHECKPOINT_NOTES: Record<string, string> = {
   maintained:
-    "After each system's own maintenance (compaction, or its database doing its work), first run of each query in a fresh process.",
+    "After each system's maintenance, first run of each query in a fresh process. Systems maintain at different times: Timelake while it ingests, most others in a separate step after it, some not at all; the panel below says which, and how long the step after ingest took.",
   ingested: "Right after the last commit, before any maintenance: the state readers see while data streams in.",
   "1d": "After a day of data has arrived.",
   "7d": "After seven days of data have arrived.",
