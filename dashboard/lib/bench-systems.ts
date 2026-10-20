@@ -188,14 +188,17 @@ export type Rank = {
   timelake: boolean
   /** Of the queries ranked, how many answers didn't match the reference. */
   wrong?: number
-  /** For query times: the best repeat, and the requests of a first run (averaged over the queries). */
+  /** For query times: the best repeat, and a first run's requests, their price and the bytes it read (averaged over
+   * the queries; on object storage only). */
   repeat?: number
   requests?: number
+  usd?: number
+  bytes?: number
 }
 export type Ranking = {
   title: string
   note: string
-  unit: "seconds" | "milliseconds" | "rows/s"
+  unit: "seconds" | "milliseconds" | "rows/s" | "requests" | "usd per million" | "bytes"
   /** Rows come best first; for rates, higher is better. */
   higherIsBetter?: boolean
   /** How many queries each value is over (a geometric mean), where it is one. */

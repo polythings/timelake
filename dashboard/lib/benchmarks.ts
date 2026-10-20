@@ -234,13 +234,21 @@ const engineOf = (q: QueryRecord) => `${q.system}+${q.reader}`
 /** An engine's row in a ranking of query times over `rs`: first runs, best repeats and requests, averaged. */
 const rank = (engine: string, rs: QueryRecord[]): Rank => {
   const requests = rs.map((r) => r.requests?.[0])
+  const usd = rs.map((r) => r.usd)
+  const bytes = rs.map((r) => r.bytes?.[0])
+  const mean = (xs: (number | undefined)[]) =>
+    xs.length > 0 && xs.every((x) => x !== undefined)
+      ? xs.reduce((s: number, x) => s + (x ?? 0), 0) / xs.length
+      : undefined
   return {
     key: engine,
     label: engineLabel(engine),
     system: engine.split("+", 1)[0] ?? engine,
     value: gm(rs.map((r) => r.times[0])),
     repeat: gm(rs.map((r) => best(r.times))),
-    requests: requests.every((n) => n !== undefined) ? requests.reduce((s, n) => s + n, 0) / rs.length : undefined,
+    requests: mean(requests),
+    usd: mean(usd),
+    bytes: mean(bytes),
     timelake: engine === "timelake+timelake",
     wrong: rs.filter((r) => r.correct === false).length,
   }

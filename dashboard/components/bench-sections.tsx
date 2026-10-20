@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { BenchHistory, type HistoryLine } from "@/components/bench-history"
-import { Panel, RankingBars, RankingCard } from "@/components/ranking-card"
+import { Panel, RankingBars, RankingCard, useMetric } from "@/components/ranking-card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import QUERIES from "@/lib/bench-queries.json"
 import { SYSTEM_COLORS, isOwnReader } from "@/lib/bench-systems"
@@ -15,7 +15,14 @@ import { cn } from "@/lib/utils"
 /** Each suite's queries as the query files describe them (bench/queries; timebench queries --site). */
 const DESCRIBED = QUERIES as Record<string, { name: string; description: string; sql: string }[]>
 
-const place = (n: number) => `${n}${n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th"}`
+/** Within 5% of the fastest counts as the fastest. */
+const SAME = 1.05
+
+/** A square in the color of how a time compares with the fastest: fastest, within 2×, or slower. */
+function Mark({ ratio }: { ratio: number }) {
+  const color = ratio <= SAME ? "bg-emerald-500" : ratio <= 2 ? "bg-amber-500" : "bg-red-500"
+  return <span className={cn("inline-block size-2 shrink-0 align-middle", color)} aria-hidden />
+}
 
 /**
  * One suite at one checkpoint: the overall ranking next to the list of its queries, each with where Timelake placed;
@@ -49,12 +56,17 @@ export function SectionResults({
         <RankingCard ranking={section.ranking} perSystem={false} learnMore="" />
         <Panel
           title="Per query"
-          note="Timelake's first run and its place among the readers with right answers; open a query for all of them, its SQL and history"
+          note={
+            <>
+              Timelake&apos;s first run, against the fastest reader with a right answer: <Mark ratio={1} /> fastest,{" "}
+              <Mark ratio={1.5} /> within 2×, <Mark ratio={3} /> slower. Open a query for every reader, its SQL and its
+              history.
+            </>
+          }
         >
           <ul className="flex flex-col">
             {section.queries.map((q) => {
-              const right = q.ranking.rows.filter((r) => !r.wrong)
-              const at = right.findIndex((r) => r.timelake)
+              const fastest = q.ranking.rows.find((r) => !r.wrong)
               const own = q.ranking.rows.find((r) => r.timelake)
               const selected = q.query === open
               return (
@@ -64,7 +76,7 @@ export function SectionResults({
                     onClick={() => setOpen(selected ? null : q.query)}
                     aria-expanded={selected}
                     className={cn(
-                      "grid w-full grid-cols-[minmax(0,1fr)_auto_4.5rem_1rem] items-center gap-x-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted",
+                      "grid w-full grid-cols-[minmax(0,1fr)_auto_3.5rem_1rem] items-center gap-x-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted sm:grid-cols-[minmax(0,1fr)_4.5rem_4rem_1rem]",
                       selected && "bg-muted",
                     )}
                   >
@@ -79,10 +91,18 @@ export function SectionResults({
                     <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
                       {own?.wrong ? (
                         <>
-                          <CircleAlert className="size-3" aria-hidden /> wrong
+                          <CircleAlert className="size-3" aria-hidden />{" "}
+                          <span className="sr-only sm:not-sr-only">wrong</span>
                         </>
-                      ) : at >= 0 ? (
-                        `${place(at + 1)} of ${right.length}`
+                      ) : own && fastest ? (
+                        <>
+                          <Mark ratio={own.value / fastest.value} />
+                          <span className="sr-only sm:not-sr-only">
+                            {own.value <= fastest.value * SAME
+                              ? "fastest"
+                              : `${(own.value / fastest.value).toFixed(1)}×`}
+                          </span>
+                        </>
                       ) : q.failed.includes("Timelake") ? (
                         "failed"
                       ) : (
@@ -105,28 +125,7 @@ export function SectionResults({
       </div>
       {query && (
         <div className="grid gap-4 lg:grid-cols-2">
-          <Panel
-            title={<span className="font-mono text-base">{query.query}</span>}
-            note={about ? `${about.description} First run of every reader.` : "First run of every reader."}
-          >
-            <RankingBars ranking={query.ranking} perSystem={false} learnMore="" />
-            {query.failed.length > 0 && (
-              <p className="text-xs text-muted-foreground">Failed or timed out: {query.failed.join(", ")}.</p>
-            )}
-            {about && (
-              <Collapsible>
-                <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-                  <ChevronDown className="size-3 transition-transform group-data-[panel-open]:rotate-180" />
-                  SQL, as the Timelake reader runs it
-                </CollapsibleTrigger>
-                <CollapsibleContent className="pt-2">
-                  <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed">
-                    {about.sql}
-                  </pre>
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </Panel>
+          <QueryCard key={query.query} query={query} about={about} />
           <Panel
             title="Over time"
             note={`first run in each of the ${points.length} ${points.length === 1 ? "run" : "runs"} on this storage; dashed: a system read by another engine`}
@@ -140,5 +139,45 @@ export function SectionResults({
         </div>
       )}
     </div>
+  )
+}
+
+/** One query: every reader's result by time (or requests, cost, bytes read where counted), and its SQL. */
+function QueryCard({
+  query,
+  about,
+}: {
+  query: Section["queries"][number]
+  about?: { description: string; sql: string }
+}) {
+  const { shown, action } = useMetric(query.ranking)
+  const note =
+    shown.unit === "seconds"
+      ? "First run of every reader."
+      : `${shown.note.charAt(0).toUpperCase()}${shown.note.slice(1)}.`
+  return (
+    <Panel
+      title={<span className="font-mono text-base">{query.query}</span>}
+      note={about ? `${about.description} ${note}` : note}
+      action={action}
+    >
+      <RankingBars ranking={shown} perSystem={false} learnMore="" />
+      {query.failed.length > 0 && (
+        <p className="text-xs text-muted-foreground">Failed or timed out: {query.failed.join(", ")}.</p>
+      )}
+      {about && (
+        <Collapsible>
+          <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <ChevronDown className="size-3 transition-transform group-data-[panel-open]:rotate-180" />
+            SQL, as the Timelake reader runs it
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2">
+            <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed">
+              {about.sql}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </Panel>
   )
 }
