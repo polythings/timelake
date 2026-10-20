@@ -36,7 +36,9 @@ It needs `zod` 4 as a peer dependency. Inside this repository it is a bun worksp
 
 ## What it reads
 
-A warehouse served over plain HTTP(S), such as Vercel Blob, a public S3, R2 or GCS bucket, or a CDN. The server must support `Range` requests (it then answers `206`); without them the client downloads whole files and still returns correct results. A plain HTTP server can't list files, so the client finds tables through the warehouse's `timelake-tables.json`, which the writer maintains (`timelake index` rewrites it).
+A warehouse served over plain HTTP(S), such as Vercel Blob, a public S3, R2 or GCS bucket, or a CDN. The server should support `Range` requests (it then answers `206`); without them the client downloads whole files and still returns correct results. A plain HTTP server can't list files, so the client finds tables through the warehouse's `timelake-tables.json`, which the writer maintains (`timelake index` rewrites it).
+
+The client asks for some objects that may not exist: the head, the version hint, and the next table version. It takes `404` and `403` both to mean the object is absent, because a public S3 bucket (or CloudFront in front of one) that grants only `s3:GetObject` answers `403` for a missing key. Any other error status fails the query.
 
 ## API
 
@@ -44,17 +46,21 @@ A warehouse served over plain HTTP(S), such as Vercel Blob, a public S3, R2 or G
 | --- | --- |
 | `new Lake(url, { fetch?, concurrency?, cacheMs?, rewriteUrl? })` | A warehouse handle. `concurrency` caps parallel requests (default 16). `cacheMs` controls how long a loaded table version is reused (default 5000). `rewriteUrl` maps object URLs when a warehouse has moved. |
 | `lake.tables()` | `string[]` of `namespace.table`. |
-| `lake.table(name, schema?)` | A table handle. Rows are typed and validated with the Zod schema if one is given; otherwise they are `Record<string, unknown>`. |
-| `table.latest({ series?, columns? })` | The newest row of each series, read from the last-value index in a single request. Throws if the table has no index. |
+| `lake.table(name, schema?)` | A table handle. `name` is `namespace.table`, or `table` in the namespace `default`; both parts use `[A-Za-z0-9_-]`, as in the engine. Rows are typed and validated with the Zod schema if one is given; otherwise they are `Record<string, unknown>`. |
+| `table.latest({ series?, columns? })` | The newest row of each series, read from the last-value index in a single request. Tables without the index (written by another Iceberg writer) are scanned instead. |
 | `table.range({ series?, from?, to?, columns?, limit?, order? })` | Rows in `[from, to)`, ordered by time. `columns` narrows the result type to those columns. |
 | `table.bucket({ series?, from?, to?, every, agg, by? })` | One row per bucket (and per `by` value): `bucket: Date` plus `<column>_<op>` for each aggregate (`count`, `sum`, `avg`, `min`, `max`, `first`, `last`); `"*": ["count"]` gives `count`. |
 | `table.info()` | Contract, schema, snapshots, and live files of the current version. |
-| `table.zodSource()` | The TypeScript source of a Zod schema for the table, ready to paste. |
+| `table.zodSource()` | The TypeScript source of a Zod schema for the table, ready to paste. The schema is named after the table in PascalCase, without a trailing `s` unless it follows `s`, `i` or `u` (`readings` gives `Reading`, `status` gives `Status`). |
 | `table.refresh()` | Forget the cached table version, so the next query reads the newest one. |
 | `zodSource(info, exportName?)`, `readerVersion()` | Standalone exports: generate Zod source from a `table.info()` result; the version of the embedded WASM reader. |
-| `table.lastStats` | Requests, bytes, files, and milliseconds of the last query. |
+| `table.lastStats` | Requests, bytes received, files, and milliseconds of the last query. Requests that loaded or checked the table version for it count too, so the first query on a handle counts the head and the version hint. |
 
-`series` is a value or a list of values of the first series-key column, or an object such as `{ device_id: ["a", "b"] }`. Times are `Date` objects, ISO strings, or epoch milliseconds. Durations are written like `500ms`, `30s`, `10m`, `1h`, `1d` or `1w`, or given as a number of milliseconds. Buckets are aligned to the Unix epoch.
+`series` is a value or a list of values of the first series-key column, or an object such as `{ device_id: ["a", "b"] }`.
+
+Times are `Date` objects, epoch milliseconds, or ISO 8601 strings (`2026-01-03T12:00:00Z`, `2026-01-03 12:00`, `2026-01-03`). A string without an offset is UTC, as in the engine's SQL, so a query returns the same rows in a browser and on a server in another time zone. Strings keep microseconds (`12:00:00.123456`). Other date formats are an error.
+
+Durations use the engine's syntax: a whole number and a unit, `s`, `m`, `h`, `d`, `w` or `y` (365 days), such as `30s`, `10m` or `1h`, or spelled out (`90 minutes`, `1 day`). A number is milliseconds, which is how to write a bucket shorter than a second. Buckets are aligned to the Unix epoch unless `origin` is given.
 
 ## Writing
 
@@ -78,7 +84,7 @@ export default {
 
 - **In Workers**, import from `@timelake/client/workers`, and pass the module from `@timelake/client/timelake.wasm` to `initWasm`. Workers can't compile WebAssembly from bytes at runtime, so the default entry, which embeds the module as base64, doesn't run there. Wrangler bundles the `.wasm` import as a compiled module. Elsewhere (Node, Deno, Bun, browsers), the default `@timelake/client` works as is.
 
-- **Store.** A writer reads and writes objects through a `Store`: `r2Store` for an R2 binding, `memoryStore` for tests, or your own (`get`, `getRange`, `put`, `putIfAbsent`, `list`, `delete`, and optionally `upload` for multipart uploads). `putIfAbsent` must be atomic, because commits rely on it. The second argument is the warehouse root as the table metadata records it. Keys are what follows the bucket.
+- **Store.** A writer reads and writes objects through a `Store`: `r2Store` for an R2 binding, `memoryStore` for tests, or your own (`get`, `getRange`, `put`, `putIfAbsent`, `list`, `delete`, and optionally `upload` for multipart uploads). `putIfAbsent` must be atomic, because commits rely on it. The second argument is the warehouse root as the table metadata records it, and the third the table name (`namespace.table`, or `table` in `default`). Keys are what follows the bucket.
 - **Rows.** Pass objects or an Arrow IPC stream. In objects, times are `Date`s, ISO strings, or epoch milliseconds (millisecond precision). Use Arrow IPC for microseconds. Integers beyond 2^53 are written exactly as `bigint`s; runtimes without `JSON.rawJSON` (ES2025) reject such a `bigint` instead of rounding it. A column the table doesn't have, or a missing required one, is an error, and nothing is written.
 - **Commits.** A writer keeps the version it last committed, so a steady writer doesn't reload the table before each append. If another writer committed in between, the commit reloads and retries. A `batchId` makes retries safe: an append whose batch id is already in the table is skipped.
 - **One writer per table works best:** a Queues consumer or a Durable Object that collects rows into appends of a few thousand or more. Concurrent writers are safe, but each conflict costs a retry, and many small appends make many small files.
@@ -97,7 +103,9 @@ export default {
 
 ## How a query runs
 
-1. Read the table's head object (`metadata/timelake-head`) and `version-hint.text` at the same time. The head holds the metadata, the files, and usually the last-value index and file footers, so a `latest` query needs no further request. A HEAD request for the next version runs alongside the query; if one exists, the result is dropped and the query reruns on the newest version. Tables without a head are read through the metadata, the manifest list, and the manifests. A loaded version is reused for `cacheMs`, and after that only checked for a newer one.
+1. Read the table's head object (`metadata/timelake-head`) and `version-hint.text` at the same time. The head holds the metadata, the files, and usually the last-value index and file footers, so a `latest` query needs no further request. A HEAD request for the next version runs alongside the query; if one exists, the result is dropped and the query reruns on the newest version. Tables without a head are read through the metadata, the manifest list, and the manifests. A loaded version is reused for `cacheMs`. After that, HEAD requests for the loaded version and the next one check for a newer version: maintenance deletes the oldest metadata files, so a missing loaded version also means a newer one exists.
+
+   To find the newest version, the client asks for versions after the one it knows, doubling the step until a version is missing, then halving it, so a handle many commits behind needs a few requests, not one per commit. If the metadata it would start from was deleted, it starts again from the head and the version hint.
 2. Prune data files on their Iceberg column bounds (time range, series key).
 3. For each remaining file, take the Parquet footer from the head or fetch it, then fetch only the row groups and columns the query needs.
 4. Decode, filter, and sort or aggregate in WebAssembly, and return JSON rows (validated with Zod if given).

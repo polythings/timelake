@@ -149,6 +149,14 @@ test("trailing slashes on the warehouse are trimmed, in linear time", () => {
   expect(performance.now() - started).toBeLessThan(1000)
 })
 
+test("the writer and the reader take table names as the engine does", () => {
+  expect(new TableWriter(memoryStore(), "s3://b/lake", "readings").location).toBe("s3://b/lake/default/readings")
+  for (const bad of ["iot/x.live", "iot.a/b", "a.b.c", "iot."]) {
+    expect(() => new TableWriter(memoryStore(), "s3://b/lake", bad)).toThrow("must be [namespace.]table")
+    expect(() => new Lake("https://x/lake").table(bad)).toThrow("must be [namespace.]table")
+  }
+})
+
 test("appends compact small files inline, and maintain compacts the rest", async () => {
   const schema = ["--schema", "time:timestamptz,device:int,temp:double"]
   const props = ["--prop", "timelake.compact-min-files=3", "--prop", "timelake.snapshot-retention=0s"]

@@ -15,16 +15,4 @@ setEmbedded(() => {
   return bytes
 })
 
-export {
-  Lake,
-  TableHandle,
-  TableWriter,
-  initWasm,
-  memoryStore,
-  r2Store,
-  readerVersion,
-  wasmHeapPeakBytes,
-  wasmMemoryBytes,
-  zodSource,
-} from "./client.ts"
-export type * from "./client.ts"
+export * from "./workers.ts"

@@ -16,9 +16,11 @@
  * ```
  */
 
-import type { z } from "zod"
+import { z } from "zod"
 
 import { ensureWasm } from "./init.ts"
+import { durationMicros, parseTableName, timeMicros, trimTrailingSlashes } from "./util.ts"
+import type { DurationInput, TimeInput } from "./util.ts"
 import {
   ParquetFile,
   Query,
@@ -29,8 +31,7 @@ import {
 } from "./wasm/timelake_wasm.js"
 
 export { initWasm } from "./init.ts"
-import { trimTrailingSlashes } from "./writer.ts"
-
+export type { DurationInput, TimeInput } from "./util.ts"
 export { memoryStore, r2Store, TableWriter } from "./writer.ts"
 export type {
   AppendReport,
@@ -67,10 +68,6 @@ export type Row = Record<string, unknown>
 export type Scalar = string | number
 /** Series filter: one value or a list for the (first) series key, or `{ column: value(s) }`. */
 export type SeriesFilter = Scalar | Scalar[] | Record<string, Scalar | Scalar[]>
-/** A point in time: Date, ISO string, or epoch milliseconds. */
-export type TimeInput = Date | string | number
-/** A duration: "30s", "10m", "1h", "1d", "1w", or milliseconds. */
-export type DurationInput = `${number}${"ms" | "s" | "m" | "h" | "d" | "w"}` | number
 export type AggOp = "count" | "sum" | "avg" | "min" | "max" | "first" | "last"
 export type AggMap = { readonly [column: string]: readonly AggOp[] }
 
@@ -166,22 +163,7 @@ const DEFAULT_CACHE_MS = 5000
 /** Bytes read from the end of a data file first: holds the whole footer of typical files. */
 const FOOTER_PREFETCH = 64 * 1024
 
-function micros(t: TimeInput): number {
-  const ms = t instanceof Date ? t.getTime() : typeof t === "number" ? t : Date.parse(t)
-  if (!Number.isFinite(ms)) throw new Error(`invalid time: ${String(t)}`)
-  return Math.round(ms * 1000)
-}
-
-const optionalMicros = (t: TimeInput | undefined) => (t === undefined ? undefined : micros(t))
-
-const UNIT_MS = { ms: 1, s: 1e3, m: 60e3, h: 3600e3, d: 86400e3, w: 604800e3 } as const
-
-function durationMicros(d: DurationInput): number {
-  if (typeof d === "number") return Math.round(d * 1000)
-  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)$/.exec(d)
-  if (!m) throw new Error(`invalid duration: ${d} (use e.g. 10m, 1h, 1d)`)
-  return Math.round(Number(m[1]) * UNIT_MS[m[2] as keyof typeof UNIT_MS] * 1000)
-}
+const optionalMicros = (t: TimeInput | undefined) => (t === undefined ? undefined : timeMicros(t))
 
 const emptyStats = (): QueryStats => ({ requests: 0, bytes: 0, files: 0, ms: 0 })
 
@@ -203,9 +185,9 @@ class Limiter {
 }
 
 /**
- * The requests of one load or query: at most `concurrency` in flight, counted for `lastStats`.
- * The limit applies to single requests only: a task waiting for its own requests must never
- * hold a slot they need.
+ * The requests of one call, loading the table included: at most `concurrency` in flight, counted
+ * for `lastStats`. The limit applies to single requests only: a task waiting for its own requests
+ * must never hold a slot they need.
  */
 class Requests {
   readonly stats = emptyStats()
@@ -215,16 +197,39 @@ class Requests {
     this.limiter = new Limiter(lake.options.concurrency)
   }
 
+  /** The response to a GET of `url`, or `undefined` if it is absent (HTTP 403 or 404). Read its body with {@link read}. */
+  open(url: string): Promise<Response | undefined> {
+    return this.limiter.run(() => {
+      this.stats.requests++
+      return this.lake.get(url, undefined, true)
+    })
+  }
+
+  /** Whether `url` exists (a HEAD request; HTTP 403 and 404 mean it doesn't). */
+  exists(url: string): Promise<boolean> {
+    return this.limiter.run(async () => {
+      this.stats.requests++
+      return (await this.lake.get(url, { method: "HEAD" }, true)) !== undefined
+    })
+  }
+
+  /** The body of a response from {@link open}. */
+  async read(r: Response): Promise<Uint8Array> {
+    const b = new Uint8Array(await r.arrayBuffer())
+    this.stats.bytes += b.length
+    return b
+  }
+
   /** The whole object, or bytes `[start, end)` of it. */
   bytes(url: string, range?: [number, number]): Promise<Uint8Array> {
     return this.limiter.run(async () => {
       const init = range ? { headers: { Range: `bytes=${range[0]}-${range[1] - 1}` } } : undefined
+      this.stats.requests++
       const r = await this.lake.get(url, init)
       let b = new Uint8Array(await r.arrayBuffer())
+      this.stats.bytes += b.length
       // Servers that ignore Range answer 200 with the whole object.
       if (range && r.status === 200 && b.length > range[1] - range[0]) b = b.slice(range[0], range[1])
-      this.stats.requests++
-      this.stats.bytes += b.length
       return b
     })
   }
@@ -248,6 +253,8 @@ function queryWholeFile(bytes: Uint8Array, spec: object): unknown[] {
   }
 }
 
+const TableNames = z.array(z.string())
+
 // --- Lake ------------------------------------------------------------------------------------------
 
 /** A Timelake warehouse served over HTTP(S): Vercel Blob, S3/R2/GCS public URLs, a CDN, … */
@@ -267,7 +274,10 @@ export class Lake {
 
   /** Table names (`namespace.table`) from the warehouse's `timelake-tables.json`. */
   async tables(): Promise<string[]> {
-    return (await (await this.get(`${this.url}/timelake-tables.json`)).json()) as string[]
+    const url = `${this.url}/timelake-tables.json`
+    const parsed = TableNames.safeParse(await (await this.get(url)).json())
+    if (!parsed.success) throw new Error(`${url}: not a list of table names (${parsed.error.message})`)
+    return parsed.data
   }
 
   /**
@@ -279,8 +289,9 @@ export class Lake {
   }
 
   /**
-   * GETs `url` (after `rewriteUrl`). Throws on HTTP errors, except that a 404 returns `undefined`
-   * when `optional` is set.
+   * GETs `url` (after `rewriteUrl`). Throws on HTTP errors, except that a 403 or 404 returns
+   * `undefined` when `optional` is set: public S3 and CloudFront buckets without `s3:ListBucket`
+   * answer 403 for a missing key.
    * @internal
    */
   async get(url: string, init?: RequestInit): Promise<Response>
@@ -288,7 +299,10 @@ export class Lake {
   async get(url: string, init?: RequestInit, optional = false): Promise<Response | undefined> {
     const target = this.options.rewriteUrl?.(url) ?? url
     const r = await this.options.fetch(target, init)
-    if (optional && r.status === 404) return undefined
+    if (optional && (r.status === 404 || r.status === 403)) {
+      void r.body?.cancel()
+      return undefined
+    }
     if (!r.ok) throw new Error(`GET ${target}: HTTP ${r.status}`)
     return r
   }
@@ -308,7 +322,8 @@ type Loaded = {
 export class TableHandle<T = Row> {
   private loaded: Promise<Loaded> | null = null
   private loadedAt = 0
-  /** Statistics of the last query. */
+  private readonly location: string
+  /** Statistics of the last query, the requests that loaded the table version included. */
   lastStats: QueryStats = emptyStats()
 
   constructor(
@@ -316,29 +331,43 @@ export class TableHandle<T = Row> {
     readonly name: string,
     private schema?: z.ZodType,
   ) {
-    if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?$/.test(name)) throw new Error(`invalid table name: ${name}`)
+    const { namespace, name: table } = parseTableName(name)
+    this.location = `${lake.url}/${namespace}/${table}`
   }
 
-  private get location(): string {
-    const [ns, t] = this.name.includes(".") ? this.name.split(".") : ["default", this.name]
-    return `${this.lake.url}/${ns}/${t}`
+  private metadataUrl(version: number): string {
+    return `${this.location}/metadata/v${version}.metadata.json`
   }
 
   /**
    * Loads (or reuses) the current table version. A version loaded earlier is reused within
    * `cacheMs`, and after that while no newer one exists (checked as the next query runs).
    */
-  private load(): Promise<Loaded> {
+  private load(requests: Requests): Promise<Loaded> {
     if (this.loaded && Date.now() - this.loadedAt < this.lake.options.cacheMs) return this.loaded
     const previous = this.loaded
     return this.keep(
-      previous ? previous.then((l) => ({ ...l, stale: this.newerExists(l.version) })) : this.fetchVersion(),
+      previous
+        ? previous.then((l) => ({ ...l, stale: this.outdated(l.version, requests) }))
+        : this.fetchVersion(requests),
     )
   }
 
-  /** Loads version `version` or a newer one through the metadata chain, skipping the head. */
-  private reload(version: number): Promise<Loaded> {
-    return this.keep(this.fetchVersion(version))
+  /**
+   * Whether a version after `version` exists. Maintenance deletes the oldest metadata files, so the
+   * next version's may be gone too when this one's is: then newer versions exist.
+   */
+  private async outdated(version: number, requests: Requests): Promise<boolean> {
+    const [next, self] = await Promise.all([
+      requests.exists(this.metadataUrl(version + 1)),
+      requests.exists(this.metadataUrl(version)),
+    ])
+    return next || !self
+  }
+
+  /** Loads version `version` or the newest after it, through the metadata chain. */
+  private reload(version: number, requests: Requests): Promise<Loaded> {
+    return this.keep(this.newestFrom(version, requests))
   }
 
   /** Makes `loaded` the version later calls reuse. */
@@ -351,55 +380,97 @@ export class TableHandle<T = Row> {
     return loaded
   }
 
-  /** Whether a version after `version` exists (one HEAD request). */
-  private async newerExists(version: number): Promise<boolean> {
-    const next = `${this.location}/metadata/v${version + 1}.metadata.json`
-    return (await this.lake.get(next, { method: "HEAD" }, true)) !== undefined
-  }
-
   /**
    * Loads the current version: from the table's head object (`metadata/timelake-head`: metadata,
    * files, and when they fit the last-value index and file footers) when it has one, checked for
    * a newer version while the first query runs; otherwise through the version hint, metadata,
-   * manifest list and manifests. With `atLeast`, skips the head and reads that version or a newer one.
+   * manifest list and manifests.
    */
-  private async fetchVersion(atLeast?: number): Promise<Loaded> {
+  private async fetchVersion(requests: Requests): Promise<Loaded> {
     ensureWasm()
     const metadata = `${this.location}/metadata`
-    if (atLeast !== undefined) return this.fromMetadata(atLeast)
     const [head, hintResponse] = await Promise.all([
-      this.lake.get(`${metadata}/timelake-head`, undefined, true),
-      this.lake.get(`${metadata}/version-hint.text`, undefined, true),
+      requests.open(`${metadata}/timelake-head`),
+      requests.open(`${metadata}/version-hint.text`),
     ])
-    const hint = hintResponse ? (await hintResponse.text()).trim() : undefined
+    const hint = hintResponse ? new TextDecoder().decode(await requests.read(hintResponse)).trim() : undefined
     const hinted = hint === undefined ? undefined : Number(hint)
-    if (hinted !== undefined && !Number.isInteger(hinted)) {
+    if (hinted !== undefined && !(Number.isSafeInteger(hinted) && hinted >= 0)) {
+      void head?.body?.cancel()
       throw new Error(`${this.name}: bad version hint ${JSON.stringify(hint)}`)
     }
     if (head) {
-      const loaded = this.fromHead(new Uint8Array(await head.arrayBuffer()), hinted)
+      const loaded = this.fromHead(await requests.read(head), hinted, requests)
       if (loaded) return loaded
     }
-    if (hinted === undefined) throw new Error(`${this.name}: table not found (no head or version hint)`)
-    return this.fromMetadata(hinted)
+    if (hinted === undefined) {
+      throw new Error(`${this.name}: table not found (no head or version hint; HTTP 403 or 404 for both)`)
+    }
+    const loaded = await this.fromMetadata(hinted, requests)
+    if (!loaded) throw new Error(`${this.name}: metadata v${hinted} not found`)
+    return loaded
   }
 
-  /** Version `hinted` or the one after it, through the metadata, manifest list and manifests. */
-  private async fromMetadata(hinted: number): Promise<Loaded> {
-    const metadata = `${this.location}/metadata`
-    // The hint is written after each commit, so it may lag one version behind.
+  /**
+   * Version `version` or the newest after it. When the metadata of `version` is gone (expired by
+   * maintenance while this handle was many versions behind), starts again from the head and hint.
+   */
+  private async newestFrom(version: number, requests: Requests): Promise<Loaded> {
+    const loaded = await this.fromMetadata(version, requests)
+    if (loaded) return loaded
+    const fresh = await this.fetchVersion(requests)
+    if (!(await fresh.stale)) return fresh
+    return (await this.fromMetadata(fresh.version + 1, requests)) ?? fresh
+  }
+
+  /**
+   * The newest version from `known` (which exists) on. The hint and the head are written after
+   * each commit, so they may lag; a handle loaded earlier may be many commits behind. Versions are
+   * consecutive, so HEAD requests double their step from `known` until a version is absent, then
+   * halve it: a handle n versions behind needs about 2 log2(n) requests.
+   */
+  private async newestVersion(known: number, requests: Requests): Promise<number> {
+    let found = known
+    let step = 1
+    while (await requests.exists(this.metadataUrl(found + step))) {
+      found += step
+      step *= 2
+    }
+    let absent = found + step
+    while (absent - found > 1) {
+      const mid = found + Math.floor((absent - found) / 2)
+      if (await requests.exists(this.metadataUrl(mid))) found = mid
+      else absent = mid
+    }
+    return found
+  }
+
+  /**
+   * Version `version`, or the newest after it, through the metadata, manifest list and manifests;
+   * `undefined` if neither exists. Looks for the next version while fetching this one.
+   */
+  private async fromMetadata(version: number, requests: Requests): Promise<Loaded | undefined> {
     const [current, next] = await Promise.all([
-      this.lake.get(`${metadata}/v${hinted}.metadata.json`),
-      this.lake.get(`${metadata}/v${hinted + 1}.metadata.json`, undefined, true),
+      requests.open(this.metadataUrl(version)),
+      requests.exists(this.metadataUrl(version + 1)),
     ])
-    if (next) void current.body?.cancel()
-    const version = next ? hinted + 1 : hinted
-    const wasm = new WasmTable(await (next ?? current).text())
-    const requests = new Requests(this.lake)
+    let response = current
+    if (next) {
+      void current?.body?.cancel()
+      version = await this.newestVersion(version + 1, requests)
+      response = await requests.open(this.metadataUrl(version))
+    }
+    if (!response) return undefined
+    const wasm = new WasmTable(new TextDecoder().decode(await requests.read(response)))
     let manifests: string[] = []
-    if (wasm.manifestList) {
-      manifests = wasm.addManifestList(await requests.bytes(wasm.manifestList))
-      for (const bytes of await Promise.all(manifests.map((path) => requests.bytes(path)))) wasm.addManifest(bytes)
+    try {
+      if (wasm.manifestList) {
+        manifests = wasm.addManifestList(await requests.bytes(wasm.manifestList))
+        for (const bytes of await Promise.all(manifests.map((path) => requests.bytes(path)))) wasm.addManifest(bytes)
+      }
+    } catch (e) {
+      wasm.free()
+      throw e
     }
     return {
       wasm,
@@ -412,7 +483,7 @@ export class TableHandle<T = Row> {
   }
 
   /** The version a head describes; `undefined` if it can't be read here or the hint is newer. */
-  private fromHead(bytes: Uint8Array, hinted: number | undefined): Loaded | undefined {
+  private fromHead(bytes: Uint8Array, hinted: number | undefined, requests: Requests): Loaded | undefined {
     let wasm: WasmTable
     try {
       wasm = WasmTable.fromHead(bytes)
@@ -430,7 +501,7 @@ export class TableHandle<T = Row> {
       files: wasm.files() as TableInfo["files"],
       version,
       manifests: null,
-      stale: this.newerExists(version),
+      stale: requests.exists(this.metadataUrl(version + 1)),
     }
   }
 
@@ -442,30 +513,32 @@ export class TableHandle<T = Row> {
 
   /** Contract, schema, snapshot and live files of the current version. */
   async info(): Promise<TableInfo> {
-    const l = await this.current()
+    const requests = new Requests(this.lake)
+    let l = await this.load(requests)
+    if (await l.stale) l = await this.reload(l.version + 1, requests)
     return { name: this.name, ...l.info, version: l.version, manifests: l.manifests, files: l.files }
-  }
-
-  /** The current version, after its check for a newer one. */
-  private async current(): Promise<Loaded> {
-    const l = await this.load()
-    return (await l.stale) ? this.reload(l.version + 1) : l
   }
 
   /**
    * Runs `query` on the loaded version while the check for a newer version is in flight. If the
-   * version turns out outdated, its result is dropped and the query runs on the current version.
+   * version turns out outdated, its result is dropped and the query runs on the newest version.
+   * The requests of both, and of loading the table, become `lastStats` when it succeeds.
    */
   private async run<R>(query: (l: Loaded, requests: Requests) => Promise<R>): Promise<R> {
-    const l = await this.load()
-    const [result, stale] = await Promise.allSettled([this.measure((r) => query(l, r)), l.stale])
+    const t0 = performance.now()
+    const requests = new Requests(this.lake)
+    const l = await this.load(requests)
+    const [result, stale] = await Promise.allSettled([query(l, requests), l.stale])
     if (stale.status === "rejected") throw stale.reason
+    let value: R
     if (!stale.value) {
       if (result.status === "rejected") throw result.reason
-      return result.value
+      value = result.value
+    } else {
+      value = await query(await this.reload(l.version + 1, requests), requests)
     }
-    const current = await this.reload(l.version + 1)
-    return this.measure((r) => query(current, r))
+    this.lastStats = { ...requests.stats, ms: performance.now() - t0 }
+    return value
   }
 
   private seriesSpec(info: Loaded["info"], series?: SeriesFilter): Record<string, Scalar[]> {
@@ -478,23 +551,17 @@ export class TableHandle<T = Row> {
     return { [key]: Array.isArray(series) ? series : [series] }
   }
 
-  /** Runs `query` with fresh request statistics, which become `lastStats` when it succeeds. */
-  private async measure<R>(query: (requests: Requests) => Promise<R>): Promise<R> {
-    const t0 = performance.now()
-    const requests = new Requests(this.lake)
-    const result = await query(requests)
-    this.lastStats = { ...requests.stats, ms: performance.now() - t0 }
-    return result
-  }
-
   /** Runs a query spec over the files that may match it. */
   private async scan(wasm: WasmTable, spec: object, requests: Requests): Promise<unknown[]> {
     const files = wasm.planFiles(spec) as TableInfo["files"]
     const query = new Query(spec)
+    // Every file opened so far, until it is pushed to the query; freed whatever fails.
+    const opened: (ParquetFile | undefined)[] = []
     try {
-      // Fetch files concurrently, decode in order (decoding is synchronous WASM work).
-      const opened = await Promise.all(
-        files.map(async ({ path, size }) => {
+      // Fetch files concurrently, decode in order (decoding is synchronous WASM work). Wait for
+      // all fetches to settle before freeing anything, so none adds bytes to a freed file.
+      const fetched = await Promise.allSettled(
+        files.map(async ({ path, size }, i) => {
           let file = wasm.openFile(path, size)
           if (!file) {
             let tail = await requests.bytes(path, [Math.max(0, size - FOOTER_PREFETCH), size])
@@ -502,13 +569,16 @@ export class TableHandle<T = Row> {
             if (footer > tail.length) tail = await requests.bytes(path, [size - footer, size])
             file = new ParquetFile(size, tail)
           }
+          opened[i] = file
           const ranges = file.plan(spec) as [number, number][]
           const chunks = await Promise.all(ranges.map((r) => requests.bytes(path, r)))
-          ranges.forEach(([start], i) => file.addRange(start, chunks[i] as Uint8Array))
-          return file
+          ranges.forEach(([start], j) => file.addRange(start, chunks[j] as Uint8Array))
         }),
       )
-      for (const file of opened) {
+      for (const f of fetched) if (f.status === "rejected") throw f.reason
+      for (const [i, file] of opened.entries()) {
+        if (!file) continue
+        opened[i] = undefined
         try {
           query.push(file)
         } finally {
@@ -518,6 +588,7 @@ export class TableHandle<T = Row> {
       requests.stats.files = files.length
       return JSON.parse(query.finish()) as unknown[]
     } finally {
+      for (const file of opened) file?.free()
       query.free()
     }
   }
@@ -623,10 +694,19 @@ function zodType(icebergType: string): string {
   }
 }
 
-/** Zod schema source for a table's rows (time columns coerce ISO strings to `Date`). */
+/** `word` without a trailing `s` unless it follows s, i or u: `Readings` → `Reading`; `Status`, `Address`, `Analysis` stay. */
+function singular(word: string): string {
+  return /[^siu]s$/i.test(word) ? word.slice(0, -1) : word
+}
+
+/**
+ * Zod schema source for a table's rows (time columns coerce ISO strings to `Date`). The schema is
+ * named after the table in PascalCase, without a trailing `s` unless it follows s, i or u
+ * (`readings` → `Reading`, `status` → `Status`), unless `exportName` is given.
+ */
 export function zodSource(info: Pick<TableInfo, "name" | "schema">, exportName?: string): string {
   const table = info.name.split(".").at(-1) ?? info.name
-  const name = exportName ?? table.replace(/(^|[_-])(\w)/g, (_, __, c: string) => c.toUpperCase()).replace(/s$/, "")
+  const name = exportName ?? singular(table.replace(/(^|[_-])(\w)/g, (_, __, c: string) => c.toUpperCase()))
   const fields = info.schema.map(
     (f) =>
       `  ${/^[A-Za-z_]\w*$/.test(f.name) ? f.name : JSON.stringify(f.name)}: ${zodType(f.type)}${f.required ? "" : ".nullable()"},`,
