@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{ArrowPrimitiveType, Int32Type, UInt32Type, UInt64Type};
+use arrow_array::types::{ArrowPrimitiveType, Int32Type, Int64Type, UInt32Type, UInt64Type};
 use arrow_array::{Array, BinaryArray, PrimitiveArray, RecordBatch, StringArray};
 use bytes::Bytes;
 use timelake_format::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
@@ -62,12 +62,14 @@ fn files(doc: &HeadDoc, schema: &[Field]) -> Result<Vec<DataFile>> {
     let (paths, sizes) = (string_column(files, "path")?, primitive::<UInt64Type>(files, "size")?);
     let records = primitive::<UInt64Type>(files, "records")?;
     let partitions = primitive::<Int32Type>(files, "partition")?;
+    let sequence_numbers = primitive::<Int64Type>(files, "sequence_number")?;
     let mut out: Vec<DataFile> = (0..files.num_rows())
         .map(|i| DataFile {
             path: paths.value(i).to_string(),
             size: sizes.value(i),
             records: records.value(i),
             partition: partitions.is_valid(i).then(|| i64::from(partitions.value(i))),
+            sequence_number: sequence_numbers.value(i),
             lower: HashMap::new(),
             upper: HashMap::new(),
         })

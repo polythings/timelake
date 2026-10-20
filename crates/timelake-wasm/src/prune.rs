@@ -57,9 +57,14 @@ fn may_match(spec: &QuerySpec, bounds: impl Fn(&str) -> (Option<Bound>, Option<B
         })
 }
 
-/// Files that may hold matching rows, judged by their Iceberg column bounds.
+/// Files that may hold matching rows, judged by their Iceberg column bounds, oldest data first
+/// (by sequence number): pushed in this order, a later row of the same key and time is a later
+/// write, as the newest-row and last-value queries assume.
 pub fn plan_files<'a>(files: &'a [DataFile], spec: &QuerySpec) -> Vec<&'a DataFile> {
-    files.iter().filter(|f| may_match(spec, |c| (f.lower.get(c).cloned(), f.upper.get(c).cloned()))).collect()
+    let mut planned: Vec<&DataFile> =
+        files.iter().filter(|f| may_match(spec, |c| (f.lower.get(c).cloned(), f.upper.get(c).cloned()))).collect();
+    planned.sort_by_key(|f| f.sequence_number);
+    planned
 }
 
 /// Whether a row group may hold matching rows, judged by its Parquet column statistics.
@@ -150,6 +155,7 @@ mod tests {
             size: 0,
             records: 0,
             partition: None,
+            sequence_number: 0,
             lower: HashMap::from([("time".into(), Bound::Int(time.0)), ("tag".into(), Bound::Int(tag.0))]),
             upper: HashMap::from([("time".into(), Bound::Int(time.1)), ("tag".into(), Bound::Int(tag.1))]),
         }
@@ -183,6 +189,17 @@ mod tests {
         // Fractional values compare numerically; strings don't compare with ints, so keep the file.
         assert_eq!(planned(&files, &spec(json!({ "series": { "tag": [5.5] } }))), Vec::<String>::new());
         assert_eq!(planned(&files, &spec(json!({ "series": { "tag": ["x"] } }))), ["a", "b"]);
+    }
+
+    /// Files come oldest data first, so a later row of a key is a later write when they are
+    /// pushed in this order (heads and manifest lists list the newest first).
+    #[test]
+    fn plans_oldest_data_first() {
+        let mut files = [file("new", (0, 9), (1, 5)), file("old", (0, 9), (1, 5)), file("mid", (0, 9), (1, 5))];
+        for (f, seq) in files.iter_mut().zip([7, 2, 5]) {
+            f.sequence_number = seq;
+        }
+        assert_eq!(planned(&files, &spec(json!({}))), ["old", "mid", "new"]);
     }
 
     /// The metadata of a one-row Parquet file holding `column` as `c`.

@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The TypeScript client's `latest` on a table without a last-value index could return an older write of a reading
+  rewritten at the same time: it read files newest first, and the last one read won. Files are now planned oldest data
+  first, so the newer write wins, as in the engine.
 - The TypeScript client failed to return rows or latest values from files with different columns (written before a
   column was added, or by another writer), or with a column at a narrower type (`int` before it became `long`). Rows
   are now matched by column name, with nulls where a file lacks a column.

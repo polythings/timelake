@@ -93,6 +93,7 @@ fn head_with_nanosecond_bounds(lower: i64, upper: i64) -> Vec<u8> {
             ("size", Arc::new(UInt64Array::from(vec![100]))),
             ("records", Arc::new(UInt64Array::from(vec![2]))),
             ("partition", Arc::new(Int32Array::from(vec![None]))),
+            ("sequence_number", Arc::new(Int64Array::from(vec![1]))),
         ]),
     );
     doc.sections.insert(

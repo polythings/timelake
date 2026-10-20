@@ -253,12 +253,12 @@ pub fn parse_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
 
 /// The data manifests of a manifest list. Delete manifests (row-level deletes another engine
 /// wrote) are an error: this reader doesn't apply them, and rows they delete would come back.
-pub fn data_manifest_paths(bytes: &[u8]) -> Result<Vec<String>> {
+pub fn data_manifests(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
     let manifests = parse_manifest_list(bytes)?;
     if let Some(m) = manifests.iter().find(|m| m.content == ManifestContent::Deletes) {
         return Err(deletes_unsupported(&m.path));
     }
-    Ok(manifests.into_iter().map(|m| m.path).collect())
+    Ok(manifests)
 }
 
 fn deletes_unsupported(path: &str) -> Error {
@@ -275,6 +275,8 @@ pub struct DataFile {
     pub records: u64,
     /// The time partition value (hours, days or months since the epoch, by the table's chunk).
     pub partition: Option<i64>,
+    /// The data sequence number: rows of a file with a higher one were written later.
+    pub sequence_number: i64,
     pub lower: HashMap<String, Bound>,
     pub upper: HashMap<String, Bound>,
 }
@@ -303,8 +305,9 @@ fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashM
         .collect()
 }
 
-/// Parses a data manifest; returns its live (not deleted) data files.
-pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
+/// Parses a data manifest; returns its live (not deleted) data files. Entries without a sequence
+/// number inherit `sequence_number`, the manifest's in the manifest list.
+pub fn parse_manifest(bytes: &[u8], schema: &[Field], sequence_number: i64) -> Result<Vec<DataFile>> {
     let by_id: HashMap<i32, &Field> = schema.iter().map(|f| (f.id, f)).collect();
     let mut out = vec![];
     for entry in read_avro(bytes)? {
@@ -328,6 +331,7 @@ pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
             size: as_u64(field(df, "file_size_in_bytes")),
             records: as_u64(field(df, "record_count")),
             partition,
+            sequence_number: as_i64(field(&entry, "sequence_number")).unwrap_or(sequence_number),
             lower: bounds(field(df, "lower_bounds"), &by_id, false),
             upper: bounds(field(df, "upper_bounds"), &by_id, true),
         });
@@ -382,9 +386,9 @@ mod tests {
         };
         let deletes = ManifestFile { path: "d.avro".into(), content: Content::Deletes, ..data.clone() };
         let list = write_manifest_list(std::slice::from_ref(&data), 1, None, 1).unwrap();
-        assert_eq!(data_manifest_paths(&list).unwrap(), ["m.avro"]);
+        assert_eq!(data_manifests(&list).unwrap().iter().map(|m| m.path.as_str()).collect::<Vec<_>>(), ["m.avro"]);
         let list = write_manifest_list(&[data, deletes], 1, None, 1).unwrap();
-        assert!(data_manifest_paths(&list).unwrap_err().to_string().contains("delete files (d.avro)"));
+        assert!(data_manifests(&list).unwrap_err().to_string().contains("delete files (d.avro)"));
 
         let schema = apache_avro::Schema::parse_str(
             r#"{"type": "record", "name": "manifest_entry", "fields": [
@@ -400,7 +404,7 @@ mod tests {
             Value::Record(vec![("content".into(), Value::Int(1)), ("file_path".into(), Value::String("p".into()))]);
         w.append(Value::Record(vec![("status".into(), Value::Int(1)), ("data_file".into(), file)])).unwrap();
         let manifest = w.into_inner().unwrap();
-        assert!(parse_manifest(&manifest, &[]).unwrap_err().to_string().contains("delete files (p)"));
+        assert!(parse_manifest(&manifest, &[], 0).unwrap_err().to_string().contains("delete files (p)"));
     }
 
     fn meta(format: &str) -> Result<TableMeta> {

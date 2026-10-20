@@ -9,7 +9,9 @@
 //!    last-value index and footers in one object. Tables without a head: `new Table(metadataJson)`;
 //!    fetch `table.manifestList`, `table.addManifestList(bytes)` returns manifest paths; fetch
 //!    each, `table.addManifest(bytes)`.
-//! 2. `table.planFiles(query)` returns the data files whose bounds can match.
+//! 2. `table.planFiles(query)` returns the data files whose bounds can match, oldest data first:
+//!    push them to the query in that order, so that of two rows with the same key and time the
+//!    later write wins.
 //! 3. Per file: `table.openFile(path, size)` if the head carried its footer; otherwise fetch the
 //!    tail, `new ParquetFile(size, tail)` (call `ParquetFile.footerLength`
 //!    first if the tail might be short), `file.plan(query)` returns byte ranges, fetch them,
@@ -33,7 +35,7 @@ mod query;
 mod spec;
 mod write;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -45,7 +47,7 @@ pub use error::{Error, Result};
 pub use file::{COALESCE_GAP, FileReader, coalesce, footer_len};
 pub use head::Head;
 pub use meta::{
-    DataFile, Field, MAX_SNAPSHOTS, ManifestContent, ManifestRef, SnapshotInfo, TableMeta, data_manifest_paths,
+    DataFile, Field, MAX_SNAPSHOTS, ManifestContent, ManifestRef, SnapshotInfo, TableMeta, data_manifests,
     parse_manifest, parse_manifest_list,
 };
 pub use prune::plan_files;
@@ -219,6 +221,8 @@ pub struct Table {
     last_values: Option<RecordBatch>,
     /// Footers the head carried, by file path.
     footers: HashMap<String, Bytes>,
+    /// Sequence numbers of the data manifests still to be added, in the order they are added.
+    manifest_sequence_numbers: VecDeque<i64>,
 }
 
 #[wasm_bindgen]
@@ -226,7 +230,14 @@ impl Table {
     #[wasm_bindgen(constructor)]
     pub fn new(metadata_json: &str) -> Result<Table, JsValue> {
         let meta = TableMeta::parse(metadata_json)?;
-        Ok(Table { meta, files: vec![], version: None, last_values: None, footers: HashMap::new() })
+        Ok(Table {
+            meta,
+            files: vec![],
+            version: None,
+            last_values: None,
+            footers: HashMap::new(),
+            manifest_sequence_numbers: VecDeque::new(),
+        })
     }
 
     /// A table from its head object (`metadata/timelake-head`). Throws for a head this reader
@@ -240,6 +251,7 @@ impl Table {
             version: Some(head.version),
             last_values: head.last_values,
             footers: head.footers,
+            manifest_sequence_numbers: VecDeque::new(),
         })
     }
 
@@ -289,14 +301,18 @@ impl Table {
     /// Parses the manifest list; returns the paths of the data manifests to fetch and add. Throws
     /// for a table with delete files, which this reader doesn't apply.
     #[wasm_bindgen(js_name = addManifestList)]
-    pub fn add_manifest_list(&self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {
-        Ok(data_manifest_paths(bytes)?)
+    pub fn add_manifest_list(&mut self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {
+        let manifests = data_manifests(bytes)?;
+        self.manifest_sequence_numbers = manifests.iter().map(|m| m.sequence_number).collect();
+        Ok(manifests.into_iter().map(|m| m.path).collect())
     }
 
-    /// Adds the live data files of one data manifest.
+    /// Adds the live data files of one data manifest. Add them in the order `addManifestList`
+    /// returned them: entries take their sequence numbers from the manifest's.
     #[wasm_bindgen(js_name = addManifest)]
     pub fn add_manifest(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-        self.files.extend(parse_manifest(bytes, &self.meta.schema)?);
+        let sequence_number = self.manifest_sequence_numbers.pop_front().unwrap_or_default();
+        self.files.extend(parse_manifest(bytes, &self.meta.schema, sequence_number)?);
         Ok(())
     }
 

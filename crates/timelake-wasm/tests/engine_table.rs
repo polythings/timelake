@@ -33,7 +33,10 @@ fn load() -> (TableMeta, Vec<DataFile>) {
     .unwrap();
     let manifests = parse_manifest_list(&fetch(meta.manifest_list.as_deref().unwrap())).unwrap();
     assert!(manifests.iter().all(|m| m.content == ManifestContent::Data));
-    let files = manifests.iter().flat_map(|m| parse_manifest(&fetch(&m.path), &meta.schema).unwrap()).collect();
+    let files = manifests
+        .iter()
+        .flat_map(|m| parse_manifest(&fetch(&m.path), &meta.schema, m.sequence_number).unwrap())
+        .collect();
     (meta, files)
 }
 
