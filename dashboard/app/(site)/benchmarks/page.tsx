@@ -15,11 +15,11 @@ import Link from "next/link"
 import { Suspense } from "react"
 
 import { BenchCards } from "@/components/bench-cards"
+import { RunInfoButton } from "@/components/run-info"
 import { MoreLink, SectionHead } from "@/components/section-head"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BENCHMARKS, type Benchmark } from "@/lib/benchmark-catalog"
-import { SYSTEMS, latestByTarget, loadRuns, rankings, runKey, runLabel, type Run } from "@/lib/benchmarks"
-import { REPO_URL } from "@/lib/site"
+import { SYSTEMS, latestByTarget, loadRuns, rankings, runInfo, runKey, runLabel, type Run } from "@/lib/benchmarks"
 
 export const metadata: Metadata = { title: "Benchmarks" }
 
@@ -133,14 +133,11 @@ function BenchmarkResults({ benchmark, latest }: { benchmark: Benchmark; latest:
                   .
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">
-                Run of {r.header.started.slice(0, 10)} on {r.header.machine}, commit{" "}
-                <a className="font-mono hover:underline" href={`${REPO_URL}/commit/${r.header.commit}`}>
-                  {r.header.commit.slice(0, 7)}
-                </a>
-                . {r.header.variant === "bulk" ? "Higher is better." : "Lower is better."}
+              <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                Run of {r.header.started.slice(0, 10)}
+                <RunInfoButton info={runInfo(r)} label={runLabel(r)} />
                 {r.queries.some((q) => q.correct !== undefined) &&
-                  " Answers are checked against a copy of the data with each row once."}
+                  "Answers are checked against a copy of the data with each row once."}
               </p>
             </TabsContent>
           ))}

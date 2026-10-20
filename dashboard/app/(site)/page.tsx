@@ -197,7 +197,7 @@ async function Measurements() {
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-3">
         <SectionHead label="Benchmarks">
-          Measured every week on AWS S3, against other lakes with the same data and queries. Lower is better.
+          Measured every week on AWS S3, against other lakes with the same data and queries.
         </SectionHead>
         <nav className="flex flex-wrap gap-x-5 gap-y-1">
           <MoreLink href="/benchmarks">All benchmarks</MoreLink>

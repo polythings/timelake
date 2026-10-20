@@ -136,7 +136,6 @@ function RunResults({ run, runs, workload }: { run: Run; runs: Run[]; workload: 
         <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
           Run of {run.header.started.slice(0, 10)}
           <RunInfoButton info={runInfo(run)} label={runLabel(run)} />
-          {run.header.variant === "bulk" ? "Higher is better." : "Lower is better."}
           {checked && " Answers are checked against a copy of the data with each row once."}
         </p>
         <BenchCards run={run} queries={false} />

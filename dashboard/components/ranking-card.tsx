@@ -126,7 +126,7 @@ export function RankingBars({
 /** One ranking as a card. */
 export function RankingCard({ ranking, perSystem = true }: { ranking: Ranking; perSystem?: boolean }) {
   return (
-    <Panel title={ranking.title} note={ranking.note}>
+    <Panel title={ranking.title} note={`${ranking.note}; ${ranking.higherIsBetter ? "higher" : "lower"} is better`}>
       <RankingBars ranking={ranking} perSystem={perSystem} queries={ranking.queries} />
     </Panel>
   )
