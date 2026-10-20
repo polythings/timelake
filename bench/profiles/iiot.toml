@@ -2,6 +2,7 @@
 # disk, the database servers in Docker (infra/servers.sh), then the lake systems on S3 in us-east-2 with request
 # counts and cost (remote.sh runs a profile's local entries first, then its S3 entries from the data in the bucket).
 # By hand: `bench/infra/weekly.sh start <commit> iiot`.
+tunings = ["tuned", "default"]  # D23: each system in both, where it has a default yet
 label = "iiot"
 runs = 2
 timeout = 180               # seconds per query (first run and repeats); the slowest answers take under 2 minutes
@@ -28,7 +29,6 @@ systems = [
   "clickhouse",
   "questdb",
   "influxdb3",
-  "influxdb3-defaults",
   "iceberg",
   "lance",
   "parquet",

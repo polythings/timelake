@@ -21,7 +21,7 @@ from timebench.queries import (
     raw_queries,
 )
 from timebench.results import append_jsonl, best_time, geomean, load_ok, order_engines, read_jsonl
-from timebench.systems import systems
+from timebench.systems import TUNINGS, systems
 from timebench.targets import Place, Target
 from timebench.workloads import workloads
 
@@ -99,6 +99,21 @@ def test_local_target_keeps_tables_on_disk() -> None:
     assert not place.target.s3
 
 
+def test_a_default_system_keeps_its_tables_apart_from_the_tuned_one() -> None:
+    tuned = Place(Target("aws-s3"), "iiot-small", "lance")
+    default = Place(Target("aws-s3"), "iiot-small", "lance", "default")
+    assert tuned.root == "s3://bench/lakes/iiot-small/lance"
+    assert default.root == "s3://bench/lakes/iiot-small/lance-default"
+    assert default.local_dir.name == "lance-default"
+
+
+def test_every_system_is_tuned_and_tunings_are_known() -> None:
+    for system in systems().values():
+        assert "tuned" in system.tunings
+        assert set(system.tunings) <= set(TUNINGS)
+    assert "default" in systems()["influxdb3"].tunings
+
+
 def test_clickbench_queries_come_from_the_download_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(queries, "DATA", tmp_path)
     cached = tmp_path / "clickbench" / "sql" / CLICKBENCH_COMMIT[:12] / "duckdb-parquet-partitioned" / "queries.sql"
@@ -107,8 +122,10 @@ def test_clickbench_queries_come_from_the_download_cache(tmp_path: Path, monkeyp
     assert clickbench_queries("duckdb-parquet-partitioned") == [("q00", "SELECT 1;"), ("q01", "SELECT 2;")]
 
 
-def test_the_weekly_profile_names_real_workloads_systems_and_scales() -> None:
-    profile = tomllib.loads((BENCH / "profiles" / "weekly.toml").read_text())
+@pytest.mark.parametrize("name", ["weekly", "iiot"])
+def test_the_weekly_profiles_name_real_workloads_systems_and_scales(name: str) -> None:
+    profile = tomllib.loads((BENCH / "profiles" / f"{name}.toml").read_text())
+    assert set(profile.get("tunings", ["tuned"])) <= set(TUNINGS)
     for entry in profile["run"]:
         workload = workloads()[entry["workload"]](entry.get("scale"), **entry.get("params", {}))
         assert set(entry["systems"]) <= set(systems())

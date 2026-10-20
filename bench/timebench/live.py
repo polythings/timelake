@@ -97,6 +97,7 @@ class Prober:
             "reader": self.reader,
             "target": place.target.name,
             "dataset": place.dataset,
+            "tuning": place.tuning,
             "runs": 0,
             "count": False,  # the proxy's counters include the writer's requests
         }

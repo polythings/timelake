@@ -36,7 +36,7 @@ def request_kinds(before: ProxyStats, after: ProxyStats) -> dict[str, int]:
 
 def single(job: dict[str, Any], sql: str) -> QueryRecord:
     """One query: a first run, then ``runs`` repeats, with request counts when the proxy counts them."""
-    place = Place(Target(job["target"]), job["dataset"], job["system"])
+    place = Place(Target(job["target"]), job["dataset"], job["system"], job.get("tuning", "tuned"))
     system = systems()[job["system"]]
     counted = place.target.s3 and not system.server and job.get("count", True)
     setup_start = time.perf_counter()
@@ -77,7 +77,7 @@ def client(job: dict[str, Any]) -> dict[str, Any]:
     a loop), so a failure that comes back at once doesn't spin the client. Prints each query's name and seconds, and
     the errors.
     """
-    place = Place(Target(job["target"]), job["dataset"], job["system"])
+    place = Place(Target(job["target"]), job["dataset"], job["system"], job.get("tuning", "tuned"))
     setup_start = time.perf_counter()
     run = systems()[job["system"]].open_reader(job["reader"], place, place.load_state())
     setup_s = time.perf_counter() - setup_start

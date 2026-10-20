@@ -1,9 +1,9 @@
 """InfluxDB 3 Core: line protocol over HTTP (``/api/v3/write_lp``), SQL over HTTP (``/api/v3/query_sql``).
 
-Any InfluxDB 3 Core server works (``bench/infra/servers.sh`` starts two). ``influxdb3`` (``BENCH_INFLUXDB_URL``,
-default ``http://localhost:58181``) runs with ``--query-file-limit`` raised: by default a query may read at most 432
-Parquet files, about 3 days of data in 10-minute files, and longer ones fail. ``influxdb3-defaults``
-(``BENCH_INFLUXDB_DEFAULTS_URL``, default ``http://localhost:58182``) runs as shipped, so results show both.
+Any InfluxDB 3 Core server works (``bench/infra/servers.sh`` starts two). Tuned (``BENCH_INFLUXDB_URL``, default
+``http://localhost:58181``), the server runs with ``--query-file-limit`` raised: by default a query may read at most
+432 Parquet files, about 3 days of data in 10-minute files, and longer ones fail. Default
+(``BENCH_INFLUXDB_DEFAULTS_URL``, default ``http://localhost:58182``, server ``influxdb3-defaults``), as shipped.
 
 Each dataset gets a database ``bench_<dataset>`` that a run deletes and recreates. Tables are created on write: the
 series key columns are tags, the rest fields; InfluxDB keeps one row per series and time (the last written).
@@ -95,40 +95,38 @@ def line_protocol(table: str, data: pa.Table, spec: TableSpec) -> pa.ChunkedArra
 
 
 class InfluxDB3(System):
-    """InfluxDB 3 Core with the query file limit raised."""
+    """InfluxDB 3 Core: tuned with the query file limit raised, default as shipped."""
 
     name = "influxdb3"
     title = "InfluxDB 3 Core"
     readers = ("influxdb3",)
+    tunings = ("tuned", "default")
     server = True
-    url_env: ClassVar[str] = "BENCH_INFLUXDB_URL"
-    default_url: ClassVar[str] = "http://localhost:58181"
+    urls: ClassVar[dict[str, tuple[str, str]]] = {
+        "tuned": ("BENCH_INFLUXDB_URL", "http://localhost:58181"),
+        "default": ("BENCH_INFLUXDB_DEFAULTS_URL", "http://localhost:58182"),
+    }
+    """Per tuning: the variable naming the server, and its default."""
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
         self.database = "bench_" + place.dataset.replace("-", "_")
         self.specs: dict[str, TableSpec] = {}
 
-    @classmethod
-    def url(cls) -> str:
-        """The server's base URL."""
-        return os.environ.get(cls.url_env, cls.default_url).rstrip("/")
+    @property
+    def url(self) -> str:
+        """The server of this tuning."""
+        return server_url(self.tuning)
 
-    @classmethod
-    def request(cls, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> bytes:
-        """One HTTP request to the server; raises with the server's message on an error status."""
-        url = urllib.parse.urlsplit(cls.url())
-        conn = http.client.HTTPConnection(url.hostname or "localhost", url.port or 80, timeout=600)
-        try:
-            conn.request(method, path, body, headers or {})
-            response = conn.getresponse()
-            data = response.read()
-        finally:
-            conn.close()
-        if response.status >= 300:
-            msg = f"{method} {path.partition('?')[0]}: HTTP {response.status}: {data.decode(errors='replace')[:300]}"
-            raise RuntimeError(msg)
-        return data
+    def request(
+        self, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None
+    ) -> bytes:
+        """One HTTP request to this tuning's server."""
+        return request(self.url, method, path, body, headers)
+
+    @override
+    def server_name(self) -> str:
+        return self.name if self.tuned else f"{self.name}-defaults"
 
     @override
     def reset(self) -> None:
@@ -164,12 +162,13 @@ class InfluxDB3(System):
 
     @override
     def state(self) -> dict[str, Any]:
-        return {"database": self.database, "tables": list(self.specs) or self.place.load_state()["tables"]}
+        tables = list(self.specs) or self.place.load_state()["tables"]
+        return {"database": self.database, "url": self.url, "tables": tables}
 
     @override
     def stats(self) -> StorageStats:
         sql = "SELECT count(*) AS files, sum(size_bytes) AS bytes FROM system.parquet_files"
-        files = query(type(self), self.database, sql)
+        files = query(self.url, self.database, sql)
         n = int(files["files"][0].as_py() or 0) if files.num_rows else 0
         size = int(files["bytes"][0].as_py() or 0) if files.num_rows else 0
         return {"objects": n, "bytes": size, "data_files": n, "data_bytes": size}
@@ -177,29 +176,53 @@ class InfluxDB3(System):
     @override
     @classmethod
     def version(cls) -> dict[str, str]:
-        try:
-            info = json.loads(cls.request("GET", "/ping"))
-        except (OSError, RuntimeError):
-            return {"influxdb3": "?"}
-        return {"influxdb3": str(info.get("version", "?"))}
+        return server_version(server_url("tuned"))
+
+    @override
+    def versions(self) -> dict[str, str]:
+        return server_version(self.url)
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
-        return lambda sql: arrow_result(query(cls, state["database"], sql))
+        return lambda sql: arrow_result(query(state["url"], state["database"], sql))
 
 
-class InfluxDB3Defaults(InfluxDB3):
-    """InfluxDB 3 Core as shipped: a query reads at most 432 Parquet files."""
-
-    name = "influxdb3-defaults"
-    title = "InfluxDB 3 Core (default file limit)"
-    url_env = "BENCH_INFLUXDB_DEFAULTS_URL"
-    default_url = "http://localhost:58182"
+def server_url(tuning: str) -> str:
+    """The server of a tuning: its variable, else the port ``infra/servers.sh`` gives it."""
+    env, default = InfluxDB3.urls[tuning]
+    return os.environ.get(env, default).rstrip("/")
 
 
-def query(system: type[InfluxDB3], database: str, sql: str) -> pa.Table:
-    """Runs SQL and returns the result, fetched as Parquet."""
+def server_version(url: str) -> dict[str, str]:
+    """The server's version, or ``?`` when it doesn't answer."""
+    try:
+        info = json.loads(request(url, "GET", "/ping"))
+    except (OSError, RuntimeError):
+        return {"influxdb3": "?"}
+    return {"influxdb3": str(info.get("version", "?"))}
+
+
+def request(
+    base: str, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None
+) -> bytes:
+    """One HTTP request to a server; raises with the server's message on an error status."""
+    url = urllib.parse.urlsplit(base)
+    conn = http.client.HTTPConnection(url.hostname or "localhost", url.port or 80, timeout=600)
+    try:
+        conn.request(method, path, body, headers or {})
+        response = conn.getresponse()
+        data = response.read()
+    finally:
+        conn.close()
+    if response.status >= 300:
+        msg = f"{method} {path.partition('?')[0]}: HTTP {response.status}: {data.decode(errors='replace')[:300]}"
+        raise RuntimeError(msg)
+    return data
+
+
+def query(url: str, database: str, sql: str) -> pa.Table:
+    """Runs SQL on the server at ``url`` and returns the result, fetched as Parquet."""
     body = json.dumps({"db": database, "q": sql, "format": "parquet"}).encode()
-    data = system.request("POST", "/api/v3/query_sql", body, {"Content-Type": "application/json"})
+    data = request(url, "POST", "/api/v3/query_sql", body, {"Content-Type": "application/json"})
     return pq.read_table(io.BytesIO(data)) if data else pa.table({})

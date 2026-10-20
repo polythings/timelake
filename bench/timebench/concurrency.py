@@ -38,6 +38,7 @@ def dashboards(
         "reader": reader,
         "target": place.target.name,
         "dataset": place.dataset,
+        "tuning": place.tuning,
         "queries": queries,
         "seconds": seconds,
     }

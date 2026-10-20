@@ -1,5 +1,6 @@
 # The weekly regression run (spec 44), on the benchmark instance in us-east-2 (bench/infra/remote.sh weekly).
 # Same workloads, scales and systems every week, so the history shows what changed between commits.
+tunings = ["tuned", "default"]  # D23: each system in both, where it has a default yet
 label = "weekly"
 runs = 2
 pace = 1                    # one 5-minute window per second: 3 days of data replay in about 15 minutes per system

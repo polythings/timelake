@@ -53,6 +53,8 @@ class RunRecord(TypedDict, total=False):
     """Package -> version, for Timelake and every system and reader."""
     runs: int
     """Repeat runs per query after the first run."""
+    tuning: str
+    """``tuned`` or ``default`` (D23); absent in runs before 2026-10-20, which count as tuned."""
     live_interval_s: float
     """Seconds between probe rounds during ingest (absent: no probes)."""
     pace_s: float

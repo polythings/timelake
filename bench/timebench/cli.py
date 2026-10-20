@@ -22,7 +22,7 @@ from timebench import BENCH, RUNS
 from timebench.harness import RunSpec, run
 from timebench.queries import SITE_SUITES, described_queries, site_sql
 from timebench.report import Run, history, markdown, runs
-from timebench.systems import systems
+from timebench.systems import TUNINGS, systems
 from timebench.targets import Target
 from timebench.workloads import Workload, workloads
 
@@ -71,6 +71,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     if unknown:
         msg = f"unknown systems {sorted(unknown)} (systems: {', '.join(systems())})"
         raise SystemExit(msg)
+    if untuned := [s for s in names if args.tuning not in systems()[s].tunings]:
+        msg = f"no {args.tuning} configuration yet for {', '.join(untuned)}"
+        raise SystemExit(msg)
     spec = RunSpec(
         workload=workload,
         target=Target(args.target),
@@ -91,20 +94,29 @@ def cmd_run(args: argparse.Namespace) -> None:
         concurrency_seconds=args.concurrency_seconds,
         pace=args.pace,
         variant=args.variant,
+        tuning=args.tuning,
     )
     print(markdown(Run(run(spec))))
 
 
 def cmd_profile(args: argparse.Namespace) -> None:
-    """Runs every entry of a profile (``profiles/<name>.toml``)."""
+    """Runs every entry of a profile (``profiles/<name>.toml``), once per tuning it lists (``tunings``)."""
     profile = tomllib.loads((PROFILES / f"{args.name}.toml").read_text())
-    for entry in profile["run"]:
-        if args.target and entry["target"] != args.target:
-            continue
+    entries = [
+        (entry, tuning)
+        for entry in profile["run"]
+        for tuning in entry.get("tunings", profile.get("tunings", ["tuned"]))
+        if not args.target or entry["target"] == args.target
+    ]
+    for entry, tuning in entries:
+        names = [s for s in entry["systems"] if tuning in systems()[s].tunings]
+        if not [s for s in names if s != "reference"]:
+            continue  # no system has this tuning yet
         spec = RunSpec(
             workload=make_workload(entry["workload"], entry.get("scale"), entry.get("params", {})),
             target=Target(entry["target"]),
-            systems=entry["systems"],
+            systems=names,
+            tuning=tuning,
             runs=entry.get("runs", profile.get("runs", 2)),
             timeout=entry.get("timeout", profile.get("timeout", 600)),
             reference_timeout=entry.get("reference_timeout", profile.get("reference_timeout", 1800)),
@@ -120,7 +132,8 @@ def cmd_profile(args: argparse.Namespace) -> None:
         try:
             print(markdown(Run(run(spec))))
         except Exception as e:  # noqa: BLE001 (one failed entry is reported; the others still run)
-            print(f"PROFILE ENTRY FAILED {entry['workload']} {entry['target']}: {type(e).__name__}: {e}", flush=True)
+            failed = f"{entry['workload']} {entry['target']} {tuning}"
+            print(f"PROFILE ENTRY FAILED {failed}: {type(e).__name__}: {e}", flush=True)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -194,6 +207,7 @@ def main() -> None:
     r.add_argument("--param", action="append", default=[], help="workload parameter key=value (repeatable)")
     r.add_argument("--label", default="", help="free text recorded with the run")
     r.add_argument("--variant", default="", help="names a kind of run kept apart from the others, e.g. bulk")
+    r.add_argument("--tuning", default="tuned", choices=TUNINGS, help="every system's configuration (D23)")
     r.add_argument("--reuse", action="store_true", help="query the tables an earlier run left (no ingest)")
     r.add_argument(
         "--live-interval", type=float, default=0, help="seconds between probe rounds during ingest (0 = no probes)"

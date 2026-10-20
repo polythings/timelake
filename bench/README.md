@@ -49,6 +49,10 @@ uv run timebench history --workload tsbs-iot                  # one line per run
 - **Variants** (`--variant NAME`): a different kind of run of the same workload and target, kept apart in reports and
   on the site. The weekly `bulk` variant loads TSBS DevOps in 1-hour windows as fast as each system commits, with no
   queries (`--checkpoints ""`), and is judged by rows per second.
+- **Tunings** (`--tuning`, a profile's `tunings`; D23 in spec 44): every system runs `tuned` (its docs'
+  recommendations for the workload, precomputation included) and `default` (as installed). A system lists the tunings
+  it has built (`tunings`); a run of another tuning leaves it out. A default system's tables live apart
+  (`<system>-default`), and a default run's file ends in `-default`.
 - **Systems** (`timebench/systems/`), each written and read the way its docs suggest:
 
   | System | Writes | Maintenance | Readers |
@@ -61,14 +65,15 @@ uv run timebench history --workload tsbs-iot                  # one line per run
   | `timescaledb` | `COPY` per commit into hypertables (via a staging table and `ON CONFLICT DO NOTHING` where rows repeat) | convert chunks to the columnstore | `postgres` |
   | `clickhouse` | Arrow inserts into `MergeTree` (`ReplacingMergeTree` where rows repeat) | `OPTIMIZE TABLE … FINAL` | `clickhouse` (with `FINAL`) |
   | `questdb` | QWP (`questdb.connect().dataframe`) into WAL tables, `DEDUP UPSERT KEYS` where rows repeat | none (waits for the WAL) | `questdb` (PGWire) |
-  | `influxdb3`, `influxdb3-defaults` | line protocol over HTTP, 4 concurrent requests | none (Core has no compaction) | `influxdb3` (SQL over HTTP) |
+  | `influxdb3` | line protocol over HTTP, 4 concurrent requests | none (Core has no compaction) | `influxdb3` (SQL over HTTP) |
   | `reference` | a local Parquet file per commit | none | `duckdb`, rows that arrived twice removed |
 
   The database servers run in Docker at pinned versions: `infra/servers.sh up` starts them (data in
   `data/servers/`, ports 55432, 58123, 59900/58812, 58181, 58182), and `eval "$(infra/servers.sh env)"` sets the
   variables the adapters read (`BENCH_TIMESCALEDB_DSN`, `BENCH_CLICKHOUSE_URL`, ...). Each dataset gets its own
-  schema or database that runs drop; QuestDB holds one dataset at a time. `influxdb3` runs with
-  `--query-file-limit` raised, `influxdb3-defaults` as shipped (a query reads at most 432 files). With
+  schema or database that runs drop; QuestDB holds one dataset at a time. `influxdb3` tuned runs with
+  `--query-file-limit` raised (server `influxdb3`), default as shipped (server `influxdb3-defaults`: a query reads at
+  most 432 files). With
   `BENCH_SERVERS` set to `infra/servers.sh`, a run starts each system's server just before that system's turn and
   stops it after, so one server uses the machine at a time; the run file records each server's version.
 - **Targets** (`--target`): `local` (tables under `data/lakes/`), or S3 through `tools/s3proxy` on `localhost:59100`:

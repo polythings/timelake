@@ -52,16 +52,23 @@ class Place:
     dataset: str
     """The workload and scale, e.g. ``tsbs-iot-small``."""
     system: str
+    tuning: str = "tuned"
+    """``tuned`` or ``default`` (``systems.TUNINGS``): a default system's tables live apart from the tuned one's."""
+
+    @property
+    def folder(self) -> str:
+        """The system's folder: its name, with ``-default`` for its default tuning."""
+        return self.system if self.tuning == "tuned" else f"{self.system}-{self.tuning}"
 
     @property
     def local_dir(self) -> Path:
         """Local files of the system: its state, catalogs, and its tables when the target is the local disk."""
-        return LAKES / self.target.name / self.dataset / self.system
+        return LAKES / self.target.name / self.dataset / self.folder
 
     @property
     def prefix(self) -> str:
         """The key prefix of the system's tables in the bucket (S3 targets)."""
-        return f"lakes/{self.dataset}/{self.system}"
+        return f"lakes/{self.dataset}/{self.folder}"
 
     @property
     def root(self) -> str:

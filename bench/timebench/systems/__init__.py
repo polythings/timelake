@@ -106,6 +106,10 @@ DIALECTS: dict[str, Dialect] = {
 """The SQL dialect of each reader."""
 
 
+TUNINGS = ("tuned", "default")
+"""How a system is configured (D23): ``tuned`` as its docs recommend for the workload, ``default`` as installed."""
+
+
 class System(ABC):
     """One system under test, for one dataset on one target."""
 
@@ -116,6 +120,8 @@ class System(ABC):
     """Its readers; the first is the system's own."""
     commands: ClassVar[frozenset[str]] = frozenset()
     """Readers that are their own binary (``reader_command``) instead of Python in the worker (``open_reader``)."""
+    tunings: ClassVar[tuple[str, ...]] = ("tuned",)
+    """The tunings it has built (D23); a run of another tuning leaves it out."""
     server: ClassVar[bool] = False
     """A database server keeps its data on its own disk: the run's target doesn't apply."""
     s3_storage_prices: ClassVar[bool] = True
@@ -124,6 +130,24 @@ class System(ABC):
     def __init__(self, place: Place, namespace: str) -> None:
         self.place = place
         self.namespace = namespace
+
+    @property
+    def tuning(self) -> str:
+        """``default`` (as installed) or ``tuned`` (its docs' recommendations, precomputation included): D23."""
+        return self.place.tuning
+
+    @property
+    def tuned(self) -> bool:
+        """Whether this is the system's tuned configuration."""
+        return self.tuning == "tuned"
+
+    def server_name(self) -> str:
+        """The server ``infra/servers.sh`` starts for this system and tuning (database servers)."""
+        return self.name
+
+    def versions(self) -> dict[str, str]:
+        """The versions of the software this system and tuning runs."""
+        return type(self).version()
 
     @property
     def target(self) -> Target:
@@ -210,7 +234,7 @@ def systems() -> dict[str, type[System]]:
     """All systems by name."""
     from timebench.systems.clickhouse import ClickHouse
     from timebench.systems.iceberg import Iceberg, S3Tables
-    from timebench.systems.influxdb3 import InfluxDB3, InfluxDB3Defaults
+    from timebench.systems.influxdb3 import InfluxDB3
     from timebench.systems.lance import Lance
     from timebench.systems.parquet import ParquetFiles
     from timebench.systems.questdb import QuestDB
@@ -231,6 +255,5 @@ def systems() -> dict[str, type[System]]:
             ClickHouse,
             QuestDB,
             InfluxDB3,
-            InfluxDB3Defaults,
         )
     }

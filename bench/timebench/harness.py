@@ -105,6 +105,8 @@ class RunSpec:
     """How long each client count runs."""
     variant: str = ""
     """Names a kind of run of the same workload and target (e.g. ``bulk``), kept apart in reports and on the site."""
+    tuning: str = "tuned"
+    """Every system's configuration in this run (``systems.TUNINGS``, D23)."""
     pace: float = 0
     """At least this many seconds between arrivals (0 = as fast as the system commits), so the replay is closer to
     real time and probes have something to see."""
@@ -114,7 +116,7 @@ class RunSpec:
         """The adapter of one system, created on first use."""
         if name not in self._systems:
             cls = systems()[name]
-            place = Place(self.target, self.workload.dataset, name)
+            place = Place(self.target, self.workload.dataset, name, self.tuning)
             self._systems[name] = cls(place, self.workload.namespace)
         return self._systems[name]
 
@@ -156,7 +158,7 @@ def run(spec: RunSpec) -> Path:
     else:
         # One system at a time, start to finish, so a database server has the machine to itself (``server``).
         for s in spec.systems:
-            with server(s, path) as up:
+            with server(spec.system(s), path) as up:
                 if up:
                     results += run_system(spec, path, s, now, results)
 
@@ -203,26 +205,27 @@ def run_dashboards(spec: RunSpec, path: Path, name: str, now: int | None) -> Non
 
 
 @contextlib.contextmanager
-def server(name: str, path: Path) -> Generator[bool]:
+def server(system: System, path: Path) -> Generator[bool]:
     """Starts a database system's server before it runs and stops it after; yields whether the system can run.
 
     Only when ``BENCH_SERVERS`` names ``infra/servers.sh``. The server's versions are recorded once it's up.
     """
     script = os.environ.get(SERVERS_ENV)
-    managed = bool(script) and systems()[name].server and name != REFERENCE
+    name = system.name
+    managed = bool(script) and system.server and name != REFERENCE
     if managed:
-        up = subprocess.run([str(script), "up", name], capture_output=True, text=True, check=False)
+        up = subprocess.run([str(script), "up", system.server_name()], capture_output=True, text=True, check=False)
         if up.returncode != 0:
             error = (up.stderr.strip().splitlines() or ["?"])[-1]
             record(path, {"kind": "ingest", "system": name, "status": "error", "error": f"server: {error}"[:300]})
             yield False
             return
-        append_jsonl(path, {"kind": "versions", "system": name, "versions": systems()[name].version()})
+        append_jsonl(path, {"kind": "versions", "system": name, "versions": system.versions()})
     try:
         yield True
     finally:
         if managed:
-            subprocess.run([str(script), "down", name], capture_output=True, check=False)
+            subprocess.run([str(script), "down", system.server_name()], capture_output=True, check=False)
 
 
 def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
@@ -231,11 +234,12 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
     versions: dict[str, str] = {}
     for name in spec.systems:
         if not (os.environ.get(SERVERS_ENV) and systems()[name].server and name != REFERENCE):  # recorded once up
-            versions.update(systems()[name].version())
+            versions.update(spec.system(name).versions())
     header: RunRecord = {
         "kind": "run",
         "id": f"{started:%Y%m%dT%H%M%SZ}-{workload.dataset}-{target.name}"
-        + (f"-{spec.variant}" if spec.variant else ""),
+        + (f"-{spec.variant}" if spec.variant else "")
+        + ("" if spec.tuning == "tuned" else f"-{spec.tuning}"),
         "workload": workload.name,
         "scale": workload.scale,
         "params": {**workload.params(), "span_days": workload.span_days},
@@ -249,6 +253,7 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
         "readers": {s: spec.readers_of(s) for s in spec.systems},
         "versions": versions,
         "runs": spec.runs,
+        "tuning": spec.tuning,
     }
     if target.s3 and spec.ttfb_ms is not None:
         header["ttfb_ms"] = spec.ttfb_ms
@@ -579,7 +584,13 @@ def measure(spec: RunSpec, system: System, reader: str, query: Query, at: At) ->
     if reader in system.commands:
         cmd = type(system).reader_command(reader, place, place.load_state(), spec.runs)
     else:
-        job = {"system": system.name, "reader": reader, "target": place.target.name, "dataset": place.dataset}
+        job = {
+            "system": system.name,
+            "reader": reader,
+            "target": place.target.name,
+            "dataset": place.dataset,
+            "tuning": place.tuning,
+        }
         cmd = command({**job, "runs": spec.runs})
     before = PROXY.stats() if counted(system) else None
     try:
