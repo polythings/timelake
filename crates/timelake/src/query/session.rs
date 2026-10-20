@@ -197,7 +197,10 @@ impl Session {
             let interval = self.version_check_interval();
             self.catalog.set_interval(interval);
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
-            futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None))).await;
+            if self.rollup_routing() {
+                futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None)))
+                    .await;
+            }
         }
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)
@@ -270,6 +273,14 @@ impl Session {
             Some((namespace, table)) => TableName::new(namespace, table),
             None => TableName::new(&self.ctx.state().config().options().catalog.default_schema, name),
         }
+    }
+
+    /// Whether the session lets queries be routed to rollups (`timelake.rollup_routing`, on unless
+    /// set off).
+    fn rollup_routing(&self) -> bool {
+        let state = self.ctx.state();
+        let settings = state.config().options().extensions.get::<SessionSettings>();
+        settings.and_then(|s| s.flag(property::ROLLUP_ROUTING)) != Some(false)
     }
 
     /// The session's `version-check-interval`, if it sets one.
@@ -400,6 +411,26 @@ mod tests {
         assert_eq!(batch.num_columns(), 4, "time, device, value and the insertion time");
         let values = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(values.values(), &[2.0, 4.0]);
+    }
+
+    /// With rollup routing off, a query doesn't look up the table's rollups.
+    #[tokio::test]
+    async fn no_routes_are_prepared_with_routing_off() {
+        let (lake, _store) = faulty_lake();
+        let t = lake.create_table("iot.r", &crate::testing::schema(), crate::testing::opts()).await.unwrap();
+        t.append(&[crate::testing::batch(&[(T0, 1, 1.0)])], crate::AppendOptions::default()).await.unwrap();
+        let s = Session::new(lake);
+        let create = "CREATE MATERIALIZED ROLLUP iot.r_1h AS SELECT device, time_bucket(INTERVAL '1 hour', time) AS \
+                      bucket, count(value) AS n FROM iot.r GROUP BY device, bucket";
+        s.sql(create).await.unwrap().collect().await.unwrap();
+        let query = "SELECT device, time_bucket(INTERVAL '1 hour', time) AS b, count(value) FROM iot.r GROUP BY 1, 2";
+        let prepared = || s.routes.read().unwrap().contains_key(&"iot.r".parse::<TableName>().unwrap());
+        s.sql("SET timelake.rollup_routing = false").await.unwrap();
+        s.sql(query).await.unwrap().collect().await.unwrap();
+        assert!(!prepared());
+        s.sql("SET timelake.rollup_routing = true").await.unwrap();
+        s.sql(query).await.unwrap().collect().await.unwrap();
+        assert!(prepared());
     }
 
     #[tokio::test]

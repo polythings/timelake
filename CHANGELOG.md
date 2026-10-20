@@ -157,6 +157,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - `time_buckets`, `gap_count`, `gap_seconds` and the flatline aggregates overflowed (a panic in debug builds, wrong
   buckets otherwise) on intervals or timestamps beyond the microsecond range, such as `INTERVAL '200000000 days'`.
   They are now an error.
+- With `SET timelake.rollup_routing = false`, planning a query still loaded the table's rollups, a few requests each,
+  and so did every `CREATE MATERIALIZED ROLLUP`. They no longer do.
 
 ### Changed
 
