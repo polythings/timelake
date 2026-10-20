@@ -51,11 +51,13 @@ export class Table {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Parses the manifest list; returns the paths of the data manifests to fetch and add.
+     * Parses the manifest list; returns the paths of the data manifests to fetch and add. Throws
+     * for a table with delete files, which this reader doesn't apply.
      */
     addManifestList(bytes: Uint8Array): string[];
     /**
-     * Adds the live data files of one data manifest.
+     * Adds the live data files of one data manifest. Add them in the order `addManifestList`
+     * returned them: entries take their sequence numbers from the manifest's.
      */
     addManifest(bytes: Uint8Array): void;
     /**
@@ -77,7 +79,8 @@ export class Table {
      */
     openFile(path: string, size: number): ParquetFile | undefined;
     /**
-     * Data files that may contain rows matching `query`, in the same shape as `files()`.
+     * Data files that may contain rows matching `query`, in the same shape as `files()`. Throws
+     * for a query naming a column the table doesn't have.
      */
     planFiles(query: any): any;
     /**

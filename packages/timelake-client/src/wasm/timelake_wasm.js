@@ -163,7 +163,8 @@ export class Table {
         wasm.__wbg_table_free(ptr, 0);
     }
     /**
-     * Parses the manifest list; returns the paths of the data manifests to fetch and add.
+     * Parses the manifest list; returns the paths of the data manifests to fetch and add. Throws
+     * for a table with delete files, which this reader doesn't apply.
      * @param {Uint8Array} bytes
      * @returns {string[]}
      */
@@ -179,7 +180,8 @@ export class Table {
         return v2;
     }
     /**
-     * Adds the live data files of one data manifest.
+     * Adds the live data files of one data manifest. Add them in the order `addManifestList`
+     * returned them: entries take their sequence numbers from the manifest's.
      * @param {Uint8Array} bytes
      */
     addManifest(bytes) {
@@ -283,7 +285,8 @@ export class Table {
         return ret[0] === 0 ? undefined : ParquetFile.__wrap(ret[0]);
     }
     /**
-     * Data files that may contain rows matching `query`, in the same shape as `files()`.
+     * Data files that may contain rows matching `query`, in the same shape as `files()`. Throws
+     * for a query naming a column the table doesn't have.
      * @param {any} query
      * @returns {any}
      */
@@ -774,7 +777,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 291, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 293, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_bedb11be96d84d49___convert__closures_____invoke___wasm_bindgen_bedb11be96d84d49___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_bedb11be96d84d49___JsError___true_);
             return ret;
         },
