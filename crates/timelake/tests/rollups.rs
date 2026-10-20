@@ -64,6 +64,17 @@ const QUERIES: &[(&str, bool)] = &[
          WHERE time > now() - INTERVAL '400 days' GROUP BY 1, 2",
         true,
     ),
+    // The selection aggregates are ordered first_value and last_value; value_at's filter keeps it on the raw rows.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, first(time, value), last(time, value) FROM iot.r
+         GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, value_at(time, value, TIMESTAMP '2026-01-01 10:30:00'), asof(time, value, '2026-01-02 00:00:00')
+         FROM iot.r GROUP BY device",
+        false,
+    ),
     // Keys from another table (`IN (SELECT …)`, planned as a semi-join): the rollup's rows are kept the same way.
     (
         "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), count(*) FROM iot.r

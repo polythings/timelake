@@ -104,6 +104,9 @@ impl Session {
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
         ctx.register_udaf(super::m4::m4_udaf());
+        for f in super::selection::udafs() {
+            ctx.register_udaf(f);
+        }
         ctx.register_udtf("time_buckets", Arc::new(super::gapfill::TimeBuckets));
         for f in super::gapfill::window_udfs() {
             ctx.register_udwf(f);

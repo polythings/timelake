@@ -356,9 +356,9 @@
     "title": "Function library",
     "area": "SQL functions",
     "status": "in-progress",
-    "updated": "2026-10-19",
+    "updated": "2026-10-20",
     "versions": ["0.1.0", "0.7.0", "unreleased"],
-    "summary": "Time-series SQL functions with descriptive names and pandas aliases: bucketing, gap filling, selection, statistics, quantiles, changes, time-weighted aggregates, downsampling, rolling windows. Functions with a design of their own have their own spec; the rest are listed here with their issues. Built so far: `time_bucket`, `time_buckets`, the fills, the signal aggregates, the gap aggregates and `m4`.",
+    "summary": "Time-series SQL functions with descriptive names and pandas aliases: bucketing, gap filling, selection, statistics, quantiles, changes, time-weighted aggregates, downsampling, rolling windows. Functions with a design of their own have their own spec; the rest are listed here with their issues. Built so far: `time_bucket`, `time_buckets`, the fills, the signal aggregates, the gap aggregates, `m4`, and `first`, `last` and `value_at`.",
     "related": [29, 30, 31, 33],
     "issues": [124, 125, 126, 127],
     "milestones": ["time-series-sql"]

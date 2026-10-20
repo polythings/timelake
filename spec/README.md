@@ -103,7 +103,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 
 | # | Spec | Status | Versions | Updated |
 |---:|---|---|---|---|
-| 28 | [Function library](0028-function-library.md) | In progress | 0.1.0, 0.7.0, unreleased | 2026-10-19 |
+| 28 | [Function library](0028-function-library.md) | In progress | 0.1.0, 0.7.0, unreleased | 2026-10-20 |
 | 29 | [Time buckets and gap filling](0029-gap-filling.md) | Done | 0.1.0, unreleased | 2026-10-19 |
 | 30 | [Signal aggregates](0030-signal-aggregates.md) | Done | 0.7.0, unreleased | 2026-10-19 |
 | 31 | [Downsampling with m4](0031-m4.md) | Done | 0.7.0 | 2026-10-18 |

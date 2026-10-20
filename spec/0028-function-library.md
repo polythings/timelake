@@ -3,7 +3,7 @@ number: 28
 title: Function library
 area: SQL functions
 status: in-progress
-updated: 2026-10-19
+updated: 2026-10-20
 versions: [0.1.0, 0.7.0, unreleased]
 related: [29, 30, 31, 33]
 issues: [124, 125, 126, 127]
@@ -11,7 +11,7 @@ issues: [124, 125, 126, 127]
 
 # 28. Function library
 
-**In progress** · updated 2026-10-19 · versions 0.1.0, 0.7.0, unreleased · milestone: [Time-series SQL](milestones/time-series-sql.md)
+**In progress** · updated 2026-10-20 · versions 0.1.0, 0.7.0, unreleased · milestone: [Time-series SQL](milestones/time-series-sql.md)
 · related: [spec 29](0029-gap-filling.md), [spec 30](0030-signal-aggregates.md), [spec 31](0031-m4.md), [spec 33](0033-duckdb-extension.md)
 
 ## Summary
@@ -19,7 +19,7 @@ issues: [124, 125, 126, 127]
 Time-series SQL functions with descriptive names and pandas aliases: bucketing, gap filling, selection, statistics,
 quantiles, changes, time-weighted aggregates, downsampling, rolling windows. Functions with a design of their own have
 their own spec; the rest are listed here with their issues. Built so far: `time_bucket`, `time_buckets`, the fills,
-the signal aggregates, the gap aggregates and `m4`.
+the signal aggregates, the gap aggregates, `m4`, and `first`, `last` and `value_at`.
 
 ## Design
 
@@ -35,7 +35,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | States and uptime | Time in a state and uptime: `integral(time, condition)` and `time_weighted_mean(time, condition)`, a condition counting 1 while true ([spec 30](0030-signal-aggregates.md); instead of `state_duration` and `uptime`) | Built |
 | Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points ([spec 31](0031-m4.md)) | Built |
 | Gaps | `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how often and how long the readings stopped for longer than a threshold ([spec 30](0030-signal-aggregates.md)) | Built |
-| Selection | `first`, `last`, `value_at`, the latest value at or before a time (`asof`); ASOF JOIN | Planned (#124) |
+| Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built, names for ordered `first_value` and `last_value`; ASOF JOIN planned (#124) |
 | Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) | Planned (#125) |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Planned (#126); DataFusion has most under SQL names |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate` (per second) | Planned (#126) |
@@ -72,3 +72,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 - 2026-10-19: `integral`, the counters, conditions, `time_buckets` and the fills; moved from SPEC.md into spec 24,
   then into this spec when the specs were regrouped one per feature.
 - 2026-10-19: `gap_count` and `gap_seconds` (spec 30).
+- 2026-10-20: `first`, `last` and `value_at` (`asof`) built (#124).

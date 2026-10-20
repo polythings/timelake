@@ -27,6 +27,7 @@ mod rewrite;
 mod rollup;
 mod route;
 mod runs;
+mod selection;
 mod series_order;
 mod session;
 mod settings;

@@ -80,6 +80,23 @@ reading, so a silence before the first reading or after the last isn't counted, 
 order the same way. On the industrial benchmark, the gaps of 100 one-second tags took 77 ms over a day and 1.4 s over
 30 days, against 226 ms and 17.8 s as a `lead()` window query, with the same answers.
 
+## First, last, and the value at a time
+
+`first(time, value)` and `last(time, value)` give a group's value at its earliest and latest time.
+`value_at(time, value, at)` (alias `asof`, as in pandas) gives the value of the latest row at or before `at`, or null
+when the group has none by then:
+
+```sql
+SELECT tag, last(time, value) AS now, value_at(time, value, TIMESTAMP '2026-01-30 06:00:00') AS at_shift_start
+FROM iot.readings
+WHERE time >= TIMESTAMP '2026-01-30 00:00:00'
+GROUP BY tag
+```
+
+The time comes first, as in the other signal functions (TimescaleDB's `first` and `last` take the value first). They
+are names for `first_value(value ORDER BY time)` and `last_value(value ORDER BY time)`, the latter filtered to
+`time <= at` for `value_at`, so a rollup that stores `first` or `last` answers them too.
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is
