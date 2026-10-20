@@ -305,11 +305,14 @@ export function sections(run: Run, workload: Workload): Section[] {
   return out
 }
 
+/** A section's first runs over time: the geometric mean over its queries, and each query's, per engine. */
+export type SectionHistory = { all: HistoryPoint[]; queries: Record<string, HistoryPoint[]> }
+
 /**
- * Each query's first run over time, per engine, at one suite and checkpoint, across the runs of `run`'s workload,
- * target and variant: query -> one point per run.
+ * A section's history at one suite and checkpoint, across the runs of `run`'s workload, target, variant and tuning:
+ * one point per run. An engine's mean is drawn for a run only where it answered every query that run had.
  */
-export function queryHistory(runs: Run[], run: Run, suite: string, checkpoint: string): Record<string, HistoryPoint[]> {
+export function sectionHistory(runs: Run[], run: Run, suite: string, checkpoint: string): SectionHistory {
   const same = runs.filter(
     (r) =>
       r.header.workload === run.header.workload &&
@@ -317,20 +320,25 @@ export function queryHistory(runs: Run[], run: Run, suite: string, checkpoint: s
       r.header.variant === run.header.variant &&
       tuningOf(r) === tuningOf(run),
   )
-  const out: Record<string, HistoryPoint[]> = {}
+  const out: SectionHistory = { all: [], queries: {} }
   for (const r of same) {
+    const at = { run: r.header.id, date: r.header.started.slice(0, 10), commit: r.header.commit }
+    const here = r.queries.filter((q) => q.suite === suite && q.checkpoint === checkpoint)
+    if (here.length === 0) continue
     const points = new Map<string, HistoryPoint>()
-    for (const q of r.queries) {
-      if (q.suite !== suite || q.checkpoint !== checkpoint || q.status !== "ok") continue
-      const point: HistoryPoint = points.get(q.query) ?? {
-        run: r.header.id,
-        date: r.header.started.slice(0, 10),
-        commit: r.header.commit,
-      }
+    const times = new Map<string, number[]>()
+    for (const q of here) {
+      if (q.status !== "ok") continue
+      const point: HistoryPoint = points.get(q.query) ?? { ...at }
       point[engineOf(q)] = q.times[0]
       points.set(q.query, point)
+      times.set(engineOf(q), [...(times.get(engineOf(q)) ?? []), q.times[0]])
     }
-    for (const [query, point] of points) (out[query] ??= []).push(point)
+    for (const [query, point] of points) (out.queries[query] ??= []).push(point)
+    const asked = new Set(here.map((q) => q.query)).size
+    const all: HistoryPoint = { ...at }
+    for (const [engine, ts] of times) if (ts.length === asked) all[engine] = gm(ts)
+    out.all.push(all)
   }
   return out
 }

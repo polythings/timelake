@@ -14,6 +14,27 @@ const SCALE = 40
 /** Results within 5% of the fastest get no multiplier. */
 const SAME_AS_FASTEST = 1.05
 
+/** A card's heading: a title, a control at its right such as a metric switch, and one muted note. */
+export function PanelHeader({
+  title,
+  note,
+  action,
+}: {
+  title: React.ReactNode
+  note?: React.ReactNode
+  action?: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <h3 className="text-lg font-normal">{title}</h3>
+        {action}
+      </div>
+      {note && <p className="text-xs text-muted-foreground">{note}</p>}
+    </div>
+  )
+}
+
 /** A card in the benchmark pages' style: a title, one muted note, then its content. */
 export function Panel({
   title,
@@ -24,20 +45,13 @@ export function Panel({
 }: {
   title: React.ReactNode
   note?: React.ReactNode
-  /** A control at the title's right, such as a metric switch. */
   action?: React.ReactNode
   children: React.ReactNode
   className?: string
 }) {
   return (
     <div className={`flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-6 ${className ?? ""}`}>
-      <div className="flex flex-col gap-0.5">
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-          <h3 className="text-lg font-normal">{title}</h3>
-          {action}
-        </div>
-        {note && <p className="text-xs text-muted-foreground">{note}</p>}
-      </div>
+      <PanelHeader title={title} note={note} action={action} />
       {children}
     </div>
   )

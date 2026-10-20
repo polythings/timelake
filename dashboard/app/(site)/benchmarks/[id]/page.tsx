@@ -26,7 +26,7 @@ import {
   latestByTarget,
   liveRows,
   loadRuns,
-  queryHistory,
+  sectionHistory,
   runInfo,
   runKey,
   runLabel,
@@ -111,7 +111,7 @@ async function Results({ workload }: { workload: Workload }) {
     for (const s of sections(r, workload)) {
       const key = `${s.suite}|${s.checkpoint}`
       const entry = querySections.get(key) ?? { section: s, variants: [] }
-      const results = <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} />
+      const results = <SectionResults section={s} history={sectionHistory(runs, r, s.suite, s.checkpoint)} />
       entry.variants.push({
         run: r,
         node:
