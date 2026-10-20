@@ -88,7 +88,7 @@ export function SectionResults({ section, history }: { section: Section; history
   const [chosen, setMetric] = useState<Metric>("time")
   const metric = options.some((o) => o.value === chosen) ? chosen : "time"
   const panel = useId()
-  const columns = "grid-cols-[minmax(0,1fr)_4rem_3.5rem_1rem] lg:grid-cols-[minmax(0,1fr)_4rem_3.5rem]"
+  const columns = "grid-cols-[minmax(0,1fr)_5rem_3.5rem_1rem] lg:grid-cols-[minmax(0,1fr)_5rem_3.5rem]"
   return (
     <div
       className="grid gap-x-6 rounded-lg border bg-card p-4 sm:p-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:[grid-template-rows:repeat(var(--rows),auto)_1fr]"

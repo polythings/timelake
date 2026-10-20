@@ -39,7 +39,7 @@ import {
   type Section,
   type Workload,
 } from "@/lib/benchmarks"
-import { formatBytes, formatNumber, formatTime } from "@/lib/format"
+import { formatBytes, formatNumber, formatTime, formatUsd } from "@/lib/format"
 import { REPO_URL } from "@/lib/site"
 import { cn } from "@/lib/utils"
 
@@ -732,7 +732,7 @@ function ConcurrencyPanel({ run }: { run: Run }) {
   )
 }
 
-const usd = (x: number | null) => (x == null ? "—" : x < 0.01 ? `$${x.toFixed(4)}` : `$${x.toFixed(2)}`)
+const usd = (x: number | null) => (x == null ? "—" : formatUsd(x))
 
 /** What the object-store traffic and storage cost at list prices. */
 function CostPanel({ run }: { run: Run }) {
@@ -750,7 +750,7 @@ function CostPanel({ run }: { run: Run }) {
             <TableHead className={FIRST}>System</TableHead>
             <TableHead className="text-right">Ingest, per month</TableHead>
             <TableHead className="text-right">Storage, per month</TableHead>
-            <TableHead className="text-right">1M queries</TableHead>
+            <TableHead className="text-right">Per query</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -761,7 +761,7 @@ function CostPanel({ run }: { run: Run }) {
               </TableCell>
               <TableCell className="text-right font-mono tabular-nums">{usd(r.ingestMonth)}</TableCell>
               <TableCell className="text-right font-mono tabular-nums">{usd(r.storageMonth)}</TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{usd(r.perMillionQueries)}</TableCell>
+              <TableCell className="text-right font-mono tabular-nums">{usd(r.perQuery)}</TableCell>
             </TableRow>
           ))}
         </TableBody>

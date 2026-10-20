@@ -119,7 +119,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - The website's roadmap is a board with a column per status and a small card per milestone; a milestone's page has no
   sidebar. The benchmarks page lists the benchmarks in a sidebar and shows each one's query times after maintenance,
   with the rest on its own page. The requests chart is drawn complete instead of played. The home page no longer has
-  a benchmarks section.
+  a benchmarks section. Query cost is shown for one query (`$0.000021`) instead of for a million.
 - Setting `newest-first` also covers the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket with a
   limit: older time partitions are skipped once they can't hold a row of those buckets. TSBS DevOps
   `groupby-orderby-limit`: 254 → 115 ms.

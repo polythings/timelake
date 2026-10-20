@@ -17,6 +17,13 @@ export function formatNumber(n: number): string {
   return new Intl.NumberFormat("en-US").format(n)
 }
 
+/** Dollars with cents from a dollar up ("$2.40"), below that to two significant digits ("$0.023", "$0.000021"). */
+export function formatUsd(n: number): string {
+  if (n === 0) return "$0"
+  if (n >= 1) return `$${n.toFixed(2)}`
+  return `$${n.toLocaleString("en-US", { minimumSignificantDigits: 2, maximumSignificantDigits: 2 })}`
+}
+
 /** 1234567 → "1.2M". */
 export function formatCompact(n: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n)

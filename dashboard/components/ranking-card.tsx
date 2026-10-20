@@ -7,7 +7,7 @@ import { DotGrid } from "@/components/dots"
 import { EntryLabel } from "@/components/entry-label"
 import { Segmented } from "@/components/segmented"
 import { type Rank, type Ranking, SYSTEM_COLORS, entryAnchor, entryDescription } from "@/lib/bench-systems"
-import { formatBytes, formatCompact, formatTime } from "@/lib/format"
+import { formatBytes, formatCompact, formatTime, formatUsd } from "@/lib/format"
 
 /** Columns of squares in the longest bar of a card. */
 const SCALE = 40
@@ -93,7 +93,7 @@ export function RankingBars({
         return (
           <li
             key={r.key}
-            className="grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,12rem)_4.5rem_minmax(0,1fr)]"
+            className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,12rem)_5rem_minmax(0,1fr)]"
           >
             <EntryLabel
               label={r.label}
@@ -164,14 +164,14 @@ const METRICS: { key: Metric; label: string; note: string }[] = [
   {
     key: "usd",
     label: "Cost",
-    note: "what a million of these queries pay for object-storage requests at list prices; machines and storage not included",
+    note: "what one query pays for object-storage requests at list prices, first run; machines and storage not included",
   },
   { key: "bytes", label: "Data", note: "bytes read from object storage for one query, first run" },
 ]
 
 const UNITS: Record<Exclude<Metric, "time">, Ranking["unit"]> = {
   requests: "requests",
-  usd: "usd per million",
+  usd: "usd",
   bytes: "bytes",
 }
 
@@ -182,8 +182,8 @@ export function formatRankValue(v: number, unit: Ranking["unit"]): string {
       return `${formatCompact(v)}/s`
     case "requests":
       return Math.round(v).toLocaleString("en-US")
-    case "usd per million":
-      return `$${v < 10 ? v.toFixed(2) : Math.round(v)}`
+    case "usd":
+      return formatUsd(v)
     case "bytes":
       return formatBytes(Math.round(v))
     case "milliseconds":
@@ -196,7 +196,7 @@ export function formatRankValue(v: number, unit: Ranking["unit"]): string {
 /** The ranking by `metric`: its rows that measured it, fewest first. */
 export function byMetric(ranking: Ranking, metric: Metric): Ranking {
   if (metric === "time") return ranking
-  const of = (r: Rank) => (metric === "usd" ? (r.usd ?? NaN) * 1e6 : metric === "requests" ? r.requests : r.bytes)
+  const of = (r: Rank) => (metric === "usd" ? (r.usd ?? NaN) : metric === "requests" ? r.requests : r.bytes)
   const rows = ranking.rows
     .filter((r) => Number.isFinite(of(r)))
     .map((r) => ({ ...r, value: of(r) ?? 0 }))

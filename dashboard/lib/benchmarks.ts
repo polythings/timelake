@@ -569,12 +569,12 @@ export type CostRow = {
   system: string
   ingestMonth: number | null
   storageMonth: number | null
-  perMillionQueries: number | null
+  perQuery: number | null
 }
 
 /**
  * At the store's list prices: ingest requests scaled to a month at the run's data rate, storage after maintenance per
- * month, and a million first-run queries on the system's own reader after maintenance.
+ * month, and one first-run query (the mean over the queries) on the system's own reader after maintenance.
  */
 export function costRows(run: Run): CostRow[] {
   const span = Number(run.header.params.span_days ?? 3)
@@ -590,9 +590,9 @@ export function costRows(run: Run): CostRow[] {
       system,
       ingestMonth: ingest?.usd != null ? (ingest.usd * 30) / span : null,
       storageMonth: (maintain ?? ingest)?.storage_usd_month ?? null,
-      perMillionQueries: costs.length ? (costs.reduce((a, b) => a + b, 0) / costs.length) * 1e6 : null,
+      perQuery: costs.length ? costs.reduce((a, b) => a + b, 0) / costs.length : null,
     }
-    if (row.ingestMonth != null || row.storageMonth != null || row.perMillionQueries != null) rows.push(row)
+    if (row.ingestMonth != null || row.storageMonth != null || row.perQuery != null) rows.push(row)
   }
   return rows
 }

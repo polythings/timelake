@@ -214,7 +214,7 @@ export type Rank = {
 export type Ranking = {
   title: string
   note: string
-  unit: "seconds" | "milliseconds" | "rows/s" | "requests" | "usd per million" | "bytes"
+  unit: "seconds" | "milliseconds" | "rows/s" | "requests" | "usd" | "bytes"
   /** Rows come best first; for rates, higher is better. */
   higherIsBetter?: boolean
   /** How many queries each value is over (a geometric mean), where it is one. */

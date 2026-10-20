@@ -110,7 +110,7 @@ export const BENCHMARKS: Benchmark[] = [
           "Commit time: the median and 95th percentile of the 1,728 commits.",
           "While ingesting: every 15 seconds a fresh reader runs the 5 single-truck and fleet queries (the dashboard) and checks the newest row it sees.",
           "Concurrent dashboards: 1, 4, and 16 clients running the dashboard queries for 30 seconds each, after maintenance.",
-          "Cost on AWS: ingest requests per month at this data rate, storage per month, and a million queries, at S3 list prices.",
+          "Cost on AWS: ingest requests per month at this data rate, storage per month, and one query, at S3 list prices.",
           "Storage after maintenance: files and bytes.",
           "On S3: requests and bytes per query and per phase.",
         ],
