@@ -7,6 +7,7 @@ import { cacheLife } from "next/cache"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
+import { z } from "zod"
 
 import { dotPaper } from "@/components/dot-paper"
 import { GithubIcon } from "@/components/github-icon"
@@ -21,16 +22,18 @@ import { StripChart } from "@/components/lab/strip-chart"
 import { type Snapshot, TimeTravel } from "@/components/lab/time-travel"
 import { Race, type Racer } from "@/components/race"
 import { Button } from "@/components/ui/button"
+import { SYSTEM_ORDER, TIMELAKE_ENGINE, systemColor, systemLabel } from "@/lib/bench-systems"
 import {
-  SYSTEMS,
-  SYSTEM_COLORS,
-  engineLabel,
-  latestByTarget,
+  lastLoc,
+  lastLocRacers,
   loadRuns,
+  newestRun,
+  queriesRankingId,
   rankings,
+  runDate,
   targetLabel,
-  tuningOf,
 } from "@/lib/benchmarks"
+import { formatNumber } from "@/lib/format"
 import { REPO_URL } from "@/lib/site"
 
 /** Visual ideas for the home page, side by side: not linked, not indexed, and 404 outside local development. */
@@ -215,9 +218,7 @@ export default function Lab() {
 
 /** The newest weekly run of TSBS IoT on AWS S3. */
 async function latestS3() {
-  return latestByTarget(await loadRuns(), "tsbs-iot").find(
-    (r) => r.header.target === "aws-s3" && !r.header.variant && tuningOf(r) === "tuned",
-  )
+  return newestRun(await loadRuns(), "tsbs-iot", "aws-s3")
 }
 
 /** The same run as still pictures: objects in the bucket, every query, and requests and bytes per query. */
@@ -276,18 +277,15 @@ async function Kit() {
   const runs = await loadRuns()
   const run = await latestS3()
   const ranked = run ? rankings(run) : []
-  const own = (prefix: string) => ranked.find((r) => r.title.startsWith(prefix))?.rows.find((r) => r.timelake)
-  const fresh = ranked.find((r) => r.title.startsWith("Queries, right"))?.rows ?? []
+  const own = (id: string) => ranked.find((r) => r.id === id)?.rows.find((r) => r.timelake)
+  const fresh = ranked.find((r) => r.id === queriesRankingId("ingested"))?.rows ?? []
   const freshOwn = fresh.find((r) => r.timelake)?.value
   const others = fresh.filter((r) => r.system !== "timelake").map((r) => r.value)
-  const lastLoc = (engine: string) =>
-    run?.queries.find(
-      (q) => `${q.system}+${q.reader}` === engine && q.query === "last-loc" && q.checkpoint === "ingested",
-    )
-  const mine = lastLoc("timelake+timelake")
-  const iceberg = lastLoc("iceberg+duckdb")
-  const maintained = own("Queries, after")?.value
-  const commit = own("Commit")?.value
+  const raced = run ? lastLoc(run) : []
+  const mine = raced.find((x) => x.engine === TIMELAKE_ENGINE)?.query
+  const iceberg = raced.find((x) => x.engine === "iceberg+duckdb")?.query
+  const maintained = own(queriesRankingId("maintained"))?.value
+  const commit = own("commit")?.value
   const stats: Stat[] = [
     maintained && {
       value: `${Math.round(maintained * 1000)} ms`,
@@ -302,8 +300,8 @@ async function Kit() {
       },
     mine?.requests && {
       value: `${mine.requests[0]} req`,
-      label: `Latest position of ${mine.rows?.toLocaleString("en")} trucks`,
-      note: `Iceberg + DuckDB: ${iceberg?.requests?.[0]?.toLocaleString("en")} requests.`,
+      label: `Latest position of ${mine.rows == null ? "every" : formatNumber(mine.rows)} trucks`,
+      note: `Iceberg + DuckDB: ${formatNumber(iceberg?.requests?.[0] ?? 0)} requests.`,
     },
     commit && { value: `${Math.round(commit)} ms`, label: "Median commit", note: "While streaming to S3." },
   ].filter((s): s is Stat => !!s)
@@ -312,7 +310,7 @@ async function Kit() {
   const logged: LoggedRun[] = runs
     .map((r) => ({
       id: r.header.id,
-      date: r.header.started.slice(0, 10),
+      date: runDate(r),
       target: targetLabel(r.header.target),
       workload: r.header.workload,
       color: TARGET_COLORS[r.header.target] ?? "var(--chart-2)",
@@ -359,15 +357,15 @@ async function Kit() {
             total={1000}
             perRow={50}
             litColor="var(--primary)"
-            restColor={SYSTEM_COLORS.iceberg ?? "var(--chart-3)"}
+            restColor={systemColor("iceberg")}
           >
             <p>
-              The block is the {(iceBytes / 1e6).toFixed(0)} MB that Iceberg + DuckDB read; each square is a thousandth
-              of it.
+              The block is the {formatNumber(iceBytes / 1e6, 0)} MB that Iceberg + DuckDB read; each square is a
+              thousandth of it.
             </p>
             <p>
-              The lit square is Timelake: <span className="text-foreground">{(tlBytes / 1e6).toFixed(2)} MB</span>, read
-              from its last-value index.
+              The lit square is Timelake: <span className="text-foreground">{formatNumber(tlBytes / 1e6, 2)} MB</span>,
+              read from its last-value index.
             </p>
           </Waffle>
         </Idea>
@@ -396,12 +394,6 @@ async function Kit() {
   )
 }
 
-/** Each system's own reader, then the others reading through DuckDB. */
-const ENGINES = ["timelake+timelake", "lance+duckdb", "iceberg+duckdb", "parquet+duckdb"]
-const SYSTEM_ORDER = ["timelake", "lance", "iceberg", "parquet"]
-/** A system's chart color, from "system" or "system+reader". */
-const colorOf = (engine: string) => SYSTEM_COLORS[engine.split("+")[0] ?? ""] ?? "var(--chart-2)"
-
 /** Seconds of streaming that the commit race counts commits in. */
 const COMMIT_WINDOW = 10
 
@@ -409,78 +401,29 @@ const COMMIT_WINDOW = 10
 async function Races() {
   const run = await latestS3()
   if (!run) return null
-  const lastLoc = ENGINES.flatMap((e) => {
-    const q = run.queries.find(
-      (x) =>
-        `${x.system}+${x.reader}` === e && x.query === "last-loc" && x.checkpoint === "ingested" && x.status === "ok",
-    )
-    return q ? [{ e, q }] : []
-  })
-  const requests: Racer[] = lastLoc.flatMap(({ e, q }) => {
-    const n = q.requests?.[0]
-    return n === undefined
-      ? []
-      : [
-          {
-            label: engineLabel(e),
-            value: n,
-            dots: n,
-            seconds: q.times[0],
-            timelake: e === "timelake+timelake",
-            color: colorOf(e),
-          },
-        ]
-  })
-  // A dot is 100 KB read.
-  const bytes: Racer[] = lastLoc.flatMap(({ e, q }) => {
-    const b = q.bytes?.[0]
-    return b === undefined
-      ? []
-      : [
-          {
-            label: engineLabel(e),
-            value: b / 1e6,
-            dots: Math.max(1, Math.round(b / 1e5)),
-            seconds: q.times[0],
-            timelake: e === "timelake+timelake",
-            color: colorOf(e),
-          },
-        ]
-  })
+  const requests = lastLocRacers(run)
+  const bytes = lastLocRacers(run, "bytes")
   const ingest = SYSTEM_ORDER.flatMap((s) => {
     const p = run.phases.find((x) => x.kind === "ingest" && x.system === s && x.status === "ok")
     return p ? [{ s, p }] : []
   })
-  const files: Racer[] = ingest.flatMap(({ s, p }) =>
-    p.data_files === undefined || p.seconds === undefined
-      ? []
-      : [
-          {
-            label: SYSTEMS[s] ?? s,
-            value: p.data_files,
-            dots: p.data_files,
-            seconds: p.seconds,
-            timelake: s === "timelake",
-            color: colorOf(s),
-          },
-        ],
-  )
-  const commits: Racer[] = ingest.flatMap(({ s, p }) => {
-    if (!p.commit_ms_p50) return []
-    const n = Math.floor((COMMIT_WINDOW * 1000) / p.commit_ms_p50)
-    return [
-      {
-        label: SYSTEMS[s] ?? s,
-        value: n,
-        dots: n,
-        seconds: COMMIT_WINDOW,
-        timelake: s === "timelake",
-        color: colorOf(s),
-      },
-    ]
+  const racer = (s: string, value: number, seconds: number): Racer => ({
+    label: systemLabel(s),
+    value,
+    dots: value,
+    seconds,
+    timelake: s === "timelake",
+    color: systemColor(s),
   })
-  const trucks = lastLoc[0]?.q.rows?.toLocaleString("en") ?? "every"
-  const date = run.header.started.slice(0, 10)
+  const files: Racer[] = ingest.flatMap(({ s, p }) =>
+    p.data_files === undefined || p.seconds === undefined ? [] : [racer(s, p.data_files, p.seconds)],
+  )
+  const commits: Racer[] = ingest.flatMap(({ s, p }) =>
+    p.commit_ms_p50 ? [racer(s, Math.floor((COMMIT_WINDOW * 1000) / p.commit_ms_p50), COMMIT_WINDOW)] : [],
+  )
+  const rows = lastLoc(run)[0]?.query.rows
+  const trucks = rows == null ? "every" : formatNumber(rows)
+  const date = runDate(run)
   const timelakeIngest = ingest.find((x) => x.s === "timelake")?.p
   return (
     <Idea
@@ -503,7 +446,7 @@ async function Races() {
         <Race
           racers={files}
           unit="data files"
-          caption={`Data files in the bucket after streaming the same ${timelakeIngest?.commits?.toLocaleString("en") ?? ""} commits, before any maintenance job. Timelake merges small files as it writes; the others leave one file per commit. Times are how long each took to take in the stream.`}
+          caption={`Data files in the bucket after streaming the same ${timelakeIngest?.commits === undefined ? "" : formatNumber(timelakeIngest.commits)} commits, before any maintenance job. Timelake merges small files as it writes; the others leave one file per commit. Times are how long each took to take in the stream.`}
         />
         <Race
           racers={commits}
@@ -515,6 +458,17 @@ async function Races() {
   )
 }
 
+/** The part of an Iceberg metadata file the time-travel slider reads. */
+const MetadataSchema = z.object({
+  snapshots: z.array(
+    z.object({
+      "snapshot-id": z.string(),
+      "sequence-number": z.number(),
+      summary: z.record(z.string(), z.string()),
+    }),
+  ),
+})
+
 /** The demo table's snapshots, from its current metadata file. */
 async function loadSnapshots(): Promise<{ snapshots: Snapshot[]; days: string[] }> {
   "use cache"
@@ -525,9 +479,7 @@ async function loadSnapshots(): Promise<{ snapshots: Snapshot[]; days: string[] 
     /"snapshot-id"\s*:\s*(\d+)/g,
     '"snapshot-id":"$1"',
   )
-  const meta = JSON.parse(text) as {
-    snapshots: { "snapshot-id": string; "sequence-number": number; summary: Record<string, string> }[]
-  }
+  const meta = MetadataSchema.parse(JSON.parse(text))
   const snapshots = meta.snapshots
     .map((s) => ({
       // Version 1 is the empty table; each commit after it adds one.

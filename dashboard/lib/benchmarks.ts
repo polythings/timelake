@@ -3,114 +3,150 @@ import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 
 import { cacheLife } from "next/cache"
+import { z } from "zod"
 
-import { ENGINES, SYSTEMS, engineLabel, type Rank, type Ranking } from "./bench-systems"
+import type { Racer } from "@/components/race"
 
-export { SYSTEM_COLORS, SYSTEMS, engineLabel, type Rank, type Ranking } from "./bench-systems"
+import QUERY_FILES from "./bench-queries.json"
+import {
+  TIMELAKE_ENGINE,
+  engineLabel,
+  engineOf,
+  engineOrder,
+  ownEngine,
+  systemColor,
+  systemLabel,
+  systemOf,
+  type Rank,
+  type Ranking,
+} from "./bench-systems"
+
+export { engineLabel, type Rank, type Ranking } from "./bench-systems"
 
 /** Run files bundled with the app (bun run sync-results copies them from ../bench/results/runs). */
 const RUNS = process.env.TIMELAKE_BENCH_RUNS ?? path.resolve(/*turbopackIgnore: true*/ process.cwd(), "data/runs")
 
-/** Per-run measurements: the first run, then the repeats. */
-type Times = [first: number, ...repeats: number[]]
-
-export type RunHeader = {
-  id: string
-  workload: string
-  scale: string
-  params: Record<string, unknown>
-  target: string
-  storage: string
-  machine: string
-  commit: string
-  dirty: boolean
-  label: string
+/** The first line of a run file: what ran, where, and with which code. */
+const RunHeaderSchema = z.object({
+  id: z.string(),
+  workload: z.string(),
+  scale: z.string(),
+  params: z.record(z.string(), z.unknown()),
+  target: z.string(),
+  storage: z.string(),
+  machine: z.string(),
+  commit: z.string(),
+  dirty: z.boolean(),
+  label: z.string(),
   /** A kind of run kept apart from the others of its workload and target, e.g. "bulk". */
-  variant?: string
+  variant: z.string().optional(),
   /** `tuned` or `default` (D23); absent in runs before 2026-10-20, which count as tuned. */
-  tuning?: string
-  started: string
-  readers: Record<string, string[]>
-  versions: Record<string, string>
-  runs: number
-  live_interval_s?: number
-  concurrency?: number[]
-  imported?: string
-}
+  tuning: z.string().optional(),
+  started: z.string(),
+  readers: z.record(z.string(), z.array(z.string())),
+  versions: z.record(z.string(), z.string()),
+  runs: z.number(),
+  live_interval_s: z.number().optional(),
+  concurrency: z.array(z.number()).optional(),
+  imported: z.string().optional(),
+})
+export type RunHeader = z.infer<typeof RunHeaderSchema>
 
-export type PhaseRecord = {
-  kind: "ingest" | "maintain"
-  system: string
-  status: string
-  error?: string
-  seconds?: number
+const StageSchema = z.object({
+  rows: z.number(),
+  commits: z.number(),
+  seconds: z.number(),
+  commit_ms_p50: z.number().optional(),
+})
+export type StageRecord = z.infer<typeof StageSchema>
+
+const PhaseSchema = z.object({
+  kind: z.enum(["ingest", "maintain"]),
+  system: z.string(),
+  status: z.string(),
+  error: z.string().optional(),
+  seconds: z.number().optional(),
   /** Time spent committing; with pacing, `seconds` is mostly waiting between arrivals. */
-  commit_seconds?: number
-  commits?: number
-  rows?: number
-  commit_ms_p50?: number
-  commit_ms_p95?: number
-  objects?: number | null
-  bytes?: number
-  data_files?: number
-  data_bytes?: number
-  requests?: number
-  compaction_after_ingest_s?: Record<string, number>
+  commit_seconds: z.number().optional(),
+  commits: z.number().optional(),
+  rows: z.number().optional(),
+  commit_ms_p50: z.number().optional(),
+  commit_ms_p95: z.number().optional(),
+  objects: z.number().nullable().optional(),
+  bytes: z.number().optional(),
+  data_files: z.number().optional(),
+  data_bytes: z.number().optional(),
+  requests: z.number().optional(),
+  compaction_after_ingest_s: z.record(z.string(), z.number()).optional(),
   /** The phase's requests at the store's list prices. */
-  usd?: number
+  usd: z.number().optional(),
   /** Keeping the tables a month at the store's list prices. */
-  storage_usd_month?: number
+  storage_usd_month: z.number().optional(),
   /** Per stage of a staged stream (bulk history, then a live day). */
-  stages?: Record<string, StageRecord>
-}
-
-export type StageRecord = { rows: number; commits: number; seconds: number; commit_ms_p50?: number }
+  stages: z.record(z.string(), StageSchema).optional(),
+})
+export type PhaseRecord = z.infer<typeof PhaseSchema>
 
 /** Fresh readers probing a system while it ingests. */
-export type LiveRecord = {
-  system: string
-  reader: string
-  interval_s: number
-  rounds: number
+const LiveSchema = z.object({
+  system: z.string(),
+  reader: z.string(),
+  interval_s: z.number(),
+  rounds: z.number(),
   /** Per freshness probe: seconds behind the oldest commit it missed (0 = up to date). */
-  lag_s: number[]
+  lag_s: z.array(z.number()),
   /** Dashboard query -> first-run seconds of each probe. */
-  queries: Record<string, number[]>
-  errors: string[]
-}
+  queries: z.record(z.string(), z.array(z.number())),
+  errors: z.array(z.string()),
+})
+export type LiveRecord = z.infer<typeof LiveSchema>
 
 /** N dashboard clients querying at once. */
-export type ConcurrencyRecord = {
-  system: string
-  reader: string
-  clients: number
-  seconds: number
-  queries: number
-  qps: number
-  p50_s?: number
-  p95_s?: number
-  errors: number
-}
+const ConcurrencySchema = z.object({
+  system: z.string(),
+  reader: z.string(),
+  clients: z.number(),
+  seconds: z.number(),
+  queries: z.number(),
+  qps: z.number(),
+  p50_s: z.number().optional(),
+  p95_s: z.number().optional(),
+  errors: z.number(),
+})
+export type ConcurrencyRecord = z.infer<typeof ConcurrencySchema>
 
-export type QueryRecord = {
-  system: string
-  reader: string
-  checkpoint: string
-  suite: string
-  query: string
-  status: string
-  error?: string
-  times: Times
-  rows?: number
-  requests?: Times
+const QuerySchema = z.object({
+  system: z.string(),
+  reader: z.string(),
+  checkpoint: z.string(),
+  suite: z.string(),
+  query: z.string(),
+  status: z.string(),
+  error: z.string().optional(),
+  /** Seconds per run: the first run, then the repeats. Empty (or absent in the file) where it failed before a run finished. */
+  times: z.array(z.number()).default([]),
+  rows: z.number().nullable().optional(),
+  /** Requests per run. */
+  requests: z.array(z.number()).optional(),
   /** Bytes read from storage, per run. */
-  bytes?: Times
-  server_ms?: Times
+  bytes: z.array(z.number()).optional(),
+  server_ms: z.array(z.number()).optional(),
   /** The first run's requests at the store's list prices. */
-  usd?: number
+  usd: z.number().optional(),
   /** Whether the answer matched the reference system's (absent when the run had none). */
-  correct?: boolean
-}
+  correct: z.boolean().optional(),
+})
+export type QueryRecord = z.infer<typeof QuerySchema>
+
+/** A query that answered: at least a first run. */
+type Times = [first: number, ...repeats: number[]]
+export type OkQuery = QueryRecord & { status: "ok"; times: Times }
+export const isOk = (q: QueryRecord): q is OkQuery => q.status === "ok" && q.times.length > 0
+
+/** Any line of a run file: the header or a record, told apart by `kind`. */
+const LineSchema = z.looseObject({ kind: z.string(), system: z.string().optional() })
+const VersionsSchema = z.object({ versions: z.record(z.string(), z.string()) })
+const EndSchema = z.object({ finished: z.string() })
 
 export type Run = {
   header: RunHeader
@@ -136,6 +172,14 @@ export const WORKLOADS = [
 
 export type Workload = (typeof WORKLOADS)[number]
 
+/** Each suite's queries as the query files describe them (bench/queries; timebench queries --site). */
+const DESCRIBED = z
+  .record(
+    z.string(),
+    z.array(z.object({ name: z.string(), description: z.string(), sql: z.string(), tuned: z.string().optional() })),
+  )
+  .parse(QUERY_FILES)
+
 export const TARGETS: Record<string, string> = {
   "aws-s3": "AWS S3",
   "aws-s3x": "S3 Express One Zone",
@@ -152,39 +196,59 @@ export const CHECKPOINTS: Record<string, string> = {
   "7d": "After 7 days",
 }
 
+/** What each checkpoint measures, under its section's title. */
+export const CHECKPOINT_NOTES: Record<string, string> = {
+  maintained:
+    "After each system's maintenance, first run of each query in a fresh process. Systems maintain at different times: Timelake while it ingests, most others in a separate step after it, some not at all; the panel below says which, and how long the step after ingest took.",
+  ingested: "Right after the last commit, before any maintenance: the state readers see while data streams in.",
+  "1d": "After a day of data has arrived.",
+  "7d": "After seven days of data have arrived.",
+}
+
+/** The checkpoint right after the last commit, before any maintenance. */
+const INGESTED = "ingested"
+
 /** The checkpoints a run's top-level results show (the others are on its detail page). */
-const MAIN_CHECKPOINTS = ["maintained", "ingested"]
+const MAIN_CHECKPOINTS = ["maintained", INGESTED]
 
 /** The system whose answers the others are checked against; it keeps the right answers and isn't ranked. */
 const REFERENCE = "reference"
 
 export const targetLabel = (target: string) => TARGETS[target] ?? target
-const engineOrder = (engine: string) => {
-  const i = Object.keys(ENGINES).indexOf(engine)
-  return i < 0 ? Object.keys(ENGINES).length : i
-}
+
+/** A run's date, e.g. "2026-10-19". */
+export const runDate = (run: Run) => run.header.started.slice(0, 10)
+
+/** Whether a run checked answers against the reference. */
+export const answersChecked = (run: Run) => run.queries.some((q) => q.correct !== undefined)
+
+/** Said under results whose answers were checked. */
+export const CHECKED_NOTE = "Answers are checked against a copy of the data with each row once."
+
+/** The systems a run has, by name: "Timelake, Iceberg (PyIceberg), Lance". */
+export const systemList = (run: Run) => Object.keys(run.header.readers).map(systemLabel).join(", ")
 
 async function readRun(file: string): Promise<Run> {
-  const records = (await readFile(path.join(/*turbopackIgnore: true*/ RUNS, file), "utf8"))
+  const lines = (await readFile(path.join(/*turbopackIgnore: true*/ RUNS, file), "utf8"))
     .split("\n")
     .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as { kind: string } & Record<string, unknown>)
-  const end = records.find((r) => r.kind === "end")
-  const header = records[0] as unknown as RunHeader
+    .map((l) => LineSchema.parse(JSON.parse(l)))
+  const [first, ...records] = lines
+  const header = RunHeaderSchema.parse(first)
+  const of = <T>(kinds: string[], schema: z.ZodType<T>) =>
+    records.filter((r) => kinds.includes(r.kind) && r.system !== REFERENCE).map((r) => schema.parse(r))
   const readers = Object.fromEntries(Object.entries(header.readers).filter(([system]) => system !== REFERENCE))
   // Database servers started only for their system record their versions once up.
-  const versions = Object.assign(
-    { ...header.versions },
-    ...records.filter((r) => r.kind === "versions").map((r) => r.versions as Record<string, string>),
-  ) as Record<string, string>
-  const ranked = records.filter((r) => r.system !== REFERENCE)
+  const versions = { ...header.versions }
+  for (const r of records) if (r.kind === "versions") Object.assign(versions, VersionsSchema.parse(r).versions)
+  const end = records.find((r) => r.kind === "end")
   return {
     header: { ...header, readers, versions },
-    phases: ranked.filter((r) => r.kind === "ingest" || r.kind === "maintain") as unknown as PhaseRecord[],
-    queries: ranked.filter((r) => r.kind === "query") as unknown as QueryRecord[],
-    live: ranked.filter((r) => r.kind === "live") as unknown as LiveRecord[],
-    concurrency: ranked.filter((r) => r.kind === "concurrency") as unknown as ConcurrencyRecord[],
-    finished: (end?.finished as string | undefined) ?? null,
+    phases: of(["ingest", "maintain"], PhaseSchema),
+    queries: of(["query"], QuerySchema),
+    live: of(["live"], LiveSchema),
+    concurrency: of(["concurrency"], ConcurrencySchema),
+    finished: end ? EndSchema.parse(end).finished : null,
   }
 }
 
@@ -212,9 +276,13 @@ const best = ([first, ...repeats]: Times) => Math.min(...(repeats.length > 0 ? r
 
 export type QueryResult = {
   query: string
+  /** What the query asks, its SQL, and Timelake's version in a tuned run (D23), where the query files have them. */
+  description?: string
+  sql?: string
+  tuned?: string
   /** Each engine's first run on this query, fastest first; engines that failed it are left out. */
   ranking: Ranking
-  /** Engines that failed or timed out on it. */
+  /** Engines (`system+reader`) that failed or timed out on it. */
   failed: string[]
 }
 
@@ -229,10 +297,8 @@ export type Section = {
   queries: QueryResult[]
 }
 
-const engineOf = (q: QueryRecord) => `${q.system}+${q.reader}`
-
 /** An engine's row in a ranking of query times over `rs`: first runs, best repeats and requests, averaged. */
-const rank = (engine: string, rs: QueryRecord[]): Rank => {
+const rank = (engine: string, rs: OkQuery[]): Rank => {
   const requests = rs.map((r) => r.requests?.[0])
   const usd = rs.map((r) => r.usd)
   const bytes = rs.map((r) => r.bytes?.[0])
@@ -243,14 +309,42 @@ const rank = (engine: string, rs: QueryRecord[]): Rank => {
   return {
     key: engine,
     label: engineLabel(engine),
-    system: engine.split("+", 1)[0] ?? engine,
+    system: systemOf(engine),
     value: gm(rs.map((r) => r.times[0])),
     repeat: gm(rs.map((r) => best(r.times))),
     requests: mean(requests),
     usd: mean(usd),
     bytes: mean(bytes),
-    timelake: engine === "timelake+timelake",
+    timelake: engine === TIMELAKE_ENGINE,
     wrong: rs.filter((r) => r.correct === false).length,
+  }
+}
+
+/**
+ * The ranking of `engines` by geometric-mean first run over the queries all of them answered (so the bars compare the
+ * same work), fastest first. `keys` are the queries asked, each found in `by` at `engine|key`; `head` names the
+ * ranking given the queries in common. Null where there are none.
+ */
+function queryRanking(
+  engines: string[],
+  keys: string[],
+  by: Map<string, OkQuery>,
+  head: (common: string[]) => Pick<Ranking, "id" | "title" | "note">,
+): Ranking | null {
+  const common = keys.filter((k) => engines.every((e) => by.has(`${e}|${k}`)))
+  if (common.length === 0) return null
+  return {
+    ...head(common),
+    unit: "seconds",
+    queries: common.length,
+    rows: engines
+      .map((e) =>
+        rank(
+          e,
+          common.flatMap((k) => by.get(`${e}|${k}`) ?? []),
+        ),
+      )
+      .sort((a, b) => a.value - b.value),
   }
 }
 
@@ -261,35 +355,30 @@ const rank = (engine: string, rs: QueryRecord[]): Rank => {
 export function sections(run: Run, workload: Workload): Section[] {
   const out: Section[] = []
   for (const suite of workload.suites) {
+    const described = new Map((DESCRIBED[suite.id] ?? []).map((q) => [q.name, q]))
     for (const [checkpoint, label] of Object.entries(CHECKPOINTS)) {
       const all = run.queries.filter((q) => q.suite === suite.id && q.checkpoint === checkpoint)
-      const ok = all.filter((q) => q.status === "ok")
+      const ok = all.filter(isOk)
       if (ok.length === 0) continue
       const by = new Map(ok.map((q) => [`${engineOf(q)}|${q.query}`, q]))
       const engines = [...new Set(ok.map(engineOf))].sort((a, b) => engineOrder(a) - engineOrder(b))
       const allQueries = [...new Set(all.map((q) => q.query))]
-      const common = allQueries.filter((q) => engines.every((e) => by.has(`${e}|${q}`)))
-      if (common.length === 0) continue
-      const ranking: Ranking = {
+      const ranking = queryRanking(engines, allQueries, by, (common) => ({
+        id: "all",
         title: "All queries",
         note: `first run, geometric mean of ${common.length} queries`,
-        unit: "seconds",
-        queries: common.length,
-        rows: engines
-          .map((e) =>
-            rank(
-              e,
-              common.flatMap((q) => by.get(`${e}|${q}`) ?? []),
-            ),
-          )
-          .sort((a, b) => a.value - b.value),
-      }
-      const queries = allQueries.map((query) => ({
+      }))
+      if (!ranking) continue
+      const queries = allQueries.map((query): QueryResult => ({
         query,
+        description: described.get(query)?.description,
+        sql: described.get(query)?.sql,
+        tuned: described.get(query)?.tuned,
         ranking: {
+          id: query,
           title: query,
           note: "first run",
-          unit: "seconds" as const,
+          unit: "seconds",
           rows: engines
             .flatMap((e) => {
               const r = by.get(`${e}|${query}`)
@@ -297,7 +386,7 @@ export function sections(run: Run, workload: Workload): Section[] {
             })
             .sort((a, b) => a.value - b.value),
         },
-        failed: all.filter((q) => q.query === query && q.status !== "ok").map((q) => engineLabel(engineOf(q))),
+        failed: all.filter((q) => q.query === query && q.status !== "ok").map(engineOf),
       }))
       out.push({ suite: suite.id, suiteLabel: suite.label, checkpoint, label, ranking, queries })
     }
@@ -307,6 +396,9 @@ export function sections(run: Run, workload: Workload): Section[] {
 
 /** A section's first runs over time: the geometric mean over its queries, and each query's, per engine. */
 export type SectionHistory = { all: HistoryPoint[]; queries: Record<string, HistoryPoint[]> }
+
+/** A history point's run: its id, date and commit. */
+const pointOf = (run: Run) => ({ run: run.header.id, date: runDate(run), commit: run.header.commit })
 
 /**
  * A section's history at one suite and checkpoint, across the runs of `run`'s workload, target, variant and tuning:
@@ -322,13 +414,12 @@ export function sectionHistory(runs: Run[], run: Run, suite: string, checkpoint:
   )
   const out: SectionHistory = { all: [], queries: {} }
   for (const r of same) {
-    const at = { run: r.header.id, date: r.header.started.slice(0, 10), commit: r.header.commit }
+    const at = pointOf(r)
     const here = r.queries.filter((q) => q.suite === suite && q.checkpoint === checkpoint)
     if (here.length === 0) continue
     const points = new Map<string, HistoryPoint>()
     const times = new Map<string, number[]>()
-    for (const q of here) {
-      if (q.status !== "ok") continue
+    for (const q of here.filter(isOk)) {
       const point: HistoryPoint = points.get(q.query) ?? { ...at }
       point[engineOf(q)] = q.times[0]
       points.set(q.query, point)
@@ -347,15 +438,18 @@ export function sectionHistory(runs: Run[], run: Run, suite: string, checkpoint:
 export type RunInfo = { date: string; machine: string; commit: string; versions: [string, string][]; imported: boolean }
 
 export const runInfo = (run: Run): RunInfo => ({
-  date: run.header.started.slice(0, 10),
+  date: runDate(run),
   machine: run.header.machine,
   commit: run.header.commit,
   versions: Object.entries(run.header.versions),
   imported: Boolean(run.header.imported),
 })
 
-/** Queries that failed or timed out, as "engine: query (status)". */
-export function failures(run: Run): { engine: string; query: string; checkpoint: string; status: string }[] {
+/** A query that failed or timed out: the engine's name, the query, its checkpoint and status. */
+export type Failure = { engine: string; query: string; checkpoint: string; status: string }
+
+/** Queries that failed or timed out. */
+export function failures(run: Run): Failure[] {
   return run.queries
     .filter((q) => q.status !== "ok")
     .map((q) => ({ engine: engineLabel(engineOf(q)), query: q.query, checkpoint: q.checkpoint, status: q.status }))
@@ -364,12 +458,18 @@ export function failures(run: Run): { engine: string; query: string; checkpoint:
 /** How the site names run variants. */
 const VARIANTS: Record<string, string> = { bulk: "bulk load" }
 
-/** A run's storage and variant, e.g. "AWS S3" or "Local disk · bulk load". */
 /** A run's tuning (D23): every system as installed (`default`) or as its docs recommend (`tuned`). */
 export const tuningOf = (run: Run) => run.header.tuning ?? "tuned"
 
 export const TUNING_LABELS: Record<string, string> = { tuned: "Tuned", default: "Default" }
 
+/** What each tuning means, said wherever results show one. */
+export const TUNING_NOTES: Record<string, string> = {
+  default: "each system as installed",
+  tuned: "each system as its docs recommend, precomputation included",
+}
+
+/** A run's storage and variant, e.g. "AWS S3" or "Local disk · bulk load". */
 export const runLabel = (run: Run) =>
   targetLabel(run.header.target) +
   (run.header.variant ? ` · ${VARIANTS[run.header.variant] ?? run.header.variant}` : "")
@@ -382,12 +482,24 @@ export function latestByTarget(runs: Run[], workload: string): Run[] {
   const latest = new Map<string, Run>()
   for (const r of runs) if (r.header.workload === workload) latest.set(runKey(r), r)
   const order = Object.keys(TARGETS)
-  const position = (r: Run) =>
-    (tuningOf(r) === "tuned" ? 0 : 1000) + (r.header.variant ? 100 : 0) + order.indexOf(r.header.target)
+  // Targets the site doesn't name go after the ones it does.
+  const target = (r: Run) => (order.includes(r.header.target) ? order.indexOf(r.header.target) : order.length)
+  const position = (r: Run) => (tuningOf(r) === "tuned" ? 0 : 1000) + (r.header.variant ? 100 : 0) + target(r)
   return [...latest.values()].sort((a, b) => position(a) - position(b))
 }
 
+/** The newest tuned run of a workload on one target, without a variant: what the home page shows. */
+export function newestRun(runs: Run[], workload: string, target: string): Run | undefined {
+  return latestByTarget(runs, workload).find(
+    (r) => r.header.target === target && !r.header.variant && tuningOf(r) === "tuned",
+  )
+}
+
 export type HistoryPoint = { run: string; date: string; commit: string } & Record<string, number | string>
+
+/** A system's own reader in a run: the one the site ranks first, else the first the run lists. */
+export const ownEngineIn = (run: Run, system: string) =>
+  ownEngine(system) ?? `${system}+${run.header.readers[system]?.[0] ?? ""}`
 
 /**
  * Each system's own reader over time on one target: geometric-mean first run over all of a run's queries that it
@@ -405,10 +517,10 @@ export function history(
   for (const r of runs) {
     if (r.header.workload !== workload || r.header.target !== target || r.header.variant || tuningOf(r) !== tuning)
       continue
-    const point: HistoryPoint = { run: r.header.id, date: r.header.started.slice(0, 10), commit: r.header.commit }
-    for (const [system, readers] of Object.entries(r.header.readers)) {
-      const engine = `${system}+${readers[0]}`
-      const rs = r.queries.filter((q) => engineOf(q) === engine && q.checkpoint === checkpoint && q.status === "ok")
+    const point: HistoryPoint = pointOf(r)
+    for (const system of Object.keys(r.header.readers)) {
+      const engine = ownEngineIn(r, system)
+      const rs = r.queries.filter(isOk).filter((q) => engineOf(q) === engine && q.checkpoint === checkpoint)
       if (rs.length === 0) continue
       point[engine] = gm(rs.map((q) => q.times[0]))
       engines.add(engine)
@@ -436,6 +548,18 @@ function suiteCounts(run: Run, queries: string[]): string {
   return counts.length > 1 ? ` (${counts.join(", ")})` : ""
 }
 
+/** A system's row in a ranking of its ingest. */
+const phaseRank = (p: PhaseRecord, value: number): Rank => ({
+  key: p.system,
+  label: systemLabel(p.system),
+  system: p.system,
+  value,
+  timelake: p.system === "timelake",
+})
+
+/** The id of the top-level ranking of query times at `checkpoint`. */
+export const queriesRankingId = (checkpoint: string) => `queries-${checkpoint}`
+
 /**
  * The top-level results of a run: query time after maintenance and right after ingest (geometric mean of first runs
  * over every query all readers completed), then median commit time. Fastest first.
@@ -444,27 +568,17 @@ export function rankings(run: Run): Ranking[] {
   const out: Ranking[] = []
   for (const checkpoint of MAIN_CHECKPOINTS) {
     const label = CHECKPOINTS[checkpoint] ?? checkpoint
-    const ok = run.queries.filter((q) => q.checkpoint === checkpoint && q.status === "ok")
+    const ok = run.queries.filter((q) => q.checkpoint === checkpoint).filter(isOk)
     const engines = [...new Set(ok.map(engineOf))]
     if (engines.length < 2) continue
     const by = new Map(ok.map((q) => [`${engineOf(q)}|${q.suite}|${q.query}`, q]))
     const all = [...new Set(run.queries.filter((q) => q.checkpoint === checkpoint).map((q) => `${q.suite}|${q.query}`))]
-    const common = all.filter((q) => engines.every((e) => by.has(`${e}|${q}`)))
-    if (common.length === 0) continue
-    out.push({
+    const ranking = queryRanking(engines, all, by, (common) => ({
+      id: queriesRankingId(checkpoint),
       title: `Queries, ${label.toLowerCase()}`,
       note: `first run, geometric mean of ${common.length} queries${suiteCounts(run, common)}`,
-      unit: "seconds",
-      queries: common.length,
-      rows: engines
-        .map((e) =>
-          rank(
-            e,
-            common.flatMap((q) => by.get(`${e}|${q}`) ?? []),
-          ),
-        )
-        .sort((a, b) => a.value - b.value),
-    })
+    }))
+    if (ranking) out.push(ranking)
   }
   const ingest = run.phases.filter((p) => p.kind === "ingest" && p.status === "ok" && p.commit_ms_p50 != null)
   if (ingest.some((p) => p.stages)) {
@@ -472,34 +586,22 @@ export function rankings(run: Run): Ranking[] {
   } else if (run.header.variant === "bulk" && ingest.length > 1) {
     // A bulk load is judged by its rate: rows per second spent committing.
     out.push({
+      id: "load",
       title: "Load",
       note: `rows per second, in commits of ${Number(run.header.params.window_minutes ?? 0) / 60} h of data`,
       unit: "rows/s",
       higherIsBetter: true,
       rows: ingest
-        .map((p) => ({
-          key: p.system,
-          label: SYSTEMS[p.system] ?? p.system,
-          system: p.system,
-          value: (p.rows ?? 0) / (p.commit_seconds ?? p.seconds ?? 1),
-          timelake: p.system === "timelake",
-        }))
+        .map((p) => phaseRank(p, (p.rows ?? 0) / (p.commit_seconds ?? p.seconds ?? 1)))
         .sort((a, b) => b.value - a.value),
     })
   } else if (ingest.length > 1) {
     out.push({
+      id: "commit",
       title: "Commit",
       note: "median time per commit while streaming",
       unit: "milliseconds",
-      rows: ingest
-        .map((p) => ({
-          key: p.system,
-          label: SYSTEMS[p.system] ?? p.system,
-          system: p.system,
-          value: p.commit_ms_p50 ?? 0,
-          timelake: p.system === "timelake",
-        }))
-        .sort((a, b) => a.value - b.value),
+      rows: ingest.map((p) => phaseRank(p, p.commit_ms_p50 ?? 0)).sort((a, b) => a.value - b.value),
     })
   }
   return out
@@ -510,37 +612,75 @@ export function rankings(run: Run): Ranking[] {
  * commit time.
  */
 function stagedIngest(ingest: PhaseRecord[]): Ranking[] {
-  const row = (p: PhaseRecord, value: number): Rank => ({
-    key: p.system,
-    label: SYSTEMS[p.system] ?? p.system,
-    system: p.system,
-    value,
-    timelake: p.system === "timelake",
-  })
   const load = ingest.map((p) => {
     const stages = Object.entries(p.stages ?? {}).flatMap(([name, s]) => (name === "live" ? [] : [s]))
     const seconds = stages.reduce((t, s) => t + s.seconds, 0)
-    return row(p, seconds > 0 ? stages.reduce((t, s) => t + s.rows, 0) / seconds : 0)
+    return phaseRank(p, seconds > 0 ? stages.reduce((t, s) => t + s.rows, 0) / seconds : 0)
   })
   const live = ingest.flatMap((p) => {
     const ms = p.stages?.live?.commit_ms_p50
-    return ms == null ? [] : [row(p, ms)]
+    return ms == null ? [] : [phaseRank(p, ms)]
   })
-  return [
+  const staged: Ranking[] = [
     {
+      id: "load",
       title: "Load",
       note: "rows per second, history in commits of an hour of data",
-      unit: "rows/s" as const,
+      unit: "rows/s",
       higherIsBetter: true,
       rows: load.sort((a, b) => b.value - a.value),
     },
     {
+      id: "commit",
       title: "Commit",
       note: "median time per commit of the live day",
-      unit: "milliseconds" as const,
+      unit: "milliseconds",
       rows: live.sort((a, b) => a.value - b.value),
     },
-  ].filter((r) => r.rows.length > 1)
+  ]
+  return staged.filter((r) => r.rows.length > 1)
+}
+
+/** The query the request race runs: the latest position of every truck. */
+export const LAST_LOC = "last-loc"
+
+/** The engines in the request race: Timelake's own reader, then the others through DuckDB. */
+const RACE_ENGINES = [TIMELAKE_ENGINE, "lance+duckdb", "iceberg+duckdb", "parquet+duckdb"]
+
+/** The race engines' first answers to "last-loc" right after ingest, in race order. */
+export function lastLoc(run: Run): { engine: string; query: OkQuery }[] {
+  return RACE_ENGINES.flatMap((engine) => {
+    const query = run.queries
+      .filter(isOk)
+      .find((q) => engineOf(q) === engine && q.query === LAST_LOC && q.checkpoint === INGESTED)
+    return query ? [{ engine, query }] : []
+  })
+}
+
+/** How many trucks "last-loc" returned in a run, as Timelake answered it. */
+export const lastLocRows = (run: Run) =>
+  run.queries.find((q) => q.query === LAST_LOC && q.system === "timelake")?.rows ?? undefined
+
+/**
+ * "last-loc" right after ingest as a race: each engine's requests (a dot each), or the data it read (`bytes`: in MB,
+ * a dot per 100 KB), at its first run's pace.
+ */
+export function lastLocRacers(run: Run, measure: "requests" | "bytes" = "requests"): Racer[] {
+  return lastLoc(run).flatMap(({ engine, query }) => {
+    const n = query[measure]?.[0]
+    if (n === undefined) return []
+    const [value, dots] = measure === "requests" ? [n, n] : [n / 1e6, Math.max(1, Math.round(n / 1e5))]
+    return [
+      {
+        label: engineLabel(engine),
+        value,
+        dots,
+        seconds: query.times[0],
+        timelake: engine === TIMELAKE_ENGINE,
+        color: systemColor(engine),
+      },
+    ]
+  })
 }
 
 const median = (xs: number[]) => {
@@ -582,7 +722,7 @@ export function costRows(run: Run): CostRow[] {
   for (const system of Object.keys(run.header.readers)) {
     const ingest = run.phases.find((p) => p.kind === "ingest" && p.system === system)
     const maintain = run.phases.find((p) => p.kind === "maintain" && p.system === system)
-    const own = `${system}+${run.header.readers[system]?.[0]}`
+    const own = ownEngineIn(run, system)
     const costs = run.queries.flatMap((q) =>
       engineOf(q) === own && q.checkpoint === "maintained" && q.usd != null ? [q.usd] : [],
     )

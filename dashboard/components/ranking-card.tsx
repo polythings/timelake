@@ -6,8 +6,9 @@ import { useState } from "react"
 import { DotGrid } from "@/components/dots"
 import { EntryLabel } from "@/components/entry-label"
 import { Segmented } from "@/components/segmented"
-import { type Rank, type Ranking, SYSTEM_COLORS, entryAnchor, entryDescription } from "@/lib/bench-systems"
-import { formatBytes, formatCompact, formatTime, formatUsd } from "@/lib/format"
+import { type Rank, type Ranking, entryAnchor, entryDescription, systemColor } from "@/lib/bench-systems"
+import { formatBytes, formatCompact, formatNumber, formatTime, formatUsd } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 /** Columns of squares in the longest bar of a card. */
 const SCALE = 40
@@ -48,7 +49,7 @@ export function Panel({
   className?: string
 }) {
   return (
-    <div className={`flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-4 sm:p-6 ${className ?? ""}`}>
+    <div className={cn("flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-4 sm:p-6", className)}>
       <PanelHeader title={title} note={note} action={action} />
       {children}
     </div>
@@ -80,12 +81,13 @@ export function RankingBars({
   const right = firstPerSystem(ranking.rows.filter((r) => !r.wrong))
   const wrong = firstPerSystem(ranking.rows.filter((r) => r.wrong))
   const rows = [...right, ...wrong]
-  const largest = Math.max(...rows.map((r) => r.value))
+  // Bars are scaled to the largest value; where every value is 0, all bars are the shortest.
+  const largest = Math.max(0, ...rows.map((r) => r.value))
   const top = right[0] ?? rows[0]
   const best = top?.value ?? 0
   const show = (r: Rank) => formatRankValue(r.value, ranking.unit)
   // A bar is two rows of squares, as long as its value against the largest.
-  const columns = (value: number) => Math.max(1, Math.round((value / largest) * SCALE))
+  const columns = (value: number) => (largest > 0 ? Math.max(1, Math.round((value / largest) * SCALE)) : 1)
   const list = (rs: Rank[]) => (
     <ol className="flex flex-col gap-2.5">
       {rs.map((r) => {
@@ -107,14 +109,17 @@ export function RankingBars({
               className={r.timelake ? "text-sm" : "text-sm text-muted-foreground"}
             />
             <span
-              className={`text-right font-mono text-xs tabular-nums ${r.timelake ? "text-foreground" : "text-muted-foreground"}`}
+              className={cn(
+                "text-right font-mono text-xs tabular-nums",
+                r.timelake ? "text-foreground" : "text-muted-foreground",
+              )}
             >
               {show(r)}
             </span>
             <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:col-span-1">
               <DotGrid
                 perRow={columns(r.value)}
-                segments={[{ count: columns(r.value) * 2, color: SYSTEM_COLORS[r.system] ?? "var(--chart-2)" }]}
+                segments={[{ count: columns(r.value) * 2, color: systemColor(r.system) }]}
                 label={`${r.label}: ${show(r)}`}
               />
               {r !== top ? (
@@ -181,7 +186,7 @@ export function formatRankValue(v: number, unit: Ranking["unit"]): string {
     case "rows/s":
       return `${formatCompact(v)}/s`
     case "requests":
-      return Math.round(v).toLocaleString("en-US")
+      return formatNumber(Math.round(v))
     case "usd":
       return formatUsd(v)
     case "bytes":

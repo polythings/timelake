@@ -31,11 +31,6 @@ export function formatCompact(n: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n)
 }
 
-/** Dollars with `digits` decimals: (0.4, 2) → "$0.40"; tiny amounts take more, (0.00404, 4) → "$0.0040". */
-export function formatUsd(x: number, digits = 2): string {
-  return `$${x.toFixed(digits)}`
-}
-
 /**
  * Seconds as milliseconds below a second ("40 ms", "0.4 ms"), else seconds ("2.31 s", "17.8 s", "325 s"): each value
  * in the unit that reads best, so "40 ms" and "30 ms" never show as "0.04 s" and "0.03 s". The unit is picked after

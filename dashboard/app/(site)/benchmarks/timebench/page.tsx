@@ -1,10 +1,11 @@
-import { ArrowUpRight, ChevronLeft } from "lucide-react"
+import { ArrowUpRight } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 
+import { BackLink } from "@/components/back-link"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { READERS, SYSTEMS, SYSTEM_INFO } from "@/lib/bench-systems"
+import { READERS, SYSTEM_INFO, systemLabel } from "@/lib/bench-systems"
 import { BENCHMARKS, type Status } from "@/lib/benchmark-catalog"
 import { REPO_URL } from "@/lib/site"
 
@@ -31,12 +32,7 @@ export default function TimebenchPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-10 px-4 py-12">
       <header className="space-y-3">
-        <Link
-          href="/benchmarks"
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Benchmarks
-        </Link>
+        <BackLink href="/benchmarks">Benchmarks</BackLink>
         <h1 className="text-3xl font-semibold tracking-tight">timebench</h1>
         <p className="text-muted-foreground">
           The benchmark system behind every result on this site. It streams the same data into each system, runs each
@@ -153,7 +149,7 @@ export default function TimebenchPage() {
             <TableBody>
               {Object.entries(SYSTEM_INFO).map(([system, info]) => (
                 <TableRow key={system}>
-                  <TableCell className="font-medium whitespace-normal">{SYSTEMS[system] ?? system}</TableCell>
+                  <TableCell className="font-medium whitespace-normal">{systemLabel(system)}</TableCell>
                   <TableCell className="min-w-56 whitespace-normal text-muted-foreground">{info.summary}</TableCell>
                   <TableCell className="min-w-48 whitespace-normal text-muted-foreground">{info.writes}</TableCell>
                   <TableCell className="min-w-48 whitespace-normal text-muted-foreground">{info.maintenance}</TableCell>

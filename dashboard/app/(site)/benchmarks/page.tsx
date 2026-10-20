@@ -1,5 +1,4 @@
 import {
-  ArrowUpRight,
   BotMessageSquare,
   Factory,
   FlaskConical,
@@ -14,19 +13,18 @@ import type { Metadata } from "next"
 import Link from "next/link"
 import { Suspense } from "react"
 
+import { BenchmarkLinks, RunDate, RunTabs } from "@/components/bench-run"
+import { PageTitle } from "@/components/page-title"
 import { RankingCard } from "@/components/ranking-card"
-import { RunInfoButton } from "@/components/run-info"
 import { MoreLink, SectionHead } from "@/components/section-head"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BENCHMARKS, type Benchmark } from "@/lib/benchmark-catalog"
 import {
-  SYSTEMS,
+  CHECKED_NOTE,
+  answersChecked,
   latestByTarget,
   loadRuns,
   rankings,
-  runInfo,
-  runKey,
-  runLabel,
+  systemList,
   tuningOf,
   type Run,
 } from "@/lib/benchmarks"
@@ -87,7 +85,7 @@ export default function BenchmarksPage() {
         <BenchmarksNav />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col gap-16">
-        <h1 className="text-4xl leading-[1.05] font-light tracking-tight sm:text-5xl">Benchmarks</h1>
+        <PageTitle>Benchmarks</PageTitle>
 
         <Suspense fallback={<div className="h-96 animate-pulse rounded-lg bg-muted" />}>
           <Results />
@@ -147,66 +145,42 @@ async function Results() {
  * maintenance. Its page has the rest.
  */
 function BenchmarkResults({ benchmark, latest }: { benchmark: Benchmark; latest: Run[] }) {
-  const [first] = latest
-  const page = `/benchmarks/${benchmark.id}`
   return (
     <section id={benchmark.id} className="flex scroll-mt-20 flex-col gap-4">
       <div className="flex flex-col gap-3">
         <SectionHead label={benchmark.name}>{benchmark.summary}</SectionHead>
-        {benchmark.provenance && (
-          <p className="max-w-4xl text-xs leading-relaxed text-muted-foreground">{benchmark.provenance}</p>
-        )}
-        <nav className="flex flex-wrap gap-x-5 gap-y-1">
-          <MoreLink href={page}>All results</MoreLink>
-          <MoreLink href={`${page}/methodology`}>Methodology</MoreLink>
-          {benchmark.origin && (
-            <a href={benchmark.origin.url} className="flex w-fit items-center gap-1 text-sm hover:underline">
-              {benchmark.origin.label} <ArrowUpRight className="size-3.5" />
-            </a>
-          )}
-        </nav>
+        <BenchmarkLinks benchmark={benchmark} results />
       </div>
-      {first ? (
-        <Tabs defaultValue={runKey(first)} className="gap-4">
-          <TabsList variant="line" className="flex-wrap">
-            {latest.map((r) => (
-              <TabsTrigger key={runKey(r)} value={runKey(r)} className="font-mono text-xs tracking-[0.06em] uppercase">
-                {runLabel(r)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          {latest.map((r) => {
-            const [headline] = rankings(r)
-            return (
-              <TabsContent key={runKey(r)} value={runKey(r)} className="flex flex-col gap-4">
-                {headline ? (
-                  <RankingCard ranking={headline} learnMore={page} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Only{" "}
-                    {Object.keys(r.header.readers)
-                      .map((s) => SYSTEMS[s] ?? s)
-                      .join(", ")}{" "}
-                    ran here, so nothing is ranked. Its times are under{" "}
-                    <Link href={page} className="underline underline-offset-4 hover:text-foreground">
-                      all results
-                    </Link>
-                    .
-                  </p>
-                )}
-                <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-                  Run of {r.header.started.slice(0, 10)}
-                  <RunInfoButton info={runInfo(r)} label={runLabel(r)} />
-                  {r.queries.some((q) => q.correct !== undefined) &&
-                    "Answers are checked against a copy of the data with each row once."}
-                </p>
-              </TabsContent>
-            )
-          })}
-        </Tabs>
+      {latest.length > 0 ? (
+        <RunTabs views={latest.map((r) => ({ run: r, node: <LatestRun benchmark={benchmark} run={r} /> }))} />
       ) : (
         <p className="text-sm text-muted-foreground">No runs yet.</p>
       )}
     </section>
+  )
+}
+
+/** One storage's newest run: its headline ranking, or what ran where nothing is ranked; then its date. */
+function LatestRun({ benchmark, run }: { benchmark: Benchmark; run: Run }) {
+  const page = `/benchmarks/${benchmark.id}`
+  const [headline] = rankings(run)
+  return (
+    <>
+      {headline ? (
+        <RankingCard ranking={headline} learnMore={page} />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Only {systemList(run)} ran here, so nothing is ranked. Its times are under{" "}
+          <Link href={page} className="underline underline-offset-4 hover:text-foreground">
+            all results
+          </Link>
+          .
+        </p>
+      )}
+      <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+        <RunDate run={run} />
+        {answersChecked(run) && CHECKED_NOTE}
+      </p>
+    </>
   )
 }

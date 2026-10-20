@@ -1,8 +1,9 @@
-import { ArrowRight, ArrowUpRight, ChevronLeft } from "lucide-react"
+import { ArrowRight, ArrowUpRight } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 
+import { BackLink } from "@/components/back-link"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { BENCHMARKS, benchmark, type Section } from "@/lib/benchmark-catalog"
@@ -90,12 +91,9 @@ export default async function MethodologyPage({ params }: Props) {
   return (
     <div className="mx-auto max-w-3xl space-y-10 px-4 py-12">
       <header className="space-y-3">
-        <Link
-          href={results ? `/benchmarks/${b.id}` : "/benchmarks"}
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> {results ? `${b.name} results` : "Benchmarks"}
-        </Link>
+        <BackLink href={results ? `/benchmarks/${b.id}` : "/benchmarks"}>
+          {results ? `${b.name} results` : "Benchmarks"}
+        </BackLink>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-3xl font-semibold tracking-tight">{b.name}: methodology</h1>
           {!results && <Badge variant="outline">Planned</Badge>}

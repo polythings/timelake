@@ -15,13 +15,9 @@ import {
 } from "@/components/ranking-card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { useMediaQuery } from "@/hooks/use-mobile"
-import QUERIES from "@/lib/bench-queries.json"
-import { type Ranking, SYSTEM_COLORS, isOwnReader } from "@/lib/bench-systems"
+import { TIMELAKE_ENGINE, type Ranking, engineLabel, isOwnReader, systemColor } from "@/lib/bench-systems"
 import type { HistoryPoint, Section, SectionHistory } from "@/lib/benchmarks"
 import { cn } from "@/lib/utils"
-
-/** Each suite's queries as the query files describe them (bench/queries; timebench queries --site). */
-const DESCRIBED = QUERIES as Record<string, { name: string; description: string; sql: string; tuned?: string }[]>
 
 /** Where the results move beside the list (Tailwind's lg). */
 const WIDE = "(min-width: 64rem)"
@@ -43,6 +39,7 @@ type Entry = {
   /** Timelake's version of the query in a tuned run, where it has one (D23). */
   tuned?: string
   ranking: Ranking
+  /** Engines (`system+reader`) that failed or timed out. */
   failed: string[]
   points: HistoryPoint[]
 }
@@ -54,7 +51,6 @@ type Entry = {
  * where counted, by requests, their cost, or bytes read.
  */
 export function SectionResults({ section, history }: { section: Section; history: SectionHistory }) {
-  const described = new Map((DESCRIBED[section.suite] ?? []).map((q) => [q.name, q]))
   const asked = section.queries.length
   const common = section.ranking.queries ?? asked
   const entries: Entry[] = [
@@ -72,17 +68,19 @@ export function SectionResults({ section, history }: { section: Section; history
     ...section.queries.map((q) => ({
       id: q.query,
       title: q.query,
-      description: described.get(q.query)?.description,
-      sql: described.get(q.query)?.sql,
-      tuned: described.get(q.query)?.tuned,
+      description: q.description,
+      sql: q.sql,
+      tuned: q.tuned,
       ranking: q.ranking,
       failed: q.failed,
       points: history.queries[q.query] ?? [],
     })),
   ]
   const wide = useMediaQuery(WIDE)
-  // Wide screens always show one row's results beside the list; narrow ones open and close them under the row.
-  const [selected, setSelected] = useState<string | null>("")
+  // Wide screens always show one row's results beside the list (the first row's when none is open, as after closing
+  // a row on a narrow screen); narrow ones open and close them under the row.
+  const [chosenRow, setSelected] = useState<string | null>("")
+  const selected = chosenRow ?? (wide ? "" : null)
   const select = (id: string) => setSelected(id === selected && !wide ? null : id)
   const options = metricOptions(section.ranking)
   const [chosen, setMetric] = useState<Metric>("time")
@@ -195,7 +193,7 @@ function Row({
           </>
         ) : versus ? (
           <span className="font-mono tabular-nums">{versus}</span>
-        ) : entry.failed.includes("Timelake") ? (
+        ) : entry.failed.includes(TIMELAKE_ENGINE) ? (
           "failed"
         ) : (
           "—"
@@ -221,7 +219,7 @@ function Details({ entry, metric }: { entry: Entry; metric: Metric }) {
     .map((r) => ({
       engine: r.key,
       label: r.label,
-      color: SYSTEM_COLORS[r.system] ?? "var(--chart-2)",
+      color: systemColor(r.system),
       dashed: !isOwnReader(r.key),
     }))
   return (
@@ -232,7 +230,9 @@ function Details({ entry, metric }: { entry: Entry; metric: Metric }) {
       />
       <RankingBars ranking={shown} perSystem={false} queries={entry.id ? 1 : entry.ranking.queries} learnMore="" />
       {entry.failed.length > 0 && (
-        <p className="text-xs text-muted-foreground">Failed or timed out: {entry.failed.join(", ")}.</p>
+        <p className="text-xs text-muted-foreground">
+          Failed or timed out: {entry.failed.map(engineLabel).join(", ")}.
+        </p>
       )}
       {entry.sql && <SqlBlock label="SQL every system runs" sql={entry.sql} />}
       {entry.tuned && <SqlBlock label="Timelake's SQL in a tuned run" sql={entry.tuned} />}

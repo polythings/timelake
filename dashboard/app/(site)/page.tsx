@@ -17,6 +17,7 @@ import Link from "next/link"
 import { BenefitCards } from "@/components/benefit-cards"
 import { GithubIcon } from "@/components/github-icon"
 import { HeroFlow } from "@/components/hero-flow"
+import { PageTitle } from "@/components/page-title"
 import { SectionHead } from "@/components/section-head"
 import { StackDiagram } from "@/components/stack-diagram"
 import { Button } from "@/components/ui/button"
@@ -123,11 +124,11 @@ export default function Home() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(WEBSITE) }} />
       <section className="flex flex-col gap-8">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-          <h1 className="text-4xl leading-[1.05] font-light tracking-tight sm:text-5xl">
+          <PageTitle>
             The open time&#8209;series
             <br />
             lakehouse
-          </h1>
+          </PageTitle>
           <div className="flex shrink-0 flex-wrap gap-2.5">
             <Button size="lg" className={BTN} nativeButton={false} render={<Link href="/docs/quick-start" />}>
               Quick start <ArrowRight />
