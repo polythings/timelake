@@ -96,6 +96,23 @@ test("rows appended from JavaScript read back in the engine and the client", asy
   expect(fx.cli("info", "iot.live")).toContain("files")
 })
 
+test("bigints beyond 2^53 are written exactly", async () => {
+  fx.cli("create", "iot.counters", "--schema", "time:timestamptz,id:long", "--time-column", "time")
+  const writer = new TableWriter(dirStore(fx.dir), fx.url, "iot.counters")
+  await writer.append([{ time: Date.parse("2026-01-01T00:00:00Z"), id: 2n ** 53n + 1n }])
+  expect(fx.sql("SELECT CAST(id AS VARCHAR) AS id FROM iot.counters")).toEqual([{ id: "9007199254740993" }])
+
+  // Without JSON.rawJSON (older runtimes), an unsafe bigint is an error, never a rounded number.
+  const rawJSON = Object.getOwnPropertyDescriptor(JSON, "rawJSON")
+  delete (JSON as { rawJSON?: unknown }).rawJSON
+  try {
+    await expect(writer.append([{ time: 0, id: -(2n ** 63n) }])).rejects.toThrow(/bigint/)
+    expect((await writer.append([{ time: 0, id: 7n }])).rows).toBe(1)
+  } finally {
+    if (rawJSON) Object.defineProperty(JSON, "rawJSON", rawJSON)
+  }
+})
+
 test("bad rows are rejected before anything is written", async () => {
   const writer = new TableWriter(dirStore(fx.dir), fx.url, "iot.readings")
   await expect(writer.append([{ time: Date.now(), tags_id: 1, nope: 1 }])).rejects.toThrow(/don't fit the table.*nope/)

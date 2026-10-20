@@ -223,9 +223,19 @@ function rootOf(warehouse: string): string {
   return m[1]
 }
 
-/** Rows as newline-delimited JSON: Dates as ISO strings (as JSON does), bigints as numbers. */
+/**
+ * Rows as newline-delimited JSON: Dates as ISO strings (as JSON does), bigints as exact number
+ * literals. `JSON.rawJSON` (ES2025) writes the digits; without it, a bigint beyond 2^53 is an error.
+ */
 function rowsJson(rows: readonly Record<string, unknown>[]): string {
-  const replacer = (_: string, v: unknown) => (typeof v === "bigint" ? Number(v) : v)
+  const { rawJSON } = JSON as { rawJSON?: (text: string) => unknown }
+  const replacer = (key: string, v: unknown) => {
+    if (typeof v !== "bigint") return v
+    if (rawJSON) return rawJSON(v.toString())
+    const n = Number(v)
+    if (!Number.isSafeInteger(n)) throw new RangeError(`${key}: bigint ${v} needs JSON.rawJSON to be written exactly`)
+    return n
+  }
   return rows.map((r) => JSON.stringify(r, replacer)).join("\n")
 }
 

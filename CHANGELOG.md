@@ -73,6 +73,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   that need merging are merged with the files of the time they span, not with the whole table.
 - The TypeScript client's `TableWriter` trims trailing slashes from the warehouse in linear time; the regular
   expression it used took quadratic time on a string with many slashes.
+- The TypeScript client's `TableWriter` writes `bigint` values beyond 2^53 exactly; it rounded them to the nearest
+  float. Where `JSON.rawJSON` is missing (runtimes before ES2025), such a value is an error.
 
 ### Changed
 
