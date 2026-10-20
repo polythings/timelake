@@ -6,7 +6,7 @@ status: in-progress
 updated: 2026-10-20
 versions: []
 related: [45, 46]
-issues: [64, 81, 90, 94, 132, 137, 138, 139, 140]
+issues: [64, 81, 90, 94, 132, 137, 138, 139, 140, 147, 148, 149, 150, 151, 152, 153]
 ---
 
 # 44. Benchmark harness: timebench
@@ -71,6 +71,36 @@ TSBS assumes a database. A lake also has to be judged on these, borrowing ideas 
 
 PyIceberg appends are the naive baseline (what v0 compares against today). Published results must also include Iceberg written the way an expert team would (planned): a Flink or Spark streaming sink that batches commits, with scheduled `rewrite_data_files` and sorting; the Kafka Connect Iceberg sink; iceberg-rust; and DuckDB's Iceberg writer. Beating only the naive writer proves too little.
 
+### Default and tuned (decided 2026-10-20, D23)
+
+Every system runs twice, so results neither flatter a system with expert tuning nobody does nor punish it for
+defaults nobody keeps:
+
+- **Default:** installed and loaded with its defaults, the way a team's first afternoon with it looks: tables as its
+  library or loader creates them, no sort order or indexes chosen, its server settings as shipped.
+- **Tuned:** configured as its own docs recommend for the workload, using anything the system offers: layout, sort
+  order, indexes, compaction, server settings, and precomputation (Timelake rollups, TimescaleDB continuous
+  aggregates, ClickHouse materialized views and projections, QuestDB materialized views, InfluxDB's caches). Where a
+  system's precomputation is read by different SQL, it gets a tuned version of the queries, written as its docs show;
+  every answer is still checked against the reference.
+
+| System | Default | Tuned |
+|---|---|---|
+| Timelake | the contract only (time column, series key), default settings | rollups for the workload's bucketed queries, settings for the workload; queries unchanged (routing) |
+| Iceberg, S3 Tables | PyIceberg appends, day partitions | a sort order on (series key, time) and sorting compaction; later the expert writer below (#138) |
+| Lance | appends | compaction and scalar indexes on the series key and time |
+| Parquet files | a file per commit | one sorted file per day |
+| TimescaleDB | a hypertable, row store | columnstore (segment by the series key, order by time) and continuous aggregates, read by its tuned queries |
+| ClickHouse | MergeTree ordered by time | ordered by (series key, time), monthly partitions, ReplacingMergeTree, materialized views and projections, read by its tuned queries |
+| QuestDB | tables as ingestion creates them | indexed SYMBOL keys, dedup keys, materialized views, read by its tuned queries |
+| InfluxDB 3 Core | as shipped (a query reads at most 432 files) | the file limit raised, the last value and distinct value caches, read by its tuned queries |
+
+Runs record their tuning; the weekly schedule runs both every week, over more days of the instance. The site shows
+one tuning at a time with a switch per section, entries keeping their plain names. Until the tuned set is built,
+today's runs are between the two (most systems already follow their docs' layout), and InfluxDB's two entries are
+its two tunings. Work: #147 (harness), #148 (site), #149 (lake systems), #150 to #153 (TimescaleDB, ClickHouse,
+QuestDB, InfluxDB).
+
 ### Methodology
 - **Same hardware and same object store** for every lake system:
   - Locally: RustFS (or SeaweedFS), with injected latency (e.g. toxiproxy) to approximate S3's per-request latency.
@@ -82,7 +112,7 @@ PyIceberg appends are the naive baseline (what v0 compares against today). Publi
   - **Tigris global buckets** are strongly consistent within a region and eventually consistent across regions; a conditional write is decided by the bucket's leader only with `X-Tigris-Consistent: true`. Writers to one table from different regions need that header or a single-region bucket. To verify in the compatibility matrix.
 - **Cold and warm runs reported separately:** cold means no local caches.
 - **Results include:** p50/p99 latency, bytes read, **object-store request counts**, and **estimated $** (per query, per GB ingested, per month of storage).
-- **Configurations:** Every system's configuration and version is committed. Each system is tuned per its own docs, and vendors are invited to review.
+- **Configurations:** Every system's configuration and version is committed, in a default and a tuned form (above), and vendors are invited to review.
 - **Harness (built 2026-10-15):** `timebench` in `bench/timebench`, named on its own because it may move to its own repository: only its Timelake adapter knows Timelake. The website explains its method at /benchmarks/timebench. Our own benchmark system, extended over time with new workloads and systems: public benchmarks miss most of what a time-series lake has to do in practice (streaming commits, late data, maintenance, cost), and it isn't limited to Iceberg.
   - A **workload** is data at a named scale, the order its rows arrive in (in stages, each optionally ending at a checkpoint), and its queries (written once with dialect placeholders; a reader-specific version only where its SQL lacks a construct). Now: TSBS IoT (`small`, `standard`, `large`), TSBS DevOps cpu-only (`small`, `standard` = 4,000 hosts) and IIoT ([spec 45](0045-iiot-benchmark.md)).
   - A **system** is one adapter: create tables, append a commit, run its own maintenance, open its readers. Now: Timelake, Iceberg (PyIceberg), S3 Tables, Lance, plain Parquet files, TimescaleDB (any server: a container, the benchmark instance, Tiger Cloud), ClickHouse, QuestDB, InfluxDB 3 Core, and `reference` (the right answers, [spec 45](0045-iiot-benchmark.md)).
@@ -141,6 +171,7 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 | ID | Decision | Status |
 |---|---|---|
 | D15 | `timebench`: TSBS IoT as the base workload plus lake extensions, run against every alternative in [landscape](landscape.md) ([spec 44](0044-timebench.md)) | Accepted |
+| D23 | Every system runs in two tunings: default (as installed) and tuned (its docs' recommendations, precomputation included, with tuned queries where the system needs them, answers checked against the reference); the site switches between them per section | Accepted |
 | D21 | Benchmarks compare against every opponent (InfluxDB 3, TimescaleDB, ClickHouse, QuestDB, naive Iceberg, Lance), publish where Timelake is worse as well as better, and always report cost per month and behavior as data grows next to latency ([spec 45](0045-iiot-benchmark.md)). | Accepted |
 
 ## Open questions and issues
@@ -154,6 +185,13 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 - [#138](https://github.com/polythings/timelake/issues/138) Bench: Iceberg written the way an expert team would
 - [#139](https://github.com/polythings/timelake/issues/139) Bench: one published run per popular object store, and a compatibility matrix in CI
 - [#140](https://github.com/polythings/timelake/issues/140) CI: a gate on request and byte counts
+- [#147](https://github.com/polythings/timelake/issues/147) timebench: run every system default and tuned
+- [#148](https://github.com/polythings/timelake/issues/148) Site: a Default / Tuned switch on benchmark sections
+- [#149](https://github.com/polythings/timelake/issues/149) Bench: default and tuned lake systems (Timelake, Iceberg, S3 Tables, Lance, Parquet)
+- [#150](https://github.com/polythings/timelake/issues/150) Bench: default and tuned TimescaleDB, with its tuned queries
+- [#151](https://github.com/polythings/timelake/issues/151) Bench: default and tuned ClickHouse, with its tuned queries
+- [#152](https://github.com/polythings/timelake/issues/152) Bench: default and tuned QuestDB, with its tuned queries
+- [#153](https://github.com/polythings/timelake/issues/153) Bench: default and tuned InfluxDB 3 Core, with its tuned queries
 
 ## History
 
@@ -163,3 +201,4 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 32; specs regrouped one per feature, with milestones on the roadmap.
 - 2026-10-20: the weekly industrial IoT run also runs the lake systems on S3.
+- 2026-10-20: default and tuned runs of every system decided (D23); work in #147–#153.

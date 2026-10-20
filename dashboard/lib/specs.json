@@ -568,7 +568,7 @@
     "versions": [],
     "summary": "One reproducible suite run against Timelake and every alternative with each system's own tooling: TSBS IoT and DevOps plus lake-specific workloads (streaming ingest, late data, maintenance, cost), local and on object storage, every run kept with its commit, and a weekly regression run.",
     "related": [45, 46],
-    "issues": [64, 81, 90, 94, 132, 137, 138, 139, 140],
+    "issues": [64, 81, 90, 94, 132, 137, 138, 139, 140, 147, 148, 149, 150, 151, 152, 153],
     "milestones": ["v0", "benchmarks"]
   },
   {

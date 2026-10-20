@@ -178,6 +178,7 @@ Every decision has an ID and lives in the spec or page it shapes.
 | D20 | DataFusion pinned to 54.1, the newest release on iceberg-rust's Arrow | [Embedded engine](engine.md) |
 | D21 | Benchmarks include every opponent, publish losses, and report cost and growth | [44. Benchmark harness: timebench](0044-timebench.md) |
 | D22 | Descriptive function names with pandas aliases; continuous aggregates are materialized rollups | [28. Function library](0028-function-library.md) |
+| D23 | Every benchmarked system runs default (as installed) and tuned (its docs' recommendations, precomputation and tuned queries included) | [44. Benchmark harness: timebench](0044-timebench.md) |
 
 Until 2026-10-19 all of this was one file, `SPEC.md`, with the original plan's phases; on 2026-10-19 the specs were
 regrouped one per feature, with milestones in place of the hand-written roadmap. Both are in git history.
