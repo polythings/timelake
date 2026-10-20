@@ -150,6 +150,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   NULL at a series' edge, which ClickHouse doesn't. QuestDB commits reuse one client instead of connecting each time.
   S3 Tables maintenance that never compacted is an error, not ok. Lance's maintenance on the local S3 target goes
   through the counting proxy like every other system's (`BENCH_LANCE_DIRECT`, which sent it around the proxy, is gone).
+- With read deduplication off, `ORDER BY` the series key and time could return the rows of a file another engine wrote
+  unsorted in the file's order. Such files are now sorted.
 
 ### Changed
 

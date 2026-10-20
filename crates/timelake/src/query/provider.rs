@@ -424,6 +424,8 @@ async fn scan_files(
     }
     groups.retain(|g| !g.is_empty());
     let one_file_per_group = groups.iter().all(|g| g.len() == 1);
+    // Another engine's files may be unsorted.
+    let sorted = files.iter().all(|f| f.data_file.sort_order_id() == table_sort_order(table));
 
     let source = Arc::new(ParquetSource::new(schema.clone()));
     let mut stats = Statistics::new_unknown(&schema);
@@ -435,11 +437,12 @@ async fn scan_files(
         .with_limit(if filters.is_empty() { limit } else { None })
         // DataFusion lets an idle partition take files from the others unless told the order matters.
         .with_preserve_order(time_order);
-    // Every file is sorted by (series…, time). Declaring it lets DataFusion skip sorts, but it also
-    // keeps one partition per file (no byte-range splits), which costs more than it saves when a
-    // few large compacted files hold the data. Only declare it when there are enough files.
+    // Timelake's files are sorted by (series…, time). Declaring it lets DataFusion skip sorts, but it
+    // also keeps one partition per file (no byte-range splits), which costs more than it saves when
+    // a few large compacted files hold the data. Only declare it when there are enough files.
     let sort_columns = table.contract().sort_columns();
-    if n_groups >= target
+    if sorted
+        && n_groups >= target
         && one_file_per_group
         && let Some(ordering) = key_ordering(&schema, &sort_columns)?
     {
@@ -834,5 +837,38 @@ impl TableProvider for TimelakeProvider {
         let mut s = Statistics::new_unknown(&self.table.schema());
         s.num_rows = Precision::Inexact(rows);
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::{AsArray, RecordBatch};
+    use arrow::datatypes::Float64Type;
+    use datafusion::prelude::SessionConfig;
+
+    use crate::testing::{T0, append_unsorted, batch, faulty_lake, opts, schema};
+
+    fn values(out: &[RecordBatch]) -> Vec<f64> {
+        out.iter().flat_map(|b| b.column(0).as_primitive::<Float64Type>().values().to_vec()).collect()
+    }
+
+    /// A file another engine wrote unsorted isn't declared sorted, so `ORDER BY` still sorts it (in
+    /// the order a sorted file would be declared in, nulls first).
+    #[tokio::test]
+    async fn an_unsorted_file_is_sorted_for_order_by() {
+        let (lake, _store) = faulty_lake();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        let day = crate::write::sort_and_split(&t, &[batch(&[(T0, 1, 0.0)])]).unwrap()[0].0;
+        append_unsorted(&t, day, batch(&[(T0 + 5, 2, 3.0), (T0, 1, 1.0), (T0 + 1, 2, 2.0)])).await;
+        let session = crate::Session::with_config(lake, SessionConfig::new().with_target_partitions(1));
+        session.sql("SET timelake.read_dedup = false").await.unwrap();
+        let out = session
+            .sql("SELECT value FROM iot.r ORDER BY device NULLS FIRST, time NULLS FIRST")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(values(&out), [1.0, 2.0, 3.0]);
     }
 }
