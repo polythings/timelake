@@ -14,6 +14,7 @@ local disk, under other load (load average 20–30), so absolute times are rough
 | Experiment | Workload, target | Arms (label: what differs) | Runs | Result | Decision |
 |---|---|---|---:|---|---|
 | Timelake tuned and default | IIoT small; local; reference checking answers | `tuning A/B tuned`: the hourly rollup and tuned queries; `tuning A/B default`: neither | 2 | After maintenance, geomean best repeat 43 → 16 ms; ingest 450 → 456 s, commit p50 132 ms both; dashboards 61 → 187 queries/s at 16 clients | rollup and tuned queries are Timelake's tuned IIoT configuration |
+| Lake systems' tunings work | TSBS IoT small; local | `tuning check tuned` / `tuning check default`: Iceberg, Lance, Parquet with the reference | 2 | every answer right; maintenance tuned/default: Iceberg 8.6/8.3 s (sorting/binpack), Lance 1.5/0 s (5,190 → 26 objects), Parquet 0.9/0 s | the configurations as built |
 
 ## Rollups for the TSBS workloads (copies of the standard lakes, CLI best of 3, routing off → on, same answers)
 
