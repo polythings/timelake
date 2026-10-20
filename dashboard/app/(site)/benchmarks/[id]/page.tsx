@@ -33,6 +33,7 @@ import {
   sections,
   targetLabel,
   type Run,
+  type Section,
   type Workload,
 } from "@/lib/benchmarks"
 import { formatBytes, formatNumber, formatTime } from "@/lib/format"
@@ -97,96 +98,154 @@ async function BenchmarkBody({ params }: Props) {
 async function Results({ workload }: { workload: Workload }) {
   const runs = await loadRuns()
   const latest = latestByTarget(runs, workload.id)
-  const [first] = latest
-  if (!first) return <p className="text-sm text-muted-foreground">No runs yet.</p>
+  if (latest.length === 0) return <p className="text-sm text-muted-foreground">No runs yet.</p>
+  const checked = latest.some((r) => r.queries.some((q) => q.correct !== undefined))
+  // The query sections of every storage, each with the runs that have it, in suite then checkpoint order.
+  const order = (s: Section) =>
+    workload.suites.findIndex((x) => x.id === s.suite) * 100 + Object.keys(CHECKPOINTS).indexOf(s.checkpoint)
+  const querySections = new Map<string, { section: Section; variants: Variant[] }>()
+  for (const r of latest) {
+    for (const s of sections(r, workload)) {
+      const key = `${s.suite}|${s.checkpoint}`
+      const entry = querySections.get(key) ?? { section: s, variants: [] }
+      const lines = Object.entries(r.header.readers).map(([system, readers]) => {
+        const engine = `${system}+${readers[0]}`
+        return { engine, label: engineLabel(engine), color: SYSTEM_COLORS[system] ?? "var(--chart-2)" }
+      })
+      entry.variants.push({
+        run: r,
+        node: <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} lines={lines} />,
+      })
+      querySections.set(key, entry)
+    }
+  }
+  const ingest = latest.filter((r) => r.phases.some((p) => p.kind === "ingest"))
+  const live = latest.filter((r) => liveRows(r).length > 0)
+  const concurrent = latest.filter((r) => r.concurrency.length > 0)
+  const costs = latest.filter((r) => costRows(r).length > 0)
+  const failing = latest.filter((r) => failures(r).length > 0)
   return (
     <>
-      <Tabs defaultValue={runKey(first)} className="gap-12">
-        <TabsList variant="line" className="flex-wrap">
-          {latest.map((r) => (
-            <TabsTrigger key={runKey(r)} value={runKey(r)} className="font-mono text-xs tracking-[0.06em] uppercase">
-              {runLabel(r)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        {latest.map((r) => (
-          <TabsContent key={runKey(r)} value={runKey(r)} className="flex flex-col gap-16">
-            <RunResults run={r} runs={runs} workload={workload} />
-          </TabsContent>
+      {checked && (
+        <p className="-mt-8 text-sm text-muted-foreground">
+          Answers are checked against a copy of the data with each row once. Each section shows the newest run on the
+          storage you pick.
+        </p>
+      )}
+      {[...querySections.values()]
+        .sort((a, b) => order(a.section) - order(b.section))
+        .map(({ section: s, variants }) => (
+          <ResultSection
+            key={`${s.suite}|${s.checkpoint}`}
+            // The suite's name without its query count, which the card gives.
+            title={workload.suites.length > 1 ? `${s.suiteLabel.replace(/ \(.*\)$/, "")} · ${s.label}` : s.label}
+            note={CHECKPOINT_NOTES[s.checkpoint]}
+            variants={variants}
+          />
         ))}
-      </Tabs>
+      <ResultSection
+        title="Ingest and maintenance"
+        note="How each system took the data in and kept it in shape: load rate, commit times, maintenance, and what it stored."
+        variants={ingest.map((r) => ({ run: r, node: <IngestContent run={r} /> }))}
+      />
+      <ResultSection
+        title="While ingesting"
+        note="Fresh readers during ingest: whether they saw every finished commit, and how fast dashboard queries ran under writes."
+        variants={live.map((r) => ({ run: r, node: <LivePanel run={r} /> }))}
+      />
+      <ResultSection
+        title="Concurrent dashboards"
+        note="Several clients at once after maintenance, each with its own reader, running the dashboard queries in turn."
+        variants={concurrent.map((r) => ({ run: r, node: <ConcurrencyPanel run={r} /> }))}
+      />
+      <ResultSection
+        title="Cost"
+        note="Requests and storage at the store's list prices; machines are not included."
+        variants={costs.map((r) => ({ run: r, node: <CostPanel run={r} /> }))}
+      />
+      <ResultSection
+        title="Failed or timed out"
+        note="Left out of the rankings above; each query's list says which readers it lost."
+        variants={failing.map((r) => ({ run: r, node: <FailedPanel failed={failures(r)} /> }))}
+      />
       <OverTime runs={runs} latest={latest} workload={workload} />
     </>
   )
 }
 
-/** The newest run on one kind of storage: overview, a section per suite and checkpoint, then ingest and the rest. */
-function RunResults({ run, runs, workload }: { run: Run; runs: Run[]; workload: Workload }) {
+/** One storage's run of a section, and what it shows. */
+type Variant = { run: Run; node: React.ReactNode }
+
+/**
+ * A section of results with its own choice of storage: a tab per kind of storage that has the section's data (AWS S3
+ * first), each showing that run's results, its date, and its details behind ⓘ.
+ */
+function ResultSection({ title, note, variants }: { title: string; note?: string; variants: Variant[] }) {
+  const [first] = variants
+  if (!first) return null
+  return (
+    <section className="flex flex-col gap-4">
+      <SectionHead label={title}>{note}</SectionHead>
+      <Tabs defaultValue={runKey(first.run)} className="gap-4">
+        <TabsList variant="line" className="flex-wrap">
+          {variants.map((v) => (
+            <TabsTrigger
+              key={runKey(v.run)}
+              value={runKey(v.run)}
+              className="font-mono text-xs tracking-[0.06em] uppercase"
+            >
+              {runLabel(v.run)}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {variants.map((v) => (
+          <TabsContent key={runKey(v.run)} value={runKey(v.run)} className="flex flex-col gap-4">
+            <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+              Run of {v.run.header.started.slice(0, 10)}
+              <RunInfoButton info={runInfo(v.run)} label={runLabel(v.run)} />
+            </p>
+            {v.node}
+          </TabsContent>
+        ))}
+      </Tabs>
+    </section>
+  )
+}
+
+/** A run's ingest: load and commit rankings, the requests one query takes, and the per-system table. */
+function IngestContent({ run }: { run: Run }) {
   const delay = s3TablesDelay(run)
-  const failed = failures(run)
-  const checked = run.queries.some((q) => q.correct !== undefined)
-  // History charts draw each system's own reader, in its color.
-  const lines = Object.entries(run.header.readers).map(([system, readers]) => {
-    const engine = `${system}+${readers[0]}`
-    return { engine, label: engineLabel(engine), color: SYSTEM_COLORS[system] ?? "var(--chart-2)" }
-  })
   return (
     <>
-      <section className="flex flex-col gap-4">
-        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-          Run of {run.header.started.slice(0, 10)}
-          <RunInfoButton info={runInfo(run)} label={runLabel(run)} />
-          {checked && " Answers are checked against a copy of the data with each row once."}
-        </p>
-        <BenchCards run={run} queries={false} />
-      </section>
-
-      {sections(run, workload).map((s) => (
-        <section key={`${s.suite}|${s.checkpoint}`} className="flex flex-col gap-4">
-          <SectionHead label={workload.suites.length > 1 ? `${s.suiteLabel} · ${s.label}` : s.label}>
-            {CHECKPOINT_NOTES[s.checkpoint]}
-          </SectionHead>
-          <SectionResults section={s} history={queryHistory(runs, run, s.suite, s.checkpoint)} lines={lines} />
-        </section>
-      ))}
-
+      <BenchCards run={run} queries={false} />
+      <IngestPanel run={run} />
       {delay && (
         <p className="text-sm text-muted-foreground">
           S3 Tables compacted {delay[0].toFixed(1)}–{delay[1].toFixed(1)} hours after ingest; until then its readers see
           the &quot;right after ingest&quot; numbers.
         </p>
       )}
-      <IngestSection run={run} />
-      <LiveSection run={run} />
-      <ConcurrencySection run={run} />
-      <CostSection run={run} />
-      {failed.length > 0 && <FailedSection failed={failed} />}
     </>
   )
 }
 
 /** Queries that failed or timed out, by reader: they're left out of the rankings. */
-function FailedSection({ failed }: { failed: ReturnType<typeof failures> }) {
+function FailedPanel({ failed }: { failed: ReturnType<typeof failures> }) {
   const byEngine = Map.groupBy(failed, (f) => f.engine)
   return (
-    <section className="flex flex-col gap-4">
-      <SectionHead label="Failed or timed out">
-        Left out of the rankings above; each query&apos;s list says which readers it lost.
-      </SectionHead>
-      <Panel title="Per reader">
-        <ul className="flex flex-col divide-y">
-          {[...byEngine].map(([engine, fs]) => (
-            <li key={engine} className="grid gap-x-4 gap-y-1 py-2 sm:grid-cols-[14rem_3rem_minmax(0,1fr)]">
-              <span className="text-sm">{engine}</span>
-              <span className="font-mono text-xs text-muted-foreground tabular-nums sm:text-right">{fs.length}</span>
-              <span className="text-xs text-muted-foreground">
-                {fs.map((f) => `${f.query} (${(CHECKPOINTS[f.checkpoint] ?? f.checkpoint).toLowerCase()})`).join(", ")}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </Panel>
-    </section>
+    <Panel title="Per reader">
+      <ul className="flex flex-col divide-y">
+        {[...byEngine].map(([engine, fs]) => (
+          <li key={engine} className="grid gap-x-4 gap-y-1 py-2 sm:grid-cols-[14rem_3rem_minmax(0,1fr)]">
+            <span className="text-sm">{engine}</span>
+            <span className="font-mono text-xs text-muted-foreground tabular-nums sm:text-right">{fs.length}</span>
+            <span className="text-xs text-muted-foreground">
+              {fs.map((f) => `${f.query} (${(CHECKPOINTS[f.checkpoint] ?? f.checkpoint).toLowerCase()})`).join(", ")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   )
 }
 
@@ -266,197 +325,200 @@ const ms = (v: number | undefined) => (v == null ? "—" : `${Math.round(v)} ms`
 const systemName = (system: string) => SYSTEMS[system] ?? system
 
 /** Each system's ingest and maintenance: time committing, commit latency, files and storage after maintenance. */
-function IngestSection({ run }: { run: Run }) {
+function IngestPanel({ run }: { run: Run }) {
   const ingest = run.phases.filter((p) => p.kind === "ingest")
   if (ingest.length === 0) return null
   const maintain = new Map(run.phases.filter((p) => p.kind === "maintain").map((p) => [p.system, p]))
   // A staged stream (history in bulk, then a live day): commit times are the live day's.
   const staged = ingest.some((p) => p.stages)
   return (
-    <section className="flex flex-col gap-4">
-      <SectionHead label="Ingest and maintenance">
-        Committing is the time spent in all commits together
-        {staged ? "; commit times are the live day's, a 5-minute window per commit" : ""}. Storage is all files after
-        maintenance, counting replaced files still waiting for cleanup.
-      </SectionHead>
-      <Panel title="Per system" className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>System</TableHead>
-              <TableHead className="text-right">Committing</TableHead>
-              <TableHead className="text-right">Commit p50</TableHead>
-              {!staged && <TableHead className="text-right">Commit p95</TableHead>}
-              <TableHead className="text-right">Maintenance</TableHead>
-              <TableHead className="text-right">Files</TableHead>
-              <TableHead className="text-right">Storage</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {ingest.map((p) => {
-              const m = maintain.get(p.system)
-              const after = m ?? p
-              return (
-                <TableRow key={p.system}>
-                  <TableCell className={p.system === "timelake" ? "font-medium" : undefined}>
-                    {systemName(p.system)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {seconds(p.commit_seconds ?? p.seconds)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {ms(staged ? p.stages?.live?.commit_ms_p50 : p.commit_ms_p50)}
-                  </TableCell>
-                  {!staged && (
-                    <TableCell className="text-right font-mono tabular-nums">{ms(p.commit_ms_p95)}</TableCell>
-                  )}
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {p.system === "s3tables" ? "managed" : seconds(m?.seconds)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {after.data_files == null ? "—" : formatNumber(after.data_files)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {after.bytes == null ? "—" : formatBytes(after.bytes)}
-                  </TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </Panel>
-    </section>
+    <Panel
+      title="Per system"
+      note={
+        <>
+          Committing is the time spent in all commits together
+          {staged ? "; commit times are the live day's, a 5-minute window per commit" : ""}. Storage is all files after
+          maintenance, counting replaced files still waiting for cleanup.
+        </>
+      }
+      className="overflow-x-auto"
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>System</TableHead>
+            <TableHead className="text-right">Committing</TableHead>
+            <TableHead className="text-right">Commit p50</TableHead>
+            {!staged && <TableHead className="text-right">Commit p95</TableHead>}
+            <TableHead className="text-right">Maintenance</TableHead>
+            <TableHead className="text-right">Files</TableHead>
+            <TableHead className="text-right">Storage</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {ingest.map((p) => {
+            const m = maintain.get(p.system)
+            const after = m ?? p
+            return (
+              <TableRow key={p.system}>
+                <TableCell className={p.system === "timelake" ? "font-medium" : undefined}>
+                  {systemName(p.system)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {seconds(p.commit_seconds ?? p.seconds)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {ms(staged ? p.stages?.live?.commit_ms_p50 : p.commit_ms_p50)}
+                </TableCell>
+                {!staged && <TableCell className="text-right font-mono tabular-nums">{ms(p.commit_ms_p95)}</TableCell>}
+                <TableCell className="text-right font-mono tabular-nums">
+                  {p.system === "s3tables" ? "managed" : seconds(m?.seconds)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {after.data_files == null ? "—" : formatNumber(after.data_files)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {after.bytes == null ? "—" : formatBytes(after.bytes)}
+                </TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </Panel>
   )
 }
 
 /** Fresh readers during ingest: how often they were behind, and dashboard queries under writes. */
-function LiveSection({ run }: { run: Run }) {
+function LivePanel({ run }: { run: Run }) {
   const rows = liveRows(run)
   if (rows.length === 0) return null
   return (
-    <section className="flex flex-col gap-4">
-      <SectionHead label="While ingesting">
-        Every {run.header.live_interval_s} s during ingest, a fresh reader ran the dashboard queries and checked the
-        newest row it could see. Behind: probes that missed a commit that had already finished.
-      </SectionHead>
-      <Panel title="Per system" className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>System</TableHead>
-              <TableHead className="text-right">Probes behind</TableHead>
-              <TableHead className="text-right">Most behind</TableHead>
-              <TableHead className="text-right">Dashboard query, median</TableHead>
+    <Panel
+      title="Per system"
+      note={
+        <>
+          Every {run.header.live_interval_s} s during ingest, a fresh reader ran the dashboard queries and checked the
+          newest row it could see. Behind: probes that missed a commit that had already finished.
+        </>
+      }
+      className="overflow-x-auto"
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>System</TableHead>
+            <TableHead className="text-right">Probes behind</TableHead>
+            <TableHead className="text-right">Most behind</TableHead>
+            <TableHead className="text-right">Dashboard query, median</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((r) => (
+            <TableRow key={r.system}>
+              <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
+                {systemName(r.system)}
+              </TableCell>
+              <TableCell className="text-right font-mono tabular-nums">
+                {r.behind} of {r.probes}
+              </TableCell>
+              <TableCell className="text-right font-mono tabular-nums">
+                {r.behind ? `${r.maxLag.toFixed(1)} s` : "—"}
+              </TableCell>
+              <TableCell className="text-right font-mono tabular-nums">
+                {r.queryMedian == null ? "—" : formatTime(r.queryMedian)}
+              </TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r) => (
-              <TableRow key={r.system}>
-                <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
-                  {systemName(r.system)}
-                </TableCell>
-                <TableCell className="text-right font-mono tabular-nums">
-                  {r.behind} of {r.probes}
-                </TableCell>
-                <TableCell className="text-right font-mono tabular-nums">
-                  {r.behind ? `${r.maxLag.toFixed(1)} s` : "—"}
-                </TableCell>
-                <TableCell className="text-right font-mono tabular-nums">
-                  {r.queryMedian == null ? "—" : formatTime(r.queryMedian)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </section>
+          ))}
+        </TableBody>
+      </Table>
+    </Panel>
   )
 }
 
 /** N dashboard clients at once: throughput and slow queries per client count. */
-function ConcurrencySection({ run }: { run: Run }) {
+function ConcurrencyPanel({ run }: { run: Run }) {
   if (run.concurrency.length === 0) return null
   const counts = [...new Set(run.concurrency.map((c) => c.clients))].sort((a, b) => a - b)
   const systems = [...new Set(run.concurrency.map((c) => c.system))]
   return (
-    <section className="flex flex-col gap-4">
-      <SectionHead label="Concurrent dashboards">
-        After maintenance, {counts.join(", ")} clients at once, each with its own reader open, running the dashboard
-        queries in turn for {run.concurrency[0]?.seconds} s. Queries per second over all clients, and the 95th
-        percentile latency.
-      </SectionHead>
-      <Panel title="Per system" className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>System</TableHead>
-              {counts.map((n) => (
-                <TableHead key={n} className="text-right">
-                  {n} {n === 1 ? "client" : "clients"}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {systems.map((system) => (
-              <TableRow key={system}>
-                <TableCell className={system === "timelake" ? "font-medium" : undefined}>
-                  {systemName(system)}
-                </TableCell>
-                {counts.map((n) => {
-                  const c = run.concurrency.find((x) => x.system === system && x.clients === n)
-                  return (
-                    <TableCell key={n} className="text-right font-mono whitespace-nowrap tabular-nums">
-                      {c ? `${c.qps.toFixed(1)} q/s · ${c.p95_s == null ? "—" : formatTime(c.p95_s)}` : "—"}
-                      {c && c.errors > 0 ? ` (${c.errors} errors)` : ""}
-                    </TableCell>
-                  )
-                })}
-              </TableRow>
+    <Panel
+      title="Per system"
+      note={
+        <>
+          After maintenance, {counts.join(", ")} clients at once, each with its own reader open, running the dashboard
+          queries in turn for {run.concurrency[0]?.seconds} s. Queries per second over all clients, and the 95th
+          percentile latency.
+        </>
+      }
+      className="overflow-x-auto"
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>System</TableHead>
+            {counts.map((n) => (
+              <TableHead key={n} className="text-right">
+                {n} {n === 1 ? "client" : "clients"}
+              </TableHead>
             ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </section>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {systems.map((system) => (
+            <TableRow key={system}>
+              <TableCell className={system === "timelake" ? "font-medium" : undefined}>{systemName(system)}</TableCell>
+              {counts.map((n) => {
+                const c = run.concurrency.find((x) => x.system === system && x.clients === n)
+                return (
+                  <TableCell key={n} className="text-right font-mono whitespace-nowrap tabular-nums">
+                    {c ? `${c.qps.toFixed(1)} q/s · ${c.p95_s == null ? "—" : formatTime(c.p95_s)}` : "—"}
+                    {c && c.errors > 0 ? ` (${c.errors} errors)` : ""}
+                  </TableCell>
+                )
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Panel>
   )
 }
 
 const usd = (x: number | null) => (x == null ? "—" : x < 0.01 ? `$${x.toFixed(4)}` : `$${x.toFixed(2)}`)
 
 /** What the object-store traffic and storage cost at list prices. */
-function CostSection({ run }: { run: Run }) {
+function CostPanel({ run }: { run: Run }) {
   const rows = costRows(run)
   if (rows.length === 0) return null
   return (
-    <section className="flex flex-col gap-4">
-      <SectionHead label={`Cost on ${targetLabel(run.header.target)}`}>
-        Requests and storage at the store&apos;s list prices; machines are not included. Ingest is scaled to a month of
-        data arriving at this rate.
-      </SectionHead>
-      <Panel title="Per system" className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>System</TableHead>
-              <TableHead className="text-right">Ingest, per month</TableHead>
-              <TableHead className="text-right">Storage, per month</TableHead>
-              <TableHead className="text-right">1M queries</TableHead>
+    <Panel
+      title={`On ${targetLabel(run.header.target)}`}
+      note="Ingest is scaled to a month of data arriving at this rate."
+      className="overflow-x-auto"
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>System</TableHead>
+            <TableHead className="text-right">Ingest, per month</TableHead>
+            <TableHead className="text-right">Storage, per month</TableHead>
+            <TableHead className="text-right">1M queries</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((r) => (
+            <TableRow key={r.system}>
+              <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
+                {systemName(r.system)}
+              </TableCell>
+              <TableCell className="text-right font-mono tabular-nums">{usd(r.ingestMonth)}</TableCell>
+              <TableCell className="text-right font-mono tabular-nums">{usd(r.storageMonth)}</TableCell>
+              <TableCell className="text-right font-mono tabular-nums">{usd(r.perMillionQueries)}</TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r) => (
-              <TableRow key={r.system}>
-                <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
-                  {systemName(r.system)}
-                </TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{usd(r.ingestMonth)}</TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{usd(r.storageMonth)}</TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{usd(r.perMillionQueries)}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </section>
+          ))}
+        </TableBody>
+      </Table>
+    </Panel>
   )
 }
