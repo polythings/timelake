@@ -6,7 +6,7 @@ One Next.js app with the Timelake website, docs and benchmark results:
 |---|---|
 | `/` | Landing page: what Timelake is, how it works, quick start, benchmark highlights |
 | `/docs/**` | Documentation (quick start, how it works, concepts, glossary, CLI, Python, TypeScript, querying, properties, storage, architecture, codebase tour, development, benchmarks) |
-| `/spec`, `/spec/<slug>` | The specs and background pages from `spec/` at the repository root, rendered from their Markdown |
+| `/spec/<slug>` | The specs and background pages from `spec/` at the repository root, rendered from their Markdown, with every spec in the sidebar. `/spec` opens the first spec |
 | `/roadmap`, `/roadmap/<slug>` | The milestones from `spec/milestones/`, each with its specs |
 | `/benchmarks` | Benchmark results on AWS S3 (Timelake vs Lance, naive Iceberg and S3 Tables) and local disk; TimescaleDB on Tiger Cloud |
 

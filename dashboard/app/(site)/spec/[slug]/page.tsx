@@ -1,4 +1,4 @@
-import { ArrowUpRight, ChevronLeft } from "lucide-react"
+import { ArrowUpRight } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const spec = SPECS.find((s) => s.slug === slug)
   if (spec) return { title: `${spec.number}. ${spec.title}`, description: spec.summary }
   const page = BACKGROUND.find((b) => b.slug === slug)
-  return page ? { title: page.title, description: page.summary || undefined } : { title: "Specs" }
+  return page ? { title: page.title, description: page.summary || undefined } : { title: "Spec" }
 }
 
 export default function SpecPage({ params }: Props) {
@@ -32,7 +32,7 @@ export default function SpecPage({ params }: Props) {
       <aside className="sticky top-20 hidden h-[calc(100svh-6rem)] w-60 shrink-0 overflow-y-auto md:block">
         <SpecSidebar />
       </aside>
-      <Suspense fallback={<div className="h-96 max-w-3xl flex-1 animate-pulse rounded-xl bg-muted" />}>
+      <Suspense fallback={<div className="h-96 flex-1 animate-pulse rounded-xl bg-muted" />}>
         <SpecBody params={params} />
       </Suspense>
     </div>
@@ -48,12 +48,8 @@ async function SpecBody({ params }: Props) {
   const spec = SPECS.find((s) => s.slug === slug)
   const page = BACKGROUND.find((b) => b.slug === slug)
   return (
-    <div className="max-w-3xl min-w-0 flex-1 space-y-8">
+    <div className="min-w-0 flex-1 space-y-8">
       <header className="space-y-3">
-        <Link href="/spec" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ChevronLeft className="size-4" />
-          All specs
-        </Link>
         {spec ? (
           <>
             <p className="text-sm text-muted-foreground">

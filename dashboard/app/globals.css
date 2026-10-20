@@ -156,7 +156,7 @@
 .prose-docs pre { @apply my-4 overflow-x-auto rounded-lg border bg-muted/50 p-4 font-mono text-[13px] leading-6; }
 .prose-docs table { @apply my-4 w-full text-sm; }
 .prose-docs th { @apply border-b px-3 py-2 text-left font-medium; }
-.prose-docs td { @apply border-b px-3 py-2 align-top text-muted-foreground; overflow-wrap: anywhere; }
+.prose-docs td { @apply border-b px-3 py-2 align-top text-muted-foreground; overflow-wrap: break-word; }
 /* Below lg the article is narrow (next to a sidebar, or on a phone): wide tables scroll rather than the page. */
 @media (max-width: 1023px) {
   .prose-docs table { display: block; overflow-x: auto; }

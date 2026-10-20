@@ -8,6 +8,7 @@ import { Suspense } from "react"
 import { TimelakeLockup } from "@/components/brand/timelake-mark"
 import { DocsNav } from "@/components/docs/docs-sidebar"
 import { GithubIcon } from "@/components/github-icon"
+import { SpecSidebar } from "@/components/spec/spec-sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
@@ -19,7 +20,7 @@ const LINKS = [
   { href: "/docs", label: "Docs" },
   { href: "/benchmarks", label: "Benchmarks" },
   { href: "/roadmap", label: "Roadmap" },
-  { href: "/spec", label: "Specs" },
+  { href: "/spec", label: "Spec" },
   { href: "/contribute", label: "Contribute" },
 ]
 
@@ -44,6 +45,11 @@ function NavLinks({ pathname }: { pathname: string | null }) {
 
 function ActiveNavLinks() {
   return <NavLinks pathname={usePathname()} />
+}
+
+/** The phone menu's page list: the specs on /spec pages (their sidebar is hidden there), the docs elsewhere. */
+function MenuNav() {
+  return usePathname()?.startsWith("/spec/") ? <SpecSidebar /> : <DocsNav />
 }
 
 export function SiteHeader() {
@@ -99,7 +105,7 @@ export function SiteHeader() {
                   GitHub
                 </a>
               </div>
-              <DocsNav />
+              <MenuNav />
             </div>
           </SheetContent>
         </Sheet>

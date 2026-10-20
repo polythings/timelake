@@ -14,11 +14,8 @@ const ITEM =
 export function SpecSidebar() {
   const pathname = usePathname()
   return (
-    <nav className="space-y-5 text-sm" aria-label="Specs">
+    <nav className="space-y-5 text-sm" aria-label="Spec">
       <div className="space-y-1">
-        <Link href="/spec" className="block px-2 font-medium">
-          All specs
-        </Link>
         <Link href="/roadmap" className="block px-2 text-muted-foreground hover:text-foreground">
           Roadmap
         </Link>

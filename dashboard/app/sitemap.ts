@@ -19,7 +19,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...BENCHMARKS.filter((b) => b.methodology).map((b) => `/benchmarks/${b.id}/methodology`),
     "/roadmap",
     ...MILESTONES.map((m) => `/roadmap/${m.slug}`),
-    "/spec",
     ...SPECS.map((s) => `/spec/${s.slug}`),
     ...BACKGROUND.map((b) => `/spec/${b.slug}`),
     "/contribute",

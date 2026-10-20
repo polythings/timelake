@@ -1,7 +1,13 @@
 import { Check, CircleDashed, CircleDot, Telescope, X } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
-import { MILESTONE_STATUS_LABEL, type MilestoneStatus, STATUS_LABEL, type SpecStatus } from "@/lib/specs"
+import {
+  MILESTONE_STATUS_LABEL,
+  type MilestoneStatus,
+  STATUS_LABEL,
+  STATUS_MEANING,
+  type SpecStatus,
+} from "@/lib/specs"
 
 const ICON = { done: Check, "in-progress": CircleDot, planned: CircleDashed, dropped: X, exploring: Telescope }
 
@@ -34,13 +40,13 @@ export function StatusDot({ status }: { status: SpecStatus }) {
   )
 }
 
-/** What the status squares mean, wherever a list of them is shown. */
+/** What the status squares mean, wherever a list of them is shown; hovering a status says what it means. */
 export function StatusLegend({ className }: { className?: string }) {
   const shown: SpecStatus[] = ["done", "in-progress", "planned"]
   return (
     <p className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground ${className ?? ""}`}>
       {shown.map((s) => (
-        <span key={s} className="flex items-center gap-1.5">
+        <span key={s} className="flex cursor-help items-center gap-1.5" title={STATUS_MEANING[s]}>
           <span className={`size-2 shrink-0 ${DOT[s]}`} aria-hidden />
           {STATUS_LABEL[s]}
         </span>
