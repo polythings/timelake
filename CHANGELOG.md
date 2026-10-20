@@ -159,6 +159,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   They are now an error.
 - With `SET timelake.rollup_routing = false`, planning a query still loaded the table's rollups, a few requests each,
   and so did every `CREATE MATERIALIZED ROLLUP`. They no longer do.
+- `CREATE EXTERNAL TABLE IF NOT EXISTS` naming an existing lake table failed instead of doing nothing, and the
+  DataFusion context's `table_exist` was false for tables until an `information_schema` query had listed the lake. It
+  now also knows the tables the process has created or read.
 
 ### Changed
 

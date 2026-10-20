@@ -220,6 +220,7 @@ impl Lake {
         }
         storage.write(&hint_uri(&location), Bytes::from("1")).await?;
         let table = Table::new(self.clone(), name, location, 1, metadata)?.with_files(Arc::default());
+        self.remember(&table);
         head::update(&table);
         if storage.can_list() {
             // The index only serves readers that can't list; a stale one is repaired by the next

@@ -94,7 +94,29 @@ impl SchemaProvider for NamespaceSchema {
         }
     }
 
+    /// From the last listing, or the tables this process has loaded since: it can't do I/O.
     fn table_exist(&self, name: &str) -> bool {
-        self.table_names().iter().any(|t| t == name)
+        let loaded = TableName::new(&self.namespace, name).is_ok_and(|n| self.lake.caches().tables.get(&n).is_some());
+        loaded || self.table_names().iter().any(|t| t == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Session;
+    use crate::testing::{faulty_lake, opts, reopen, schema};
+
+    /// A table counts as existing before any query listed the lake.
+    #[tokio::test]
+    async fn tables_exist_without_a_listing() {
+        let (lake, store) = faulty_lake();
+        lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        let session = Session::new(lake);
+        assert!(session.context().table_exist("iot.r").unwrap());
+        assert!(!session.context().table_exist("iot.missing").unwrap());
+        // In another process, `CREATE EXTERNAL TABLE IF NOT EXISTS` of an existing table does nothing.
+        let session = Session::new(reopen(&store));
+        let create = "CREATE EXTERNAL TABLE IF NOT EXISTS iot.r STORED AS PARQUET LOCATION 'memory://test/x/'";
+        session.sql(create).await.unwrap().collect().await.unwrap();
     }
 }

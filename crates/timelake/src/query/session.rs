@@ -185,7 +185,8 @@ impl Session {
         // query references concurrently first, so planning finds them all in cache.
         if let Ok(references) = state.resolve_table_references(&statement) {
             // DataFusion lists namespaces and tables synchronously; list them up front instead.
-            if references.iter().any(|r| r.schema() == Some(INFORMATION_SCHEMA)) {
+            let create = matches!(statement, datafusion::sql::parser::Statement::CreateExternalTable(_));
+            if create || references.iter().any(|r| r.schema() == Some(INFORMATION_SCHEMA)) {
                 self.catalog.refresh_listing().await?;
             }
             let default_namespace = &state.config().options().catalog.default_schema;
