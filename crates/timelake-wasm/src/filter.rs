@@ -73,22 +73,32 @@ pub(crate) fn filter(batch: &RecordBatch, spec: &QuerySpec) -> Result<RecordBatc
         });
         Ok(())
     };
-    if let Some(time) = spec.time_column.as_ref().and_then(|tc| batch.column_by_name(tc))
+    // A file without a filtered column (written before the column was added) holds nulls there,
+    // which match no value and no time range.
+    let none = || BooleanArray::from(vec![false; batch.num_rows()]);
+    if let Some(tc) = &spec.time_column
         && (spec.from.is_some() || spec.to.is_some())
     {
-        let time = micros(time)?;
-        if let Some(from) = spec.from {
-            and(gt_eq(&time, &Int64Array::new_scalar(from))?)?;
-        }
-        if let Some(to) = spec.to {
-            and(lt(&time, &Int64Array::new_scalar(to))?)?;
+        match batch.column_by_name(tc) {
+            Some(time) => {
+                let time = micros(time)?;
+                if let Some(from) = spec.from {
+                    and(gt_eq(&time, &Int64Array::new_scalar(from))?)?;
+                }
+                if let Some(to) = spec.to {
+                    and(lt(&time, &Int64Array::new_scalar(to))?)?;
+                }
+            }
+            None => and(none())?,
         }
     }
     for (name, values) in &spec.series {
-        if let Some(col) = batch.column_by_name(name)
-            && !values.is_empty()
-        {
-            and(eq_any(col, values)?)?;
+        if values.is_empty() {
+            continue;
+        }
+        match batch.column_by_name(name) {
+            Some(col) => and(eq_any(col, values)?)?,
+            None => and(none())?,
         }
     }
     match mask {
@@ -148,6 +158,15 @@ mod tests {
         assert_eq!(times(json!({ "series": { "tag": [1] }, "timeColumn": "time", "to": 30 })), [20]);
         assert_eq!(times(json!({ "series": { "tag": [1], "name": ["b"] } })), [20]);
         assert_eq!(times(json!({ "series": { "tag": [] } })), [10, 20, 30, 40, 50]);
+    }
+
+    /// A batch without a filtered column (a file older than the column) has no matching rows.
+    #[test]
+    fn a_missing_filter_column_matches_nothing() {
+        assert_eq!(times(json!({ "series": { "added_later": [1] } })), Vec::<i64>::new());
+        assert_eq!(times(json!({ "series": { "added_later": [] } })), [10, 20, 30, 40, 50]);
+        let spec: QuerySpec = serde_json::from_value(json!({ "timeColumn": "t2", "from": 0 })).unwrap();
+        assert_eq!(filter(&batch(), &spec).unwrap().num_rows(), 0);
     }
 
     #[test]

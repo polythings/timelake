@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The TypeScript client ignored a series filter or time column the table doesn't have (a typo such as `tags_Id`) and
+  returned every row; such a query is now an error naming the column. A file written before a filtered column was
+  added has no rows matching the filter, rather than all of them.
 - A time column whose name isn't a valid Avro name, such as `event-time`, gave the table a partition field
   (`event-time_day`) that manifests can't hold: reading them without the head failed, and the TypeScript client
   couldn't commit at all. New tables name it as Iceberg's Avro encoding does (`event_x2Dtime_day`), and the TypeScript

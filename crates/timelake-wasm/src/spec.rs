@@ -6,6 +6,9 @@ use arrow_schema::Schema;
 use serde::Deserialize;
 use serde_json::Value as Json;
 
+use crate::error::{Error, Result};
+use crate::meta::Field;
+
 /// What to read. Times are microseconds since the epoch; the range is `[from, to)`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -105,6 +108,27 @@ impl AggSpec {
 }
 
 impl QuerySpec {
+    /// Errors when the query names a column the table (`schema`) doesn't have: a filter on it
+    /// would otherwise keep every row, and a projection drop it unnoticed.
+    pub fn check_columns(&self, schema: &[Field]) -> Result<()> {
+        let aggregated = self.bucket.iter().flat_map(|b| {
+            let read = b.aggs.iter().filter_map(|a| match &a.column {
+                AggInput::Column(c) => Some(c),
+                AggInput::Rows => None,
+            });
+            b.by.iter().chain(read)
+        });
+        let mut named = (self.time_column.iter())
+            .chain(self.series.keys())
+            .chain(&self.columns)
+            .chain(self.latest_by.iter().flatten())
+            .chain(aggregated);
+        match named.find(|c| !schema.iter().any(|f| &f.name == *c)) {
+            Some(c) => Err(Error::invalid(format!("the table has no column {c:?}"))),
+            None => Ok(()),
+        }
+    }
+
     /// Columns of `schema` that must be decoded: output, filters, buckets and aggregates.
     pub(crate) fn needed_columns(&self, schema: &Schema) -> Vec<String> {
         let mut cols: Vec<String> = vec![];
@@ -147,6 +171,26 @@ mod tests {
         assert_eq!(spec.name(), "count");
         let spec: AggSpec = serde_json::from_value(json!({ "column": "speed", "op": "avg" })).unwrap();
         assert_eq!(spec.name(), "speed_avg");
+    }
+
+    #[test]
+    fn columns_the_table_lacks_are_errors() {
+        let schema =
+            ["time", "tag", "v"].map(|name| Field { id: 1, name: name.into(), ty: "long".into(), required: false });
+        let check = |v: serde_json::Value| serde_json::from_value::<QuerySpec>(v).unwrap().check_columns(&schema);
+        assert!(check(json!({ "timeColumn": "time", "series": { "tag": [1] }, "columns": ["v"] })).is_ok());
+        let bucket = json!({ "every": 1, "by": ["tag"], "aggs": [{ "column": "*", "op": "count" }] });
+        assert!(check(json!({ "timeColumn": "time", "bucket": bucket })).is_ok());
+        for bad in [
+            json!({ "timeColumn": "tme" }),
+            json!({ "series": { "tags": [1] } }),
+            json!({ "columns": ["w"] }),
+            json!({ "timeColumn": "time", "latestBy": ["device"] }),
+            json!({ "timeColumn": "time", "bucket": { "every": 1, "aggs": [{ "column": "w", "op": "sum" }] } }),
+        ] {
+            let err = check(bad.clone()).unwrap_err().to_string();
+            assert!(err.contains("has no column"), "{bad}: {err}");
+        }
     }
 
     #[test]

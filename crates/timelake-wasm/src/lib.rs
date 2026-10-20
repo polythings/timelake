@@ -255,7 +255,9 @@ impl Table {
     #[wasm_bindgen(js_name = queryLastValues)]
     pub fn query_last_values(&self, query: &JsValue) -> Result<Option<String>, JsValue> {
         let Some(batch) = &self.last_values else { return Ok(None) };
-        let mut collector = Collector::new(parse_query(query)?)?;
+        let spec = parse_query(query)?;
+        spec.check_columns(&self.meta.schema)?;
+        let mut collector = Collector::new(spec)?;
         collector.push_batch(batch)?;
         Ok(Some(collector.finish()?))
     }
@@ -303,10 +305,13 @@ impl Table {
         to_js(&self.files.iter().map(FileView::from).collect::<Vec<_>>())
     }
 
-    /// Data files that may contain rows matching `query`, in the same shape as `files()`.
+    /// Data files that may contain rows matching `query`, in the same shape as `files()`. Throws
+    /// for a query naming a column the table doesn't have.
     #[wasm_bindgen(js_name = planFiles)]
     pub fn plan_files(&self, query: &JsValue) -> Result<JsValue, JsValue> {
-        let files = prune::plan_files(&self.files, &parse_query(query)?);
+        let spec = parse_query(query)?;
+        spec.check_columns(&self.meta.schema)?;
+        let files = prune::plan_files(&self.files, &spec);
         to_js(&files.into_iter().map(FileView::from).collect::<Vec<_>>())
     }
 }
