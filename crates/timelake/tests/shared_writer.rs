@@ -480,3 +480,31 @@ async fn shared_compaction_keeps_the_last_value_index() {
         append(&&host, reloaded, &[batch(T0 + 9, 1, 1, 2, |_, _| 2.0)], &shared_no_maintenance()).await.unwrap();
     assert!(state.last_value_index().is_some_and(|i| Some(&i) != index.as_ref()), "the next append extends it");
 }
+
+/// Snapshot counts and file sizes at the top of their range don't overflow the thresholds of
+/// inline maintenance or compaction, in the engine or the shared writer.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_largest_counts_and_sizes_dont_overflow() {
+    use timelake_format::maintain::{MaintainOptions as SharedMaintain, maintain};
+
+    let (_dir, lake) = temp_lake();
+    let mut o = opts();
+    for key in [timelake::property::MAX_SNAPSHOTS, timelake::property::MIN_SNAPSHOTS] {
+        o.properties.insert(key.into(), usize::MAX.to_string());
+    }
+    o.properties.insert(timelake::property::TARGET_FILE_SIZE.into(), u64::MAX.to_string());
+    let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+    let (t, _) = t.append(&[batch(T0, 1, 1, 2, |_, _| 1.0)], AppendOptions::default()).await.unwrap();
+    let (t, _) = t.append(&[batch(T0 + 1, 1, 1, 2, |_, _| 1.0)], AppendOptions::default()).await.unwrap();
+    let (t, report) = t.maintain(MaintainOptions { expire: false, ..MaintainOptions::default() }).await.unwrap();
+    assert_eq!(report.files_rewritten, 2);
+
+    let host = EngineHost::new(&lake);
+    let mut state = TableState::load(&&host, t.location()).await.unwrap();
+    for i in 2..4 {
+        state = append(&&host, state, &[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], &SharedAppend::default()).await.unwrap().0;
+    }
+    let (_, report) =
+        maintain(&&host, state, &SharedMaintain { expire: false, ..SharedMaintain::default() }).await.unwrap();
+    assert_eq!(report.files_rewritten, 3);
+}

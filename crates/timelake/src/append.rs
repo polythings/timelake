@@ -143,8 +143,8 @@ impl Table {
         MaintainOptions {
             compact: true,
             retention: c.retention.is_some(),
-            expire: snapshots >= c.max_snapshots + EXPIRE_BATCH
-                || (snapshots >= c.min_snapshots + EXPIRE_BATCH && oldest < cutoff),
+            expire: snapshots >= c.max_snapshots.saturating_add(EXPIRE_BATCH)
+                || (snapshots >= c.min_snapshots.saturating_add(EXPIRE_BATCH) && oldest < cutoff),
             min_small_files: c.compact_min_files,
             partitions: Some(touched),
             tiered: true,

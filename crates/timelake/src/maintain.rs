@@ -307,7 +307,7 @@ pub(crate) async fn compaction_plan(
             continue;
         }
         let total: u64 = files.iter().map(|e| e.data_file.file_size_in_bytes()).sum();
-        if total <= REWRITE_WHOLE_PARTITION_TARGETS * c.target_file_size || unsorted {
+        if total <= REWRITE_WHOLE_PARTITION_TARGETS.saturating_mul(c.target_file_size) || unsorted {
             plan.push((partition, files));
             continue;
         }

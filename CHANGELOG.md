@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A `max-snapshots` or `min-snapshots` near 2^64 overflowed the check for inline snapshot expiry after an append, and
+  a `target-file-size-bytes` near 2^63 the compaction plan: a crash in debug builds, a wrong decision in release ones.
 - Data files recorded the bounds of a decimal column wider than 18 digits as 16 padded bytes; the Iceberg spec asks
   for the fewest bytes that hold the value, as Timelake already wrote narrower decimals.
 - A `write.parquet.compression-level` that isn't a level of the codec (`high`, or a negative level for `gzip` or

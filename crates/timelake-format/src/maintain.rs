@@ -101,7 +101,8 @@ impl MaintainOptions {
         Self {
             compact: true,
             retention: c.retention.is_some(),
-            expire: n >= c.max_snapshots + EXPIRE_BATCH || (n >= c.min_snapshots + EXPIRE_BATCH && oldest < cutoff),
+            expire: n >= c.max_snapshots.saturating_add(EXPIRE_BATCH)
+                || (n >= c.min_snapshots.saturating_add(EXPIRE_BATCH) && oldest < cutoff),
             min_small_files: c.compact_min_files,
             partitions: Some(partitions),
             tiered: true,
@@ -330,7 +331,7 @@ async fn compaction_plan<H: Host>(
             continue;
         }
         let total: u64 = files.iter().map(|e| e.file.file_size).sum();
-        if total <= REWRITE_WHOLE_PARTITION_TARGETS * c.target_file_size || unsorted {
+        if total <= REWRITE_WHOLE_PARTITION_TARGETS.saturating_mul(c.target_file_size) || unsorted {
             plan.push((partition, files));
             continue;
         }
