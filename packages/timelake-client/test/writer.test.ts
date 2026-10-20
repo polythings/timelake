@@ -123,6 +123,15 @@ test("the memory store holds a table copied into it", async () => {
   expect(store.keys().some((k) => k.includes("time_day=2026-01-03"))).toBe(true)
 })
 
+test("trailing slashes on the warehouse are trimmed, in linear time", () => {
+  expect(new TableWriter(memoryStore(), "s3://b/lake///", "iot.live").location).toBe("s3://b/lake/iot/live")
+  const many = `s3://b${"/".repeat(100_000)}x`
+  const started = performance.now()
+  expect(new TableWriter(memoryStore(), many, "iot.live").location).toBe(`${many}/iot/live`)
+  expect(new Lake(`${many}${"/".repeat(100_000)}`).url).toBe(many)
+  expect(performance.now() - started).toBeLessThan(1000)
+})
+
 test("appends compact small files inline, and maintain compacts the rest", async () => {
   const schema = ["--schema", "time:timestamptz,device:int,temp:double"]
   const props = ["--prop", "timelake.compact-min-files=3", "--prop", "timelake.snapshot-retention=0s"]

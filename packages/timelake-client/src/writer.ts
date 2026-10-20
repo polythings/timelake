@@ -210,6 +210,13 @@ export function memoryStore(): Store & { keys(): string[] } {
 }
 
 /** `scheme://authority` of a warehouse URI, which store keys leave out. */
+/** `s` without trailing slashes. Not `/\/+$/`: on a string with many slashes that regex backtracks in quadratic time. */
+export function trimTrailingSlashes(s: string): string {
+  let end = s.length
+  while (end > 0 && s[end - 1] === "/") end--
+  return s.slice(0, end)
+}
+
 function rootOf(warehouse: string): string {
   const m = /^([a-z][a-z0-9+.-]*:\/\/[^/]*)/i.exec(warehouse)
   if (!m?.[1]) throw new Error(`warehouse must be a URI like s3://bucket/prefix, got ${warehouse}`)
@@ -246,7 +253,7 @@ export class TableWriter {
     ensureWasm()
     const [namespace, name, ...rest] = table.split(".")
     if (!namespace || !name || rest.length) throw new Error(`table must be namespace.table, got ${table}`)
-    const base = warehouse.replace(/\/+$/, "")
+    const base = trimTrailingSlashes(warehouse)
     this.location = `${base}/${namespace}/${name}`
     const root = rootOf(base)
     const key = (uri: string): string => {

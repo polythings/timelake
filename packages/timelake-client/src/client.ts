@@ -29,6 +29,8 @@ import {
 } from "./wasm/timelake_wasm.js"
 
 export { initWasm } from "./init.ts"
+import { trimTrailingSlashes } from "./writer.ts"
+
 export { memoryStore, r2Store, TableWriter } from "./writer.ts"
 export type {
   AppendReport,
@@ -254,10 +256,7 @@ export class Lake {
   readonly options: Required<Omit<LakeOptions, "rewriteUrl">> & Pick<LakeOptions, "rewriteUrl">
 
   constructor(url: string, options: LakeOptions = {}) {
-    // Not /\/+$/: on a URL with many slashes that regex backtracks in quadratic time.
-    let end = url.length
-    while (end > 0 && url[end - 1] === "/") end--
-    this.url = url.slice(0, end)
+    this.url = trimTrailingSlashes(url)
     this.options = {
       fetch: options.fetch ?? ((target, init) => globalThis.fetch(target, init)),
       concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
