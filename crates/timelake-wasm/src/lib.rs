@@ -83,32 +83,94 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
 
-/// Counts heap bytes in use and their peak, to tell the heap's own size from the memory the
-/// allocator has grown to (which never shrinks).
-struct Counting;
-
-static HEAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The most heap bytes in use at once, counted by the WebAssembly build's allocator.
 static HEAP_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[expect(unsafe_code, reason = "a global allocator wraps the system one")]
-unsafe impl std::alloc::GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        use std::sync::atomic::Ordering::Relaxed;
-        let now = HEAP.fetch_add(layout.size(), Relaxed) + layout.size();
-        HEAP_PEAK.fetch_max(now, Relaxed);
-        // SAFETY: the caller's contract is passed on unchanged.
-        unsafe { std::alloc::System.alloc(layout) }
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting;
+
+/// Counts heap bytes in use and their peak, to tell the heap's own size from the memory the
+/// allocator has grown to (which never shrinks). Only the WebAssembly build installs it; native
+/// tests and dependents keep their own allocator.
+#[cfg(any(target_arch = "wasm32", test))]
+mod counting {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    use super::HEAP_PEAK;
+
+    pub(crate) struct Counting;
+
+    static HEAP: AtomicUsize = AtomicUsize::new(0);
+
+    #[expect(unsafe_code, reason = "a global allocator wraps the system one")]
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            grew(layout.size());
+            // SAFETY: the caller's contract is passed on unchanged.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            grew(layout.size());
+            // SAFETY: the caller's contract is passed on unchanged.
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            HEAP.fetch_sub(layout.size(), Relaxed);
+            // SAFETY: the caller's contract is passed on unchanged.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        /// The system's own `realloc`, which grows a block in place when it can; the default
+        /// copies into a new block every time.
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            if new_size > layout.size() {
+                grew(new_size - layout.size());
+            } else {
+                HEAP.fetch_sub(layout.size() - new_size, Relaxed);
+            }
+            // SAFETY: the caller's contract is passed on unchanged.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        HEAP.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
-        // SAFETY: the caller's contract is passed on unchanged.
-        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    /// Counts `bytes` more in use.
+    fn grew(bytes: usize) {
+        let now = HEAP.fetch_add(bytes, Relaxed) + bytes;
+        HEAP_PEAK.fetch_max(now, Relaxed);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::alloc::{GlobalAlloc, Layout};
+        use std::sync::atomic::Ordering::Relaxed;
+
+        use super::super::HEAP_PEAK;
+        use super::{Counting, HEAP};
+
+        #[test]
+        #[expect(unsafe_code, reason = "drives the allocator directly")]
+        fn growing_in_place_counts_only_the_new_size() {
+            let (small, large) = (Layout::from_size_align(1000, 8).unwrap(), 3000);
+            // SAFETY: each block is freed once, with the layout it has.
+            unsafe {
+                let p = Counting.alloc(small);
+                let q = Counting.realloc(p, small, large);
+                assert_eq!((HEAP.load(Relaxed), HEAP_PEAK.load(Relaxed)), (3000, 3000));
+                Counting.dealloc(q, Layout::from_size_align(large, 8).unwrap());
+                let z = Counting.alloc_zeroed(small);
+                assert!(std::slice::from_raw_parts(z, 1000).iter().all(|&b| b == 0));
+                assert_eq!(HEAP.load(Relaxed), 1000);
+                Counting.dealloc(z, small);
+            }
+            assert_eq!(HEAP.load(Relaxed), 0);
+        }
     }
 }
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
 
 /// The most heap bytes in use at once so far.
 #[wasm_bindgen(js_name = heapPeakBytes)]

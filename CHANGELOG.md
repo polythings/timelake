@@ -81,6 +81,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `retention_days` is now `retention`, the same string.
 - Python: `Lake(storage_options=…, settings=…)`, `create_table(properties=…)` and `set_properties` take any mapping, as
   the type stubs say; they raised `TypeError` for anything but a `dict`.
+- The WebAssembly module grew every vector and string by copying it into a new block: its memory-counting allocator
+  left out `realloc`, so the system allocator's growth in place went unused.
 
 ### Changed
 
