@@ -254,8 +254,13 @@ impl Table {
         lock(&self.inner).clone()
     }
 
+    /// Advances the handle to `table`, unless it is already on a newer version: calls on one
+    /// handle from several threads can finish in any order.
     fn set(&self, table: timelake::Table) {
-        *lock(&self.inner) = table;
+        let mut inner = lock(&self.inner);
+        if inner.version() <= table.version() {
+            *inner = table;
+        }
     }
 }
 

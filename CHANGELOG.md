@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- Two appends at once through one TypeScript `TableWriter`, or one Python `Table` from two threads, could leave the
+  handle on the older of the two versions when they finished out of order. A handle now only moves forward.
 - The TypeScript client's `latest` on a table without a last-value index could return an older write of a reading
   rewritten at the same time: it read files newest first, and the last one read won. Files are now planned oldest data
   first, so the newer write wins, as in the engine.

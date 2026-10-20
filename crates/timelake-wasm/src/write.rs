@@ -339,7 +339,7 @@ impl Writer {
                 to_js_err(&e)
             })?;
             let report = JsMaintainReport::new(&report, table.version);
-            *state.borrow_mut() = Some(table);
+            advance(&state, table);
             serde_wasm_bindgen::to_value(&report).map_err(Into::into)
         })
     }
@@ -389,7 +389,7 @@ impl Writer {
                 }
             };
             let version = table.version;
-            *state.borrow_mut() = Some(table);
+            advance(&state, table);
             let (maintenance, maintenance_error) = match &report.maintenance {
                 Some(Ok(m)) => (Some(JsMaintainReport::new(m, version)), None),
                 Some(Err(e)) => (None, Some(e.clone())),
@@ -408,6 +408,15 @@ impl Writer {
             };
             serde_wasm_bindgen::to_value(&report).map_err(Into::into)
         })
+    }
+}
+
+/// Keeps `table` as the writer's version unless it has a newer one: calls on one writer run
+/// concurrently and can finish in any order.
+fn advance(state: &RefCell<Option<TableState>>, table: TableState) {
+    let mut cached = state.borrow_mut();
+    if cached.as_ref().is_none_or(|c| c.version <= table.version) {
+        *cached = Some(table);
     }
 }
 
@@ -460,4 +469,38 @@ fn rows_from_json(json: &str, schema: &SchemaRef) -> WriteResult<Vec<RecordBatch
 fn rows_from_ipc(ipc: &[u8]) -> WriteResult<Vec<RecordBatch>> {
     let reader = StreamReader::try_new(Cursor::new(ipc), None)?;
     reader.map(|b| b.map_err(WriteError::from)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use timelake_format::Contract;
+    use timelake_format::metadata::Metadata;
+
+    use super::*;
+
+    fn at(version: u64) -> TableState {
+        TableState {
+            location: "mem://t".into(),
+            version,
+            metadata: Metadata::parse(br#"{"format-version": 2}"#).unwrap(),
+            schema: Arc::new(Schema::empty()),
+            contract: Contract::from_properties(&HashMap::new()).unwrap(),
+            files: None,
+            last_values: None,
+            footers: BTreeMap::new(),
+        }
+    }
+
+    /// Two appends finishing out of order leave the writer on the newer version.
+    #[test]
+    fn the_writer_never_goes_back_a_version() {
+        let state = RefCell::new(None);
+        advance(&state, at(5));
+        advance(&state, at(4));
+        assert_eq!(state.borrow().as_ref().map(|t| t.version), Some(5));
+        advance(&state, at(6));
+        assert_eq!(state.borrow().as_ref().map(|t| t.version), Some(6));
+    }
 }
