@@ -128,12 +128,16 @@ pub async fn write_files<H: Host>(
 ) -> WriteResult<Vec<(DataFile, Vec<u8>)>> {
     let mut writer = PartitionFiles::new(host, table, partition)?;
     for rows in batches {
-        writer.write(rows).await?;
+        if let Err(e) = writer.write(rows).await {
+            writer.abort().await;
+            return Err(e);
+        }
     }
     writer.finish().await
 }
 
 /// Writes sorted batches of one partition into files of the target size, uploading as they grow.
+/// After a failed [`write`](Self::write), [`abort`](Self::abort) removes what was written.
 pub struct PartitionFiles<'a, H: Host> {
     host: &'a H,
     table: &'a TableState,
@@ -211,7 +215,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        let mut file = if let Some(f) = self.open.take() {
+        let file = if let Some(f) = self.open.take() {
             f
         } else {
             let page_rows = self.host.data_page_rows();
@@ -224,50 +228,93 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
                 upload: None,
             }
         };
+        // Kept in `open` until closed, so `abort` finds its upload if anything below fails.
+        let file = self.open.insert(file);
         file.writer.write(batch)?;
         file.pending.extend(file.writer.take_chunks());
         // Parts of exactly PART_BYTES: R2 requires every part but the last to have the same size.
         while file.pending.len >= PART_BYTES {
-            let mut upload = match file.upload.take() {
-                Some(u) => u,
-                None => self.host.upload(&file.uri).await?,
-            };
-            upload.put_part(file.pending.take(PART_BYTES)).await?;
-            file.upload = Some(upload);
+            if file.upload.is_none() {
+                file.upload = Some(self.host.upload(&file.uri).await?);
+            }
+            if let Some(upload) = &mut file.upload {
+                upload.put_part(file.pending.take(PART_BYTES)).await?;
+            }
         }
-        if file.writer.size() >= self.table.contract.target_file_size {
+        if file.writer.size() >= self.table.contract.target_file_size
+            && let Some(file) = self.open.take()
+        {
             self.close(file).await?;
-        } else {
-            self.open = Some(file);
         }
         Ok(())
     }
 
+    /// Writes out `file`. If that fails, nothing of it is left: its upload is aborted, or the
+    /// object it may have written is deleted.
     async fn close(&mut self, file: OpenFile<H::Upload>) -> WriteResult<()> {
         let OpenFile { uri, writer, mut pending, upload } = file;
-        let (rest, stats) = writer.finish_chunks()?;
-        pending.extend(rest);
-        if let Some(mut u) = upload {
-            // Full parts first: R2 takes a last part no larger than the others.
-            while pending.len > 0 {
-                u.put_part(pending.take(PART_BYTES)).await?;
+        let finished = writer.finish_chunks();
+        let stats = if let Some(mut u) = upload {
+            let sent = async {
+                let (rest, stats) = finished?;
+                pending.extend(rest);
+                // Full parts first: R2 takes a last part no larger than the others.
+                while pending.len > 0 {
+                    u.put_part(pending.take(PART_BYTES)).await?;
+                }
+                Ok(stats)
             }
-            u.complete().await?;
+            .await;
+            match sent {
+                Ok(stats) => {
+                    if let Err(e) = u.complete().await {
+                        let _ = self.host.delete(std::slice::from_ref(&uri)).await;
+                        return Err(e);
+                    }
+                    stats
+                }
+                Err(e) => {
+                    u.abort().await;
+                    return Err(e);
+                }
+            }
         } else {
+            let (rest, stats) = finished?;
+            pending.extend(rest);
             let all = pending.len;
-            self.host.put(&uri, pending.take(all)).await?;
-        }
+            if let Err(e) = self.host.put(&uri, pending.take(all)).await {
+                let _ = self.host.delete(std::slice::from_ref(&uri)).await;
+                return Err(e);
+            }
+            stats
+        };
         let footer = footer_bytes(&stats.metadata)?;
         self.done.push((data_file(self.table, uri, self.partition, &stats), footer));
         Ok(())
     }
 
-    /// Closes the last file; returns the files written with their footers.
+    /// Closes the last file; returns the files written with their footers. If that fails, the
+    /// files are deleted.
     pub async fn finish(mut self) -> WriteResult<Vec<(DataFile, Vec<u8>)>> {
-        if let Some(file) = self.open.take() {
-            self.close(file).await?;
+        if let Some(file) = self.open.take()
+            && let Err(e) = self.close(file).await
+        {
+            self.abort().await;
+            return Err(e);
         }
         Ok(self.done)
+    }
+
+    /// After a failed write: aborts the open file's upload and deletes the files already written.
+    /// Best effort: what can't be removed is left for orphan cleanup.
+    pub async fn abort(self) {
+        if let Some(OpenFile { upload: Some(u), .. }) = self.open {
+            u.abort().await;
+        }
+        let paths: Vec<String> = self.done.into_iter().map(|(f, _)| f.path).collect();
+        if !paths.is_empty() {
+            let _ = self.host.delete(&paths).await;
+        }
     }
 }
 

@@ -85,6 +85,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   left out `realloc`, so the system allocator's growth in place went unused.
 - The WebAssembly reader (the TypeScript client) treated every time column as microseconds: on a `timestamp_ns` column,
   or a Parquet file with millisecond times, time ranges, buckets and pruning gave wrong results without an error.
+- A failed write from the TypeScript client (or its compaction) left the multipart upload it had started open, and
+  the files it had already finished in the table's directory; S3 and R2 keep and bill such parts. It now aborts the
+  upload and deletes the files.
 
 ### Changed
 

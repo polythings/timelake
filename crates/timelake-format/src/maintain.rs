@@ -362,15 +362,22 @@ async fn rewrite<H: Host>(
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
     let mut merge = Merge::new(table.schema.clone(), &keys, unique, files.len(), MERGED_BATCH_ROWS)?;
     let mut out = PartitionFiles::new(host, table, partition)?;
-    loop {
-        match merge.step()? {
-            Step::Need(i) => {
-                let batch = inputs[i].next(host, table, &order).await?;
-                merge.push(i, batch)?;
+    let merged = async {
+        loop {
+            match merge.step()? {
+                Step::Need(i) => {
+                    let batch = inputs[i].next(host, table, &order).await?;
+                    merge.push(i, batch)?;
+                }
+                Step::Output(batch) => out.write(&batch).await?,
+                Step::Done => return Ok(()),
             }
-            Step::Output(batch) => out.write(&batch).await?,
-            Step::Done => break,
         }
+    }
+    .await;
+    if let Err(e) = merged {
+        out.abort().await;
+        return Err(e);
     }
     let (rows_in, rows_out, _) = merge.stats();
     report.duplicates_removed += rows_in - rows_out;
