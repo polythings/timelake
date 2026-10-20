@@ -9,7 +9,7 @@ import { formatTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 /**
- * One line per engine; its color is its system's (lib/bench-systems.ts, SYSTEM_COLORS), whatever else is shown, and a
+ * One line per engine; its color is its system's (lib/bench-systems.ts, systemColor), whatever else is shown, and a
  * system's other readers are dashed.
  */
 export type HistoryLine = { engine: string; label: string; color: string; dashed?: boolean }

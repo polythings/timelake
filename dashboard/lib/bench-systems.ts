@@ -31,7 +31,7 @@ export const SYSTEMS: Record<string, string> = {
 }
 
 /** Each system's color in charts, fixed so it never changes with what else is shown. */
-export const SYSTEM_COLORS: Record<string, string> = {
+const SYSTEM_COLORS: Record<string, string> = {
   timelake: "var(--chart-1)",
   iceberg: "var(--chart-3)",
   lance: "var(--chart-4)",
