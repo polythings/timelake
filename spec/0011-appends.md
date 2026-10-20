@@ -3,15 +3,15 @@ number: 11
 title: Appends
 area: Writing
 status: done
-updated: 2026-10-18
-versions: [0.1.0, 0.5.0, 0.6.0, 0.7.0]
+updated: 2026-10-20
+versions: [0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased]
 related: [2, 5, 12, 14, 15, 19]
 issues: [54, 67]
 ---
 
 # 11. Appends
 
-**Done** · updated 2026-10-18 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Writes from JavaScript](milestones/javascript-writes.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
+**Done** · updated 2026-10-20 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Writes from JavaScript](milestones/javascript-writes.md), [Tuned on real data](milestones/real-data.md), [Technical preview](milestones/technical-preview.md)
 · related: [spec 2](0002-commits.md), [spec 5](0005-file-layout.md), [spec 12](0012-late-data-and-dedup.md), [spec 14](0014-hot-tier.md), [spec 15](0015-backfill.md), [spec 19](0019-compaction.md)
 
 ## Summary
@@ -32,7 +32,8 @@ rows and commit every few seconds or megabytes; batch IDs make retries safe.
 
 ### The write path
 1. **Align** the batches to the table's schema; fill `_ingest_ts` with the time the append started unless the input
-   brings its own values ([spec 12](0012-late-data-and-dedup.md)).
+   brings its own values ([spec 12](0012-late-data-and-dedup.md)). Types are converted only where no value is lost: a
+   value that doesn't fit (out of range, unparsable, inexact) is an error naming the column, never a null.
 2. **Sort** by `(partition, series…, time, insertion time)` and split by time partition. With dedup on, only the last
    of equal `(series, time)` keys is kept, so every file is free of duplicates on its own (0.5.0). Appends past 1 GiB
    sort groups of up to 1 GiB and merge them, so a string column of more than 2 GiB no longer overflows (0.7.0).
@@ -58,3 +59,4 @@ are safe (optimistic commits), but each conflict costs a retry, and many tiny ap
 - 2026-10-17: dedup within an append; columns encoded in parallel
 - 2026-10-18: appends past 1 GiB sorted in groups and merged
 - 2026-10-19: moved from SPEC.md into spec 9, then into this spec when the specs were regrouped one per feature.
+- 2026-10-20: lossy type conversions on append are errors (#22)

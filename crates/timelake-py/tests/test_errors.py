@@ -39,7 +39,7 @@ def test_missing_required_column_raises_value_error(lake: timelake.Lake) -> None
 
 def test_uncastable_column_raises_value_error(table: timelake.Table) -> None:
     data = readings(minutes=1, devices=1).set_column(2, "value", pa.array([[1.0]]))
-    with pytest.raises(ValueError, match=r"[Cc]ast"):
+    with pytest.raises(ValueError, match="be written to the table"):
         table.append(data)
 
 

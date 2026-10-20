@@ -46,7 +46,7 @@ Properties: `name`, `location`, `version`, `schema` (pyarrow). Methods that comm
 
 ## Input data
 
-`append` accepts a pyarrow `RecordBatch`, `Table` or `RecordBatchReader`, a polars DataFrame, or any object with `__arrow_c_stream__`. Columns are matched by name and cast to the table types; missing nullable columns become nulls, and columns not in the table are an error.
+`append` accepts a pyarrow `RecordBatch`, `Table` or `RecordBatchReader`, a polars DataFrame, or any object with `__arrow_c_stream__`. Columns are matched by name and converted to the table types where no value is lost ([which conversions](/docs/architecture#writer)): an int64 column fits an int32 one if every value is in range, and a float column an integer one if every value is whole. A value that doesn't fit is a `ValueError`, never a null. Missing nullable columns become nulls, and columns not in the table are an error.
 
 ## Types
 

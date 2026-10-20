@@ -129,6 +129,16 @@ def test_append_casts_to_table_types(lake: timelake.Lake, table: timelake.Table)
     assert lake.sql("SELECT device FROM iot.readings").column("device").type == pa.int32()
 
 
+def test_append_rejects_values_that_dont_fit(table: timelake.Table) -> None:
+    too_big = readings(minutes=1, devices=1).set_column(1, "device", pa.array([2**40], pa.int64()))
+    with pytest.raises(ValueError, match="device"):
+        table.append(too_big)
+    fraction = readings(minutes=1, devices=1).set_column(1, "device", pa.array([1.5], pa.float64()))
+    with pytest.raises(ValueError, match="not exactly"):
+        table.append(fraction)
+    assert table.version == 1
+
+
 def test_append_fills_missing_nullable_column(lake: timelake.Lake, table: timelake.Table) -> None:
     table.append(readings(minutes=1, devices=1).drop_columns("value"))
     assert lake.sql("SELECT value FROM iot.readings").to_pylist() == [{"value": None}]

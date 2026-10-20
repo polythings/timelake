@@ -99,6 +99,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Appends convert a column to the table's type only where no value is lost. A value that doesn't fit (an integer out
+  of range, text that doesn't parse, a fraction for an integer column, an integer above 2^53 for a double) is an error
+  naming the column; it used to be written as NULL or truncated without a word. Conversions that are never exact, such
+  as a boolean or a timestamp to an integer, are an error too. The architecture page lists what converts.
 - The website's Spec section opens on the first spec, with every spec in the sidebar (and in the menu on phones),
   instead of a list page. Spec pages are wider, and table cells break long words only when they don't fit.
 - Setting `newest-first` also covers the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket with a

@@ -66,7 +66,7 @@ So a cold “latest” query takes one round trip and a cold filtered scan two (
 
 ## Writer
 
-1. Align each batch to the table schema by column name, casting types.
+1. Align each batch to the table schema by column name, converting types only where no value is lost: dictionary, large and view variants to their base type, any timestamp unit or time zone to the table's, dates to dates or timestamps, integers to integers, floats to wider floats, and text to numbers, booleans, dates and timestamps. An integer out of range or text that doesn't parse is an error, not a null. Between integers, floats and decimals otherwise (a float to an integer column, an integer above 2^53 to a double, a double to a float), each value must convert exactly. Other conversions, such as booleans or timestamps to integers, are an error naming the column and both types.
 2. Sort by `(partition, series key…, time)`, keeping input order for ties, and split by partition. An append larger than 1 GiB is sorted in groups of up to 1 GiB, which are then merged in that order, so no column grows past what one Arrow array holds (2 GiB of strings).
 3. Write each partition (eight at a time) with the codec the table's `write.parquet.compression-codec` names (ZSTD level 3 by default), page-level statistics and page indexes, 1M-row row groups, dictionary encoding (floats fall back to byte-stream-split when a dictionary grows too large), delta encoding for the time column, and the sort order recorded in the file. Files roll over at the target size.
 

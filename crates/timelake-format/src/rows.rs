@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, TimestampMicrosecondArray, UInt32Array, new_null_array};
-use arrow_cast::cast;
+use arrow_cast::{CastOptions, cast, cast_with_options};
 use arrow_ord::partition::partition;
 use arrow_ord::sort::{SortColumn, lexsort_to_indices};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, SortOptions, TimeUnit};
@@ -30,7 +30,8 @@ pub const UTC: &str = "+00:00";
 pub type PartitionRows = (Option<i32>, Vec<RecordBatch>);
 
 /// Casts and reorders a batch to the table schema by column name. Missing nullable columns are
-/// filled with nulls; extra columns are an error.
+/// filled with nulls; extra columns are an error. Only conversions that keep every value are made
+/// (see [`conversion`]); a value that doesn't fit is an error, never a null.
 pub fn align_batch(batch: &RecordBatch, schema: &SchemaRef) -> WriteResult<RecordBatch> {
     let input = batch.schema();
     if let Some(extra) = input.fields().iter().find(|f| schema.field_with_name(f.name()).is_err()) {
@@ -41,13 +42,83 @@ pub fn align_batch(batch: &RecordBatch, schema: &SchemaRef) -> WriteResult<Recor
         .iter()
         .map(|f| match input.index_of(f.name()) {
             Ok(i) if batch.column(i).data_type() == f.data_type() => Ok(batch.column(i).clone()),
-            Ok(i) => Ok(cast(batch.column(i), f.data_type())?),
+            Ok(i) => convert(batch.column(i), f),
             Err(_) if f.is_nullable() => Ok(new_null_array(f.data_type(), batch.num_rows())),
             Err(_) => Err(WriteError::invalid(format!("required column {:?} is missing", f.name()))),
         })
         .collect::<WriteResult<Vec<ArrayRef>>>()?;
     RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| WriteError::invalid(format!("batch does not fit the table schema: {e}")))
+}
+
+/// How a column of one type becomes another without losing values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Conversion {
+    /// A cast that errs on a value it can't convert (an integer out of range, text that doesn't
+    /// parse) rather than making it null.
+    Checked,
+    /// Each value must come back unchanged when cast back (between integers, floats and decimals,
+    /// where a cast may round).
+    RoundTrip,
+}
+
+/// How a column of type `from` is written to a table column of type `to`, if it can be.
+fn conversion(from: &DataType, to: &DataType) -> Option<Conversion> {
+    use DataType::{
+        Binary, BinaryView, Boolean, Date32, Date64, Decimal128, Decimal256, Dictionary, Float16, Float32, Float64,
+        LargeBinary, LargeList, LargeUtf8, List, Null, Struct, Timestamp, Utf8, Utf8View,
+    };
+    let text = |t: &DataType| matches!(t, Utf8 | LargeUtf8 | Utf8View);
+    let int = DataType::is_integer;
+    let float_bits = |t: &DataType| match t {
+        Float16 => Some(16),
+        Float32 => Some(32),
+        Float64 => Some(64),
+        _ => None,
+    };
+    let number = |t: &DataType| int(t) || float_bits(t).is_some() || matches!(t, Decimal128(..) | Decimal256(..));
+    Some(match (from, to) {
+        (Dictionary(_, values), _) => conversion(values, to)?,
+        // Nested field names and metadata (Parquet field ids) don't matter.
+        _ if from.equals_datatype(to) => Conversion::Checked,
+        (List(a) | LargeList(a), List(b) | LargeList(b)) => conversion(a.data_type(), b.data_type())?,
+        (Struct(a), Struct(b)) if a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name() == y.name()) => {
+            let each = a.iter().zip(b).map(|(x, y)| conversion(x.data_type(), y.data_type()));
+            each.collect::<Option<Vec<_>>>()?.into_iter().max().unwrap_or(Conversion::Checked)
+        }
+        (Null, _) | (Timestamp(..) | Date32 | Date64, Timestamp(..)) | (Date32 | Date64, Date32 | Date64) => {
+            Conversion::Checked
+        }
+        _ if int(from) && int(to) => Conversion::Checked,
+        _ if float_bits(from).zip(float_bits(to)).is_some_and(|(f, t)| f <= t) => Conversion::Checked,
+        _ if number(from) && number(to) => Conversion::RoundTrip,
+        _ if text(from) && (text(to) || number(to) || matches!(to, Boolean | Date32 | Timestamp(..))) => {
+            Conversion::Checked
+        }
+        (Binary | LargeBinary | BinaryView, Binary | LargeBinary | BinaryView) => Conversion::Checked,
+        _ => return None,
+    })
+}
+
+/// `column` as `field`'s type, or an error naming the column if a value would be lost.
+fn convert(column: &ArrayRef, field: &Field) -> WriteResult<ArrayRef> {
+    let (from, to) = (column.data_type(), field.data_type());
+    let name = field.name();
+    let Some(how) = conversion(from, to) else {
+        return Err(WriteError::invalid(format!("column {name:?}: {from} can't be written to the table's {to}")));
+    };
+    let strict = CastOptions { safe: false, ..CastOptions::default() };
+    let cast = |a: &ArrayRef, t: &DataType| {
+        cast_with_options(a, t, &strict)
+            .map_err(|e| WriteError::invalid(format!("column {name:?}: {from} can't be cast to the table's {to}: {e}")))
+    };
+    let out = cast(column, to)?;
+    if how == Conversion::RoundTrip && cast(&out, from)?.as_ref() != column.as_ref() {
+        return Err(WriteError::invalid(format!(
+            "column {name:?}: some {from} values are not exactly {to}, the table's type; cast them first"
+        )));
+    }
+    Ok(out)
 }
 
 /// `batch` with its insertion-time `column` set to `now` (µs since the epoch) where it is missing or
@@ -387,6 +458,60 @@ mod tests {
     fn tags(b: &RecordBatch) -> Vec<&str> {
         let tags = b.column(1).as_any().downcast_ref::<StringArray>().unwrap();
         (0..tags.len()).map(|i| tags.value(i)).collect()
+    }
+
+    /// `values` (one column, `from`) aligned to a table column of type `to`.
+    fn convert(values: ArrayRef, to: DataType) -> WriteResult<ArrayRef> {
+        let input = Schema::new(vec![Field::new("c", values.data_type().clone(), true)]);
+        let batch = RecordBatch::try_new(Arc::new(input), vec![values]).unwrap();
+        let table = Arc::new(Schema::new(vec![Field::new("c", to, true)]));
+        Ok(align_batch(&batch, &table)?.column(0).clone())
+    }
+
+    #[test]
+    fn converts_only_without_loss() {
+        use arrow_array::{
+            BooleanArray, Date32Array, DictionaryArray, Float32Array, Float64Array, Int8Array, Int64Array,
+            LargeStringArray, TimestampNanosecondArray, types::Int8Type,
+        };
+        let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into()));
+        let allowed: Vec<(ArrayRef, DataType)> = vec![
+            (Arc::new(Int8Array::from(vec![-3, 7])), DataType::Int64),
+            (Arc::new(Int64Array::from(vec![-3, 7])), DataType::Int32),
+            (Arc::new(Float32Array::from(vec![1.5])), DataType::Float64),
+            (Arc::new(Float64Array::from(vec![1.5, 2.0])), DataType::Float32),
+            (Arc::new(Int64Array::from(vec![1 << 53])), DataType::Float64),
+            (Arc::new(Float64Array::from(vec![3.0, -1.0])), DataType::Int32),
+            (Arc::new(TimestampNanosecondArray::from(vec![1_000]).with_timezone("Europe/Kyiv")), ts.clone()),
+            (Arc::new(StringArray::from(vec!["2026-01-01T00:00:00Z"])), ts.clone()),
+            (Arc::new(StringArray::from(vec!["12", "-4"])), DataType::Int32),
+            (Arc::new(Date32Array::from(vec![20_454])), ts.clone()),
+            (Arc::new(LargeStringArray::from(vec!["a"])), DataType::Utf8),
+            (Arc::new(DictionaryArray::<Int8Type>::from_iter(["a", "b", "a"])), DataType::Utf8),
+            (new_null_array(&DataType::Null, 2), DataType::Float64),
+        ];
+        for (values, to) in allowed {
+            let from = values.data_type().clone();
+            let out = convert(values, to.clone()).unwrap_or_else(|e| panic!("{from} → {to}: {e}"));
+            assert_eq!(out.data_type(), &to);
+        }
+
+        let rejected: Vec<(ArrayRef, DataType, &str)> = vec![
+            (Arc::new(Int64Array::from(vec![1 << 40])), DataType::Int32, "can't be cast"),
+            (Arc::new(Float64Array::from(vec![1.5])), DataType::Int32, "not exactly"),
+            (Arc::new(Float64Array::from(vec![0.1])), DataType::Float32, "not exactly"),
+            (Arc::new(Int64Array::from(vec![(1 << 53) + 1])), DataType::Float64, "not exactly"),
+            (Arc::new(StringArray::from(vec!["12", "twelve"])), DataType::Int32, "can't be cast"),
+            (Arc::new(StringArray::from(vec!["yesterday"])), ts.clone(), "can't be cast"),
+            (Arc::new(BooleanArray::from(vec![true])), DataType::Int32, "can't be written"),
+            (Arc::new(TimestampNanosecondArray::from(vec![1])), DataType::Int64, "can't be written"),
+            (Arc::new(Int32Array::from(vec![1])), DataType::Utf8, "can't be written"),
+        ];
+        for (values, to, msg) in rejected {
+            let from = values.data_type().clone();
+            let err = convert(values, to.clone()).map(|_| ()).unwrap_err().to_string();
+            assert!(err.contains("column \"c\"") && err.contains(msg), "{from} → {to}: {err}");
+        }
     }
 
     #[test]
