@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import subprocess
 import sys
 import time
@@ -378,3 +379,62 @@ def test_s3_tables_maintenance_fails_when_compaction_never_ran() -> None:
     s3tables.time_series, s3tables.compaction = ["readings"], {}
     with pytest.raises(TimeoutError, match="compaction"):
         s3tables.maintain()
+
+
+FAKE_CLIENT = """
+import json, sys, time
+job = json.loads(sys.argv[1])
+time.sleep(0.4 * job["offset"])  # opening the reader: slower for some clients
+print("ready", flush=True)
+start_at = float(sys.stdin.readline())
+print(json.dumps({"setup_s": 0, "latencies": [["q", start_at]], "errors": []}))
+"""
+
+
+def test_concurrent_clients_start_together_once_all_are_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """qps counts every client's queries over the same seconds, so the clients must run at the same time."""
+    from timebench import concurrency
+
+    monkeypatch.setattr(concurrency, "command", lambda job: [sys.executable, "-c", FAKE_CLIENT, json.dumps(job)])
+    started = time.time()
+    record = concurrency.dashboards(
+        harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"]).system("parquet"),
+        [{"name": "q", "sql": "SELECT 1"}],
+        "ingested",
+        3,
+        1,
+    )
+    assert record["errors"] == 0, record.get("error")
+    assert record["p50_s"] == record["p95_s"]  # each fake client reports the start it was given: the same one
+    assert record["p50_s"] >= started + 0.8  # after the slowest client had opened its reader
+
+
+def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from timebench import worker
+
+    ran: list[float] = []
+
+    class Fake:
+        @classmethod
+        def open_reader(cls, *_: object) -> object:
+            return lambda _sql: (ran.append(time.time()), time.sleep(0.01))
+
+    monkeypatch.setattr(worker, "systems", lambda: {"fake": Fake})
+    monkeypatch.setattr(Place, "load_state", lambda _: {})
+    start_at = time.time() + 0.5
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"{start_at}\n"))
+    job = {
+        "target": "local",
+        "dataset": "d",
+        "system": "fake",
+        "reader": "r",
+        "seconds": 0.3,
+        "queries": [{"name": "q", "sql": "x"}],
+    }
+    out = worker.client(job)
+    assert ran
+    assert min(ran) >= start_at
+    assert max(ran) <= start_at + 0.3
+    assert len(out["latencies"]) == len(ran)

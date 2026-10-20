@@ -71,7 +71,10 @@ def single(job: dict[str, Any], sql: str) -> QueryRecord:
 
 
 def client(job: dict[str, Any]) -> dict[str, Any]:
-    """A dashboard backend: one reader kept open, the queries in turn (starting at ``offset``) until the deadline.
+    """A dashboard backend: one reader kept open, the queries in turn (starting at ``offset``) for ``seconds``.
+
+    Once its reader is open it prints ``ready`` and waits for the start time (epoch seconds) on stdin, which every
+    client of the run gets (``concurrency.py``), so they all query over the same seconds.
 
     A query that fails is counted once and left out from then on (a dashboard panel showing an error isn't retried in
     a loop), so a failure that comes back at once doesn't spin the client. Prints each query's name and seconds, and
@@ -84,7 +87,10 @@ def client(job: dict[str, Any]) -> dict[str, Any]:
     queries: list[tuple[str, str]] = [(q["name"], q["sql"]) for q in job["queries"]]
     latencies: list[tuple[str, float]] = []
     errors: list[str] = []
-    deadline = time.monotonic() + job["seconds"]
+    print("ready", flush=True)
+    start_at = float(sys.stdin.readline())
+    time.sleep(max(0.0, start_at - time.time()))
+    deadline = time.monotonic() + start_at + job["seconds"] - time.time()
     i = job.get("offset", 0)
     while queries and time.monotonic() < deadline:
         i %= len(queries)
