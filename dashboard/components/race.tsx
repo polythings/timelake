@@ -51,7 +51,7 @@ export function Race({
         <button
           type="button"
           onClick={() => setRun((n) => n + 1)}
-          className="flex items-center gap-1.5 font-mono tracking-[0.06em] uppercase hover:text-foreground"
+          className="-my-2 flex min-h-8 items-center gap-1.5 font-mono tracking-[0.06em] uppercase hover:text-foreground"
         >
           <RotateCcw className="size-3.5" /> Replay
         </button>

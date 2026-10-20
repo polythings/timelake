@@ -22,7 +22,10 @@ async function speed(): Promise<string> {
   const maintained = rows("Queries, after").find((r) => r.timelake)
   const ingested = rows("Queries, right")
   const own = ingested.find((r) => r.timelake)
-  const others = ingested.filter((r) => r.system !== "timelake").map((r) => r.value)
+  // Each other system's best reader, as the benchmark cards show them.
+  const others = ingested
+    .filter((r, i, all) => r.system !== "timelake" && all.findIndex((x) => x.system === r.system) === i)
+    .map((r) => r.value)
   if (!maintained || !own || others.length === 0) return "Measured every week against other lakes on S3."
   const x = (v: number) => Math.round(v / own.value)
   const range = `${x(Math.min(...others))}⁠–⁠${x(Math.max(...others))}×`

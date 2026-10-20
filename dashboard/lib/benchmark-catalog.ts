@@ -310,7 +310,8 @@ export const BENCHMARKS: Benchmark[] = [
     name: "Industrial IoT",
     origin: null,
     status: "running",
-    summary: "Plant data as it really arrives, from a day to a month, against databases and lakes, with monthly cost.",
+    summary:
+      "Plant data as it really arrives, 30 days of it, queried like plant dashboards and reports, against databases and lakes.",
     why: "TSBS models trucks every 10 seconds. Plants look different, and that's where Timelake is used.",
     workload: "iiot",
     provenance: "Our own benchmark: the data generator, the queries, and the method are all timebench's.",

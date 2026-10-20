@@ -425,6 +425,17 @@ export function s3TablesDelay(run: Run): [number, number] | null {
   return s.length ? [Math.min(...s) / 3600, Math.max(...s) / 3600] : null
 }
 
+/** Where queries come from more than one suite, how many from each: " (12 TSBS IoT, 5 single truck)". */
+function suiteCounts(run: Run, queries: string[]): string {
+  const suites = WORKLOADS.find((w) => w.id === run.header.workload)?.suites ?? []
+  if (suites.length < 2) return ""
+  const counts = suites.flatMap((s) => {
+    const n = queries.filter((q) => q.startsWith(`${s.id}|`)).length
+    return n > 0 ? [`${n} ${s.label.replace(/ \(.*\)$/, "")}`] : []
+  })
+  return counts.length > 1 ? ` (${counts.join(", ")})` : ""
+}
+
 /**
  * The top-level results of a run: query time after maintenance and right after ingest (geometric mean of first runs
  * over every query all readers completed), then median commit time. Fastest first.
@@ -442,7 +453,7 @@ export function rankings(run: Run): Ranking[] {
     if (common.length === 0) continue
     out.push({
       title: `Queries, ${label.toLowerCase()}`,
-      note: `first run, geometric mean of ${common.length} queries`,
+      note: `first run, geometric mean of ${common.length} queries${suiteCounts(run, common)}`,
       unit: "seconds",
       queries: common.length,
       rows: engines

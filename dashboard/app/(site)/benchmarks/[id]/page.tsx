@@ -41,6 +41,7 @@ import {
 } from "@/lib/benchmarks"
 import { formatBytes, formatNumber, formatTime } from "@/lib/format"
 import { REPO_URL } from "@/lib/site"
+import { cn } from "@/lib/utils"
 
 type Props = { params: Promise<{ id: string }> }
 
@@ -203,6 +204,11 @@ function EntriesSection({ latest }: { latest: Run[] }) {
         Each system is written, maintained, and read the way its own docs suggest, on the same data. An entry in a
         ranking is a system, or a system and the reader that queried it, such as Lance + DuckDB.
       </SectionHead>
+      <p id="tunings" className="scroll-mt-20 text-sm text-muted-foreground">
+        Every system runs in two tunings. <span className="text-foreground">Tuned</span>: {TUNING_NOTES.tuned}.{" "}
+        <span className="text-foreground">Default</span>: {TUNING_NOTES.default}. Results are tuned unless a
+        section&apos;s switch says otherwise.
+      </p>
       <div className="grid gap-4 lg:grid-cols-2">
         {listed.map(([system, readers]) => {
           const info = SYSTEM_INFO[system]
@@ -272,9 +278,16 @@ function MaintenancePanel({ run }: { run: Run }) {
 /** One storage's run of a section, and what it shows. */
 type Variant = { run: Run; node: React.ReactNode }
 
+/** What each tuning means, said wherever results show one. */
+const TUNING_NOTES: Record<string, string> = {
+  default: "each system as installed",
+  tuned: "each system as its docs recommend, precomputation included",
+}
+
 /**
- * A section of results with its own choice of tuning (where both have run) and storage: a tab per kind of storage that
- * has the section's data (AWS S3 first), each showing that run's results, its date, and its details behind ⓘ.
+ * A section of results with its own choice of tuning (where both have run) and storage (where more than one has): a
+ * tab per kind of storage that has the section's data (AWS S3 first), each showing that run's results, its date, and
+ * its details behind ⓘ.
  */
 function ResultSection({ title, note, variants }: { title: string; note?: string; variants: Variant[] }) {
   if (variants.length === 0) return null
@@ -285,15 +298,15 @@ function ResultSection({ title, note, variants }: { title: string; note?: string
       {tunings.length > 1 ? (
         <Tabs defaultValue={tunings[0]} className="gap-4">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <TabsList>
+            <TabsList aria-label="Tuning">
               {tunings.map((t) => (
-                <TabsTrigger key={t} value={t}>
+                <TabsTrigger key={t} value={t} className="min-h-8 px-2.5 sm:min-h-7">
                   {TUNING_LABELS[t] ?? t}
                 </TabsTrigger>
               ))}
             </TabsList>
             <p className="text-xs text-muted-foreground">
-              Default: each system as installed. Tuned: as its docs recommend, precomputation included.
+              {tunings.map((t) => `${TUNING_LABELS[t] ?? t}: ${TUNING_NOTES[t] ?? t}.`).join(" ")}
             </p>
           </div>
           {tunings.map((t) => (
@@ -303,24 +316,54 @@ function ResultSection({ title, note, variants }: { title: string; note?: string
           ))}
         </Tabs>
       ) : (
-        <StorageTabs variants={variants} />
+        <StorageTabs variants={variants} tuning={tunings[0]} />
       )}
     </section>
   )
 }
 
-/** A tab per kind of storage, each with its run's date, details behind ⓘ, and results. */
-function StorageTabs({ variants }: { variants: Variant[] }) {
+/**
+ * A run's line above its results: its storage where there's no tab to say it, its tuning where there's no switch to
+ * say it, its date, and its details behind ⓘ.
+ */
+function RunLine({ run, storage, tuning }: { run: Run; storage?: boolean; tuning?: string }) {
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+      {storage && <span className="font-mono tracking-[0.06em] text-foreground uppercase">{runLabel(run)}</span>}
+      {storage && <span aria-hidden>·</span>}
+      {tuning && (
+        <>
+          <a href="#tunings" className="text-foreground underline decoration-dotted underline-offset-4">
+            {TUNING_LABELS[tuning] ?? tuning}
+          </a>
+          <span aria-hidden>·</span>
+        </>
+      )}
+      Run of {run.header.started.slice(0, 10)}
+      <RunInfoButton info={runInfo(run)} label={runLabel(run)} />
+    </p>
+  )
+}
+
+/** A tab per kind of storage, each with its run's line and results; one storage gets its line and no tabs. */
+function StorageTabs({ variants, tuning }: { variants: Variant[]; tuning?: string }) {
   const [first] = variants
   if (!first) return null
+  if (variants.length === 1)
+    return (
+      <div className="flex flex-col gap-4">
+        <RunLine run={first.run} storage tuning={tuning} />
+        {first.node}
+      </div>
+    )
   return (
     <Tabs defaultValue={runKey(first.run)} className="gap-4">
-      <TabsList variant="line" className="flex-wrap">
+      <TabsList variant="line" className="flex-wrap" aria-label="Storage">
         {variants.map((v) => (
           <TabsTrigger
             key={runKey(v.run)}
             value={runKey(v.run)}
-            className="font-mono text-xs tracking-[0.06em] uppercase"
+            className="min-h-8 font-mono text-xs tracking-[0.06em] uppercase"
           >
             {runLabel(v.run)}
           </TabsTrigger>
@@ -328,10 +371,7 @@ function StorageTabs({ variants }: { variants: Variant[] }) {
       </TabsList>
       {variants.map((v) => (
         <TabsContent key={runKey(v.run)} value={runKey(v.run)} className="flex flex-col gap-4">
-          <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-            Run of {v.run.header.started.slice(0, 10)}
-            <RunInfoButton info={runInfo(v.run)} label={runLabel(v.run)} />
-          </p>
+          <RunLine run={v.run} tuning={tuning} />
           {v.node}
         </TabsContent>
       ))}
@@ -454,6 +494,14 @@ const ms = (v: number | undefined) => (v == null ? "—" : `${Math.round(v)} ms`
 
 const systemName = (system: string) => SYSTEMS[system] ?? system
 
+/** A table's first column stays in place while the rest scrolls sideways on narrow screens. */
+const FIRST = "sticky left-0 z-10 max-w-32 min-w-24 bg-card whitespace-normal sm:max-w-none"
+
+/** Under a table that may scroll sideways on a phone: says so. */
+function ScrollHint() {
+  return <p className="text-[11px] text-muted-foreground sm:hidden">Scroll the table sideways for every column.</p>
+}
+
 /** Each system's ingest and maintenance: time committing, commit latency, files and storage after maintenance. */
 function IngestPanel({ run }: { run: Run }) {
   const ingest = run.phases.filter((p) => p.kind === "ingest")
@@ -476,7 +524,7 @@ function IngestPanel({ run }: { run: Run }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>System</TableHead>
+            <TableHead className={FIRST}>System</TableHead>
             <TableHead className="text-right">Committing</TableHead>
             <TableHead className="text-right">Commit p50</TableHead>
             {!staged && <TableHead className="text-right">Commit p95</TableHead>}
@@ -489,9 +537,18 @@ function IngestPanel({ run }: { run: Run }) {
           {ingest.map((p) => {
             const m = maintain.get(p.system)
             const after = m ?? p
+            if (p.status !== "ok")
+              return (
+                <TableRow key={p.system}>
+                  <TableCell className={FIRST}>{systemName(p.system)}</TableCell>
+                  <TableCell colSpan={staged ? 5 : 6} className="min-w-56 whitespace-normal text-muted-foreground">
+                    Load failed: {p.error?.split("\n")[0] ?? p.status}
+                  </TableCell>
+                </TableRow>
+              )
             return (
               <TableRow key={p.system}>
-                <TableCell className={p.system === "timelake" ? "font-medium" : undefined}>
+                <TableCell className={cn(FIRST, p.system === "timelake" && "font-medium")}>
                   {systemName(p.system)}
                 </TableCell>
                 <TableCell className="text-right font-mono tabular-nums">
@@ -515,6 +572,7 @@ function IngestPanel({ run }: { run: Run }) {
           })}
         </TableBody>
       </Table>
+      <ScrollHint />
     </Panel>
   )
 }
@@ -537,31 +595,41 @@ function LivePanel({ run }: { run: Run }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>System</TableHead>
+            <TableHead className={FIRST}>System</TableHead>
             <TableHead className="text-right">Probes behind</TableHead>
             <TableHead className="text-right">Most behind</TableHead>
             <TableHead className="text-right">Dashboard query, median</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((r) => (
-            <TableRow key={r.system}>
-              <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
-                {systemName(r.system)}
-              </TableCell>
-              <TableCell className="text-right font-mono tabular-nums">
-                {r.behind} of {r.probes}
-              </TableCell>
-              <TableCell className="text-right font-mono tabular-nums">
-                {r.behind ? `${r.maxLag.toFixed(1)} s` : "—"}
-              </TableCell>
-              <TableCell className="text-right font-mono tabular-nums">
-                {r.queryMedian == null ? "—" : formatTime(r.queryMedian)}
-              </TableCell>
-            </TableRow>
-          ))}
+          {rows.map((r) =>
+            r.probes === 0 ? (
+              <TableRow key={r.system}>
+                <TableCell className={FIRST}>{systemName(r.system)}</TableCell>
+                <TableCell colSpan={3} className="text-muted-foreground">
+                  No probe finished during ingest.
+                </TableCell>
+              </TableRow>
+            ) : (
+              <TableRow key={r.system}>
+                <TableCell className={cn(FIRST, r.system === "timelake" && "font-medium")}>
+                  {systemName(r.system)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {r.behind} of {r.probes}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {r.behind ? `${r.maxLag.toFixed(1)} s` : "—"}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {r.queryMedian == null ? "—" : formatTime(r.queryMedian)}
+                </TableCell>
+              </TableRow>
+            ),
+          )}
         </TableBody>
       </Table>
+      <ScrollHint />
     </Panel>
   )
 }
@@ -586,7 +654,7 @@ function ConcurrencyPanel({ run }: { run: Run }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>System</TableHead>
+            <TableHead className={FIRST}>System</TableHead>
             {counts.map((n) => (
               <TableHead key={n} className="text-right">
                 {n} {n === 1 ? "client" : "clients"}
@@ -597,13 +665,26 @@ function ConcurrencyPanel({ run }: { run: Run }) {
         <TableBody>
           {systems.map((system) => (
             <TableRow key={system}>
-              <TableCell className={system === "timelake" ? "font-medium" : undefined}>{systemName(system)}</TableCell>
+              <TableCell className={cn(FIRST, system === "timelake" && "font-medium")}>{systemName(system)}</TableCell>
               {counts.map((n) => {
                 const c = run.concurrency.find((x) => x.system === system && x.clients === n)
                 return (
                   <TableCell key={n} className="text-right font-mono whitespace-nowrap tabular-nums">
-                    {c ? `${c.qps.toFixed(1)} q/s · ${c.p95_s == null ? "—" : formatTime(c.p95_s)}` : "—"}
-                    {c && c.errors > 0 ? ` (${c.errors} errors)` : ""}
+                    {c ? (
+                      <>
+                        <span className="block">{c.qps.toFixed(1)} q/s</span>
+                        <span className="block text-xs text-muted-foreground">
+                          p95 {c.p95_s == null ? "—" : formatTime(c.p95_s)}
+                        </span>
+                        {c.errors > 0 && (
+                          <span className="block text-xs text-muted-foreground">
+                            {c.errors} {c.errors === 1 ? "error" : "errors"}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </TableCell>
                 )
               })}
@@ -611,6 +692,7 @@ function ConcurrencyPanel({ run }: { run: Run }) {
           ))}
         </TableBody>
       </Table>
+      <ScrollHint />
     </Panel>
   )
 }
@@ -630,7 +712,7 @@ function CostPanel({ run }: { run: Run }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>System</TableHead>
+            <TableHead className={FIRST}>System</TableHead>
             <TableHead className="text-right">Ingest, per month</TableHead>
             <TableHead className="text-right">Storage, per month</TableHead>
             <TableHead className="text-right">1M queries</TableHead>
@@ -639,7 +721,7 @@ function CostPanel({ run }: { run: Run }) {
         <TableBody>
           {rows.map((r) => (
             <TableRow key={r.system}>
-              <TableCell className={r.system === "timelake" ? "font-medium" : undefined}>
+              <TableCell className={cn(FIRST, r.system === "timelake" && "font-medium")}>
                 {systemName(r.system)}
               </TableCell>
               <TableCell className="text-right font-mono tabular-nums">{usd(r.ingestMonth)}</TableCell>
@@ -649,6 +731,7 @@ function CostPanel({ run }: { run: Run }) {
           ))}
         </TableBody>
       </Table>
+      <ScrollHint />
     </Panel>
   )
 }

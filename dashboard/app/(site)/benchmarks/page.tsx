@@ -56,7 +56,7 @@ export default function BenchmarksPage() {
 
       <section className="flex flex-col gap-4">
         <SectionHead label="Coming next">
-          The benchmarks we decided not to run, and why, are on the{" "}
+          The benchmarks we plan to run next. The ones we decided not to run, and why, are on the{" "}
           <Link href="/benchmarks/timebench#benchmarks" className="underline underline-offset-4 hover:text-foreground">
             timebench page
           </Link>

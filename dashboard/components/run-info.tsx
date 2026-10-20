@@ -14,7 +14,7 @@ export function RunInfoButton({ info, label }: { info: RunInfo; label: string })
         openOnHover
         delay={100}
         aria-label={`About the ${label} run`}
-        className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="relative inline-flex size-5 items-center justify-center rounded-full text-muted-foreground after:absolute after:-inset-2 after:content-[''] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
         <Info className="size-3.5" aria-hidden />
       </Popover.Trigger>

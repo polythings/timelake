@@ -5,14 +5,12 @@ import { useState } from "react"
 
 import { DotGrid } from "@/components/dots"
 import { EntryLabel } from "@/components/entry-label"
+import { Segmented } from "@/components/segmented"
 import { type Rank, type Ranking, SYSTEM_COLORS, entryAnchor, entryDescription } from "@/lib/bench-systems"
 import { formatBytes, formatCompact, formatTime } from "@/lib/format"
-import { cn } from "@/lib/utils"
 
 /** Columns of squares in the longest bar of a card. */
 const SCALE = 40
-/** Results within 5% of the fastest get no multiplier. */
-const SAME_AS_FASTEST = 1.05
 
 /** A card's heading: a title, a control at its right such as a metric switch, and one muted note. */
 export function PanelHeader({
@@ -50,7 +48,7 @@ export function Panel({
   className?: string
 }) {
   return (
-    <div className={`flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-6 ${className ?? ""}`}>
+    <div className={`flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-4 sm:p-6 ${className ?? ""}`}>
       <PanelHeader title={title} note={note} action={action} />
       {children}
     </div>
@@ -83,8 +81,9 @@ export function RankingBars({
   const wrong = firstPerSystem(ranking.rows.filter((r) => r.wrong))
   const rows = [...right, ...wrong]
   const largest = Math.max(...rows.map((r) => r.value))
-  const best = (right[0] ?? rows[0])?.value ?? 0
-  const show = (r: Rank) => formatValue(r.value, ranking.unit)
+  const top = right[0] ?? rows[0]
+  const best = top?.value ?? 0
+  const show = (r: Rank) => formatRankValue(r.value, ranking.unit)
   // A bar is two rows of squares, as long as its value against the largest.
   const columns = (value: number) => Math.max(1, Math.round((value / largest) * SCALE))
   const list = (rs: Rank[]) => (
@@ -118,7 +117,7 @@ export function RankingBars({
                 segments={[{ count: columns(r.value) * 2, color: SYSTEM_COLORS[r.system] ?? "var(--chart-2)" }]}
                 label={`${r.label}: ${show(r)}`}
               />
-              {ratio > SAME_AS_FASTEST ? (
+              {r !== top ? (
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
                   {ratio < 10 ? ratio.toFixed(1) : Math.round(ratio)}×
                 </span>
@@ -177,7 +176,7 @@ const UNITS: Record<Exclude<Metric, "time">, Ranking["unit"]> = {
 }
 
 /** A value in a ranking's unit: "48 ms", "1.2M/s", "12 requests", "$0.40", "1.3 MB". */
-function formatValue(v: number, unit: Ranking["unit"]): string {
+export function formatRankValue(v: number, unit: Ranking["unit"]): string {
   switch (unit) {
     case "rows/s":
       return `${formatCompact(v)}/s`
@@ -195,7 +194,7 @@ function formatValue(v: number, unit: Ranking["unit"]): string {
 }
 
 /** The ranking by `metric`: its rows that measured it, fewest first. */
-function byMetric(ranking: Ranking, metric: Metric): Ranking {
+export function byMetric(ranking: Ranking, metric: Metric): Ranking {
   if (metric === "time") return ranking
   const of = (r: Rank) => (metric === "usd" ? (r.usd ?? NaN) * 1e6 : metric === "requests" ? r.requests : r.bytes)
   const rows = ranking.rows
@@ -206,37 +205,27 @@ function byMetric(ranking: Ranking, metric: Metric): Ranking {
   return { ...ranking, rows, unit: UNITS[metric], higherIsBetter: false, note }
 }
 
-/**
- * The metrics a query ranking can switch between, and the one shown: time always, the others where the run counted
- * them (object storage).
- */
-export function useMetric(ranking: Ranking) {
-  const [metric, setMetric] = useState<Metric>("time")
+/** The metrics a ranking can switch between: time always, the others where the run counted them (object storage). */
+export function metricOptions(ranking: Ranking): { value: Metric; label: string }[] {
   const timed = ranking.unit === "seconds"
-  const options = METRICS.filter(
+  return METRICS.filter(
     (m) => m.key === "time" || (timed && ranking.rows.some((r) => r[m.key as Exclude<Metric, "time">] !== undefined)),
-  )
-  const shown = byMetric(ranking, options.some((m) => m.key === metric) ? metric : "time")
-  const action =
-    options.length > 1 ? (
-      <div className="flex rounded-md border p-0.5 text-xs" role="group" aria-label="What to rank by">
-        {options.map((m) => (
-          <button
-            key={m.key}
-            type="button"
-            aria-pressed={metric === m.key}
-            onClick={() => setMetric(m.key)}
-            className={cn(
-              "rounded px-2 py-0.5 text-muted-foreground transition-colors hover:text-foreground",
-              metric === m.key && "bg-muted text-foreground",
-            )}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-    ) : null
-  return { shown, action }
+  ).map((m) => ({ value: m.key, label: m.label }))
+}
+
+/** A switch between a ranking's metrics, or nothing where time is the only one. */
+export function MetricSwitch({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: Metric; label: string }[]
+  value: Metric
+  onChange: (m: Metric) => void
+}) {
+  return options.length > 1 ? (
+    <Segmented options={options} value={value} onChange={onChange} label="What to rank by" />
+  ) : null
 }
 
 /** One ranking as a card, by time or, where counted, by requests, their cost or bytes read. */
@@ -249,12 +238,14 @@ export function RankingCard({
   perSystem?: boolean
   learnMore?: string
 }) {
-  const { shown, action } = useMetric(ranking)
+  const [metric, setMetric] = useState<Metric>("time")
+  const options = metricOptions(ranking)
+  const shown = byMetric(ranking, options.some((o) => o.value === metric) ? metric : "time")
   return (
     <Panel
       title={ranking.title}
       note={`${shown.note}; ${shown.higherIsBetter ? "higher" : "lower"} is better`}
-      action={action}
+      action={<MetricSwitch options={options} value={metric} onChange={setMetric} />}
     >
       <RankingBars ranking={shown} perSystem={perSystem} queries={ranking.queries} learnMore={learnMore} />
     </Panel>

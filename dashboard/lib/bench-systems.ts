@@ -30,17 +30,19 @@ export const SYSTEMS: Record<string, string> = {
   "influxdb3-defaults": "InfluxDB 3 Core, as shipped",
 }
 
-/**
- * Each system's color in charts, fixed so it never changes with what else is shown. S3 Tables and TimescaleDB share
- * one: they never run on the same target (AWS only, and a database server).
- */
+/** Each system's color in charts, fixed so it never changes with what else is shown. */
 export const SYSTEM_COLORS: Record<string, string> = {
   timelake: "var(--chart-1)",
   iceberg: "var(--chart-3)",
   lance: "var(--chart-4)",
   parquet: "var(--chart-5)",
   s3tables: "var(--chart-2)",
-  timescaledb: "var(--chart-2)",
+  timescaledb: "var(--chart-6)",
+  clickhouse: "var(--chart-7)",
+  questdb: "var(--chart-8)",
+  influxdb3: "var(--chart-9)",
+  // Runs before the default/tuned split had InfluxDB as shipped as a system of its own.
+  "influxdb3-defaults": "var(--chart-9)",
 }
 
 export const engineLabel = (engine: string) => ENGINES[engine] ?? engine

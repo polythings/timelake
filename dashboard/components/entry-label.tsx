@@ -26,7 +26,7 @@ export function EntryLabel({
       <Popover.Trigger
         openOnHover
         delay={150}
-        className={`min-w-0 cursor-help truncate text-left underline decoration-muted-foreground/40 decoration-dotted underline-offset-4 ${className ?? ""}`}
+        className={`-my-1 min-w-0 cursor-help truncate py-1 text-left underline decoration-muted-foreground/40 decoration-dotted underline-offset-4 ${className ?? ""}`}
       >
         {label}
       </Popover.Trigger>
