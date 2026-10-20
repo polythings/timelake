@@ -227,8 +227,8 @@ impl Contract {
             dedup: p.flag(property::DEDUP, false)?,
             ingest_time_column: p.get(property::INGEST_TIME_COLUMN).map(str::to_string),
             retention: p.duration(property::RETENTION)?,
-            target_file_size: p.number(property::TARGET_FILE_SIZE, Self::DEFAULT_TARGET_FILE_SIZE)?,
-            row_group_rows: p.number(property::ROW_GROUP_ROWS, Self::DEFAULT_ROW_GROUP_ROWS)?,
+            target_file_size: p.positive(property::TARGET_FILE_SIZE, Self::DEFAULT_TARGET_FILE_SIZE)?,
+            row_group_rows: p.positive(property::ROW_GROUP_ROWS, Self::DEFAULT_ROW_GROUP_ROWS)?,
             auto_maintain: p.flag(property::AUTO_MAINTAIN, true)?,
             snapshot_retention: p.duration(property::SNAPSHOT_RETENTION)?.unwrap_or(Self::DEFAULT_SNAPSHOT_RETENTION),
             min_snapshots: p.number(property::MIN_SNAPSHOTS, Self::DEFAULT_MIN_SNAPSHOTS)?,
@@ -265,7 +265,7 @@ impl Contract {
                 .unwrap_or(Self::DEFAULT_VERSION_CHECK_INTERVAL),
             data_page_rows: p
                 .get(property::DATA_PAGE_ROWS)
-                .map(|_| p.number(property::DATA_PAGE_ROWS, 0))
+                .map(|_| p.positive(property::DATA_PAGE_ROWS, 1))
                 .transpose()?,
             float_encoding: p.get(property::FLOAT_ENCODING).unwrap_or("dictionary").to_ascii_lowercase(),
             // Iceberg's own properties: checked when a file is written, so a bad value never blocks reads.
@@ -331,6 +331,15 @@ impl Properties<'_> {
         self.get(key).map_or(Ok(default), |s| {
             s.parse().map_err(|_| FormatError::new(format!("{key} must be a non-negative integer, got {s:?}")))
         })
+    }
+
+    /// A count or size where 0 would mean nothing (a row group of no rows).
+    fn positive<T: FromStr + Default + PartialEq>(&self, key: &str, default: T) -> Result<T> {
+        let n = self.number(key, default)?;
+        if n == T::default() {
+            return Err(FormatError::new(format!("{key} must be a positive integer, got 0")));
+        }
+        Ok(n)
     }
 
     fn flag(&self, key: &str, default: bool) -> Result<bool> {
@@ -518,8 +527,16 @@ mod tests {
 
     #[test]
     fn contract_rejects_bad_values() {
-        for kv in [(DEDUP, "yes"), (AUTO_MAINTAIN, "0"), (CHUNK, "week"), (RETENTION, "forever"), (MAX_SNAPSHOTS, "-1")]
-        {
+        for kv in [
+            (DEDUP, "yes"),
+            (AUTO_MAINTAIN, "0"),
+            (CHUNK, "week"),
+            (RETENTION, "forever"),
+            (MAX_SNAPSHOTS, "-1"),
+            (ROW_GROUP_ROWS, "0"),
+            (TARGET_FILE_SIZE, "0"),
+            (DATA_PAGE_ROWS, "0"),
+        ] {
             assert!(Contract::from_properties(&props(&[kv])).is_err(), "{kv:?}");
         }
     }

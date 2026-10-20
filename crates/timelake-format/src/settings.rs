@@ -358,7 +358,7 @@ pub static SETTINGS: &[Setting] = &[
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Size at which compaction output and writes roll to a new file (256 MiB).",
-        check: count,
+        check: positive,
     },
     Setting {
         name: "row-group-rows",
@@ -368,7 +368,7 @@ pub static SETTINGS: &[Setting] = &[
         since: "0.1.0",
         description: "Parquet row group size. Page indexes keep single-series reads selective inside large row \
                       groups.",
-        check: count,
+        check: positive,
     },
     Setting {
         name: "snapshot-retention",
@@ -472,7 +472,7 @@ pub static SETTINGS: &[Setting] = &[
                       use less memory (it holds a page per column of each file it merges: 8,192 rows peaked at 77 MiB \
                       merging 24 TSBS files, 20,000 at 123 MiB) and page pruning finer, at a few percent more bytes \
                       (TSBS: +3.6%) and slower scans below about 8,000 rows.",
-        check: count,
+        check: positive,
     },
     Setting {
         name: "version-check-interval",
@@ -564,6 +564,13 @@ fn float_encoding(s: &str) -> Result<()> {
 
 fn count(s: &str) -> Result<()> {
     s.parse::<u64>().map(drop).map_err(|_| FormatError::new(format!("must be a non-negative integer, got {s:?}")))
+}
+
+fn positive(s: &str) -> Result<()> {
+    match s.parse::<u64>() {
+        Ok(n) if n > 0 => Ok(()),
+        _ => Err(FormatError::new(format!("must be a positive integer, got {s:?}"))),
+    }
 }
 
 fn duration(s: &str) -> Result<()> {
@@ -686,6 +693,8 @@ mod tests {
         assert!(check("read-dedup-strategy", "keys-first").is_ok() && check("read-dedup-strategy", "hash").is_err());
         assert!(check("chunk-interval", "1h").is_ok() && check("chunk-interval", "week").is_err());
         assert!(check("min-snapshots", "-1").is_err() && check("series-key", " , ").is_err());
+        assert!(check("min-snapshots", "0").is_ok() && check("row-group-rows", "0").is_err());
+        assert!(check("target-file-size-bytes", "0").is_err() && check("data-page-rows", "0").is_err());
         let err = check("read-dedup", "yes").unwrap_err().to_string();
         assert!(err.starts_with("timelake.read-dedup: must be true or false"), "{err}");
     }

@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- `timelake.row-group-rows=0` was accepted and then crashed every write; `timelake.target-file-size-bytes` and
+  `timelake.data-page-rows` took 0 too. All three must now be positive.
 - The WebAssembly reader compared the row-group statistics of a decimal column, stored unscaled (1.5 as 15), with a
   query's values, so a filter on `1.5` skipped the rows holding it. Statistics of decimals, unsigned integers and other
   types it can't compare are no longer used to skip row groups.
