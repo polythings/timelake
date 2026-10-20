@@ -32,6 +32,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
+use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{Datum, PrimitiveLiteral};
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
@@ -220,6 +221,9 @@ async fn scan_data(
     }
 }
 
+/// Time partitions a newest-first scan plans at once: each reads the footers of its files.
+const CONCURRENT_PARTITION_SCANS: usize = 16;
+
 /// A scan of each time partition, newest first, that stops once the `k` newest rows so far are
 /// newer than any row an older partition holds.
 async fn scan_newest(
@@ -238,10 +242,10 @@ async fn scan_newest(
     }
     let mut partitions: Vec<(i64, Vec<LiveEntry>)> = partitions.into_values().collect();
     partitions.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
-    let mut waves = vec![];
-    for (last, files) in partitions {
-        waves.push((scan_data(table, state, projection, filters, None, files, None).await?, last));
-    }
+    let scans = partitions.into_iter().map(|(last, files)| async move {
+        Ok::<_, DataFusionError>((scan_data(table, state, projection, filters, None, files, None).await?, last))
+    });
+    let waves = futures::stream::iter(scans).buffered(CONCURRENT_PARTITION_SCANS).try_collect::<Vec<_>>().await?;
     let time = table.contract().time_column.clone().unwrap_or_default();
     Ok(Arc::new(NewestFirstExec::try_new(waves, newest, &time)?))
 }

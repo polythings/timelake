@@ -391,6 +391,28 @@ mod tests {
 
     const MINUTE: i64 = 60_000_000;
 
+    /// Planning a newest-first scan reads the partitions' footers at once, not one after another.
+    #[tokio::test(start_paused = true)]
+    async fn partitions_are_planned_concurrently() {
+        const RTT: std::time::Duration = std::time::Duration::from_millis(100);
+        let (lake, store) = faulty_lake();
+        let mut o = opts();
+        // No head, so the footers aren't in it.
+        o.properties.insert(crate::property::HEAD_FORMAT.into(), "none".into());
+        let t = lake.create_table("iot.r", &crate::testing::schema(), o).await.unwrap();
+        let rows: Vec<(i64, i32, f64)> = (0..6).map(|d| (T0 + d * 24 * 60 * MINUTE, 1, 1.0)).collect();
+        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        let s = Session::new(crate::testing::reopen(&store));
+        // Loads the table, but no footer.
+        s.sql("DESCRIBE iot.r").await.unwrap().collect().await.unwrap();
+        store.set_latency(RTT);
+        let started = tokio::time::Instant::now();
+        let df = s.sql("SELECT * FROM iot.r ORDER BY time DESC LIMIT 3").await.unwrap();
+        df.create_physical_plan().await.unwrap();
+        let round_trips = started.elapsed().as_millis() / RTT.as_millis();
+        assert!(round_trips <= 2, "{round_trips} round trips for 6 partitions");
+    }
+
     /// Newest-first gives the rows a full scan gives, across partitions, with filters, and
     /// shows in the plan.
     #[tokio::test]

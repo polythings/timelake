@@ -193,6 +193,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   all four aggregates over a signal. The state a rollup stores for `time_weighted_mean` gained fields: a rollup with
   `time_weighted_mean` created by 0.7.0 is no longer used to answer queries, and its refresh fails until it is dropped
   and created again.
+- Planning a newest-first query (`ORDER BY time DESC LIMIT k`) reads the file footers of all time partitions at once
+  instead of one partition after another: one round trip instead of one per partition, when the footers aren't in the
+  table's head.
 
 ### Removed
 
