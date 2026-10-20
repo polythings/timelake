@@ -81,3 +81,5 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 - 2026-10-20: ASOF JOIN (Snowflake's form): a node of its own, the right side sorted per key and searched; 0.23 s
   where a range join took 78 s (#124).
 - 2026-10-20: ASOF JOIN in DuckDB's form too; #124 done.
+- 2026-10-20: ASOF JOIN is planned before the optimizer, so a `WHERE` on the right side's columns applies after
+  each left row's match is found.

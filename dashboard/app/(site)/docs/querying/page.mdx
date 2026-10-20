@@ -131,8 +131,8 @@ FROM iot.readings p ASOF JOIN iot.states s MATCH_CONDITION (p.time >= s.time) ON
 
 Unmatched rows that are kept get nulls. The match condition (DuckDB's one inequality in `ON`) compares a left time with
 a right time by `>=` or `>` (the latest right row at or before), or `<=` or `<` (the earliest at or after); the rest of
-`ON` is equalities. The
-right side is held in memory, sorted by time per key, and each left row finds its match by binary search: a day of the
+`ON` is equalities. A `WHERE` on the right side's columns filters the joined rows: each left row's nearest match is
+found first. The right side is held in memory, sorted by time per key, and each left row finds its match by binary search: a day of the
 industrial benchmark's one-second readings (8.6 M rows) with their machines' states took 0.23 s, against 78 s as a
 range join.
 

@@ -95,7 +95,8 @@ impl Session {
             .with_optimizer_rule(Arc::new(super::series_order::SeriesOrder))
             .with_optimizer_rule(Arc::new(RollupRewrite { routes: routes.clone() }))
             .with_optimizer_rule(Arc::new(super::shared_state::SharedState))
-            .with_optimizer_rule(Arc::new(super::asof::AsofRule))
+            .with_optimizer_rule(Arc::new(super::asof::AsofFilterPushdown))
+            .with_analyzer_rule(Arc::new(super::asof::AsofRule))
             .with_query_planner(Arc::new(Planner))
             .build();
         let ctx = SessionContext::new_with_state(state);

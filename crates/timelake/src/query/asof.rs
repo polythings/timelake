@@ -13,7 +13,7 @@
 //!
 //! DataFusion has no ASOF JOIN: [`rewrite_statement`] turns one into a left join whose condition
 //! carries the match condition inside a marker function, [`AsofRule`] replaces that join with an
-//! [`AsofJoin`] node, and [`AsofJoinExec`] runs it: the right side is collected and each key's rows
+//! [`AsofJoin`] node before the optimizer runs, and [`AsofJoinExec`] runs it: the right side is collected and each key's rows
 //! sorted by time, then each left row finds its match by binary search. On a day of the industrial
 //! benchmark's one-second readings (8.6 M rows) matched with their machines' states: 0.23 s, against
 //! 0.36 s for the same answer from a union and `forward_fill`, and 78 s as a range join.
@@ -29,15 +29,18 @@ use arrow::compute::{cast, concat_batches, take};
 use arrow::datatypes::{DataType, Int64Type, SchemaRef, TimeUnit};
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::config::ConfigOptions;
+use datafusion::common::tree_node::{Transformed, TransformedResult};
 use datafusion::common::{DFSchemaRef, internal_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
-use datafusion::logical_expr::utils::split_conjunction_owned;
+use datafusion::logical_expr::logical_plan::builder::build_join_schema;
+use datafusion::logical_expr::utils::{conjunction, split_conjunction_owned};
 use datafusion::logical_expr::{
-    BinaryExpr, ColumnarValue, Expr, Extension, JoinType, LogicalPlan, Operator, ScalarFunctionArgs, ScalarUDF,
-    ScalarUDFImpl, Signature, UserDefinedLogicalNode, UserDefinedLogicalNodeCore, Volatility,
+    BinaryExpr, ColumnarValue, Expr, Extension, Filter, Join, JoinType, LogicalPlan, Operator, ScalarFunctionArgs,
+    ScalarUDF, ScalarUDFImpl, Signature, UserDefinedLogicalNode, UserDefinedLogicalNodeCore, Volatility,
 };
+use datafusion::optimizer::AnalyzerRule;
 use datafusion::optimizer::optimizer::ApplyOrder;
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
@@ -288,6 +291,9 @@ impl UserDefinedLogicalNodeCore for AsofJoin {
             return internal_err!("an ASOF join's expressions are its keys and two times");
         }
         let on = (0..n).map(|i| (exprs[2 * i].clone(), exprs[2 * i + 1].clone())).collect();
+        // The inputs may have lost columns the query doesn't need.
+        let join_type = if self.keep_unmatched { JoinType::Left } else { JoinType::Inner };
+        let schema = Arc::new(build_join_schema(left.schema(), right.schema(), &join_type)?);
         Ok(Self {
             left,
             right,
@@ -296,79 +302,158 @@ impl UserDefinedLogicalNodeCore for AsofJoin {
             right_time: exprs[2 * n + 1].clone(),
             direction: self.direction,
             keep_unmatched: self.keep_unmatched,
-            schema: Arc::clone(&self.schema),
+            schema,
         })
+    }
+
+    /// The left columns asked for from the left input, the right ones from the right input; the
+    /// optimizer adds the keys and times.
+    fn necessary_children_exprs(&self, output_columns: &[usize]) -> Option<Vec<Vec<usize>>> {
+        let n = self.left.schema().fields().len();
+        let (left, right): (Vec<usize>, Vec<usize>) = output_columns.iter().partition(|&&i| i < n);
+        Some(vec![left, right.into_iter().map(|i| i - n).collect()])
     }
 }
 
-/// Replaces a left join whose condition carries the marker with an [`AsofJoin`].
+/// Replaces a join whose condition carries the marker with an [`AsofJoin`]. It is an analyzer rule,
+/// so it runs before the optimizer: filter pushdown would otherwise move a `WHERE` on the right
+/// side's columns below the join, and the nearest row would be chosen among the filtered rows.
 #[derive(Debug)]
 pub(super) struct AsofRule;
 
-impl OptimizerRule for AsofRule {
+impl AnalyzerRule for AsofRule {
     fn name(&self) -> &'static str {
         "timelake_asof_join"
     }
 
+    fn analyze(&self, plan: LogicalPlan, _config: &ConfigOptions) -> DfResult<LogicalPlan> {
+        plan.transform_up_with_subqueries(|plan| match plan {
+            LogicalPlan::Join(join) => asof_join(join),
+            LogicalPlan::Filter(filter) => push_left(filter),
+            plan => Ok(Transformed::no(plan)),
+        })
+        .data()
+    }
+}
+
+/// `join` as an [`AsofJoin`] if its condition carries the marker.
+fn asof_join(join: Join) -> DfResult<Transformed<LogicalPlan>> {
+    let Some(filter) = &join.filter else { return Ok(Transformed::no(LogicalPlan::Join(join))) };
+    let parts = split_conjunction_owned(filter.clone());
+    let (markers, rest): (Vec<Expr>, Vec<Expr>) = parts.into_iter().partition(is_marker);
+    let [marker] = markers.as_slice() else {
+        return if markers.is_empty() {
+            Ok(Transformed::no(LogicalPlan::Join(join)))
+        } else {
+            plan_err!("one MATCH_CONDITION per ASOF JOIN")
+        };
+    };
+    let keep_unmatched = match join.join_type {
+        JoinType::Left => true,
+        JoinType::Inner => false,
+        _ => return plan_err!("ASOF JOIN keeps every left row"),
+    };
+    let refs = |e: &Expr, side: &LogicalPlan| {
+        let columns = e.column_refs();
+        !columns.is_empty() && columns.iter().all(|c| side.schema().has_column(c))
+    };
+    let sides = |a: &Expr, b: &Expr| {
+        if refs(a, &join.left) && refs(b, &join.right) {
+            Some((a.clone(), b.clone(), false))
+        } else if refs(b, &join.left) && refs(a, &join.right) {
+            Some((b.clone(), a.clone(), true))
+        } else {
+            None
+        }
+    };
+    let mut on = join.on.clone();
+    for e in &rest {
+        match e {
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) => match sides(left, right) {
+                Some((l, r, _)) => on.push((l, r)),
+                None => return plan_err!("ASOF JOIN's keys compare a left column with a right one"),
+            },
+            _ => return plan_err!("ASOF JOIN takes equalities in ON and one comparison of times in MATCH_CONDITION"),
+        }
+    }
+    let Expr::ScalarFunction(f) = marker else { unreachable!("a marker is a call") };
+    let Some(Expr::BinaryExpr(BinaryExpr { left, op, right })) = f.args.first() else {
+        return plan_err!("MATCH_CONDITION compares a left time with a right time");
+    };
+    // Written as `left_time op right_time`, or the other way round.
+    let (left_time, right_time, op) = match sides(left, right) {
+        Some((l, r, false)) => (l, r, *op),
+        Some((l, r, true)) => {
+            let Some(swapped) = op.swap() else { return plan_err!("MATCH_CONDITION takes >=, >, <= or <") };
+            (l, r, swapped)
+        }
+        None => return plan_err!("MATCH_CONDITION compares a left time with a right time"),
+    };
+    let direction = match op {
+        Operator::GtEq => Direction::Before { inclusive: true },
+        Operator::Gt => Direction::Before { inclusive: false },
+        Operator::LtEq => Direction::After { inclusive: true },
+        Operator::Lt => Direction::After { inclusive: false },
+        _ => return plan_err!("MATCH_CONDITION takes >=, >, <= or <"),
+    };
+    let node = AsofJoin {
+        left: join.left.as_ref().clone(),
+        right: join.right.as_ref().clone(),
+        on,
+        left_time,
+        right_time,
+        direction,
+        keep_unmatched,
+        schema: join.schema,
+    };
+    Ok(Transformed::yes(LogicalPlan::Extension(Extension { node: Arc::new(node) })))
+}
+
+/// Pushes the parts of a filter above an [`AsofJoin`] that read only left columns into its left
+/// input: a left row's match doesn't depend on the other left rows. DataFusion's filter pushdown
+/// can't, as it pushes a filter into every input of a node it doesn't know.
+#[derive(Debug)]
+pub(super) struct AsofFilterPushdown;
+
+impl OptimizerRule for AsofFilterPushdown {
+    fn name(&self) -> &'static str {
+        "timelake_asof_filter_pushdown"
+    }
+
     fn apply_order(&self) -> Option<ApplyOrder> {
-        Some(ApplyOrder::BottomUp)
+        Some(ApplyOrder::TopDown)
     }
 
     fn rewrite(&self, plan: LogicalPlan, _config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
-        let LogicalPlan::Join(join) = &plan else { return Ok(Transformed::no(plan)) };
-        let Some(filter) = &join.filter else { return Ok(Transformed::no(plan)) };
-        let parts = split_conjunction_owned(filter.clone());
-        let (markers, rest): (Vec<Expr>, Vec<Expr>) = parts.into_iter().partition(is_marker);
-        let [marker] = markers.as_slice() else {
-            return if markers.is_empty() {
-                Ok(Transformed::no(plan))
-            } else {
-                plan_err!("one MATCH_CONDITION per ASOF JOIN")
-            };
-        };
-        // A filter above that rejects nulls on the right makes the left join an inner one.
-        let keep_unmatched = match join.join_type {
-            JoinType::Left => true,
-            JoinType::Inner => false,
-            _ => return plan_err!("ASOF JOIN keeps every left row"),
-        };
-        if !rest.is_empty() {
-            return plan_err!("ASOF JOIN takes equalities in ON and one comparison of times in MATCH_CONDITION");
+        match plan {
+            LogicalPlan::Filter(filter) => push_left(filter),
+            plan => Ok(Transformed::no(plan)),
         }
-        let Expr::ScalarFunction(f) = marker else { unreachable!("a marker is a call") };
-        let Some(Expr::BinaryExpr(BinaryExpr { left, op, right })) = f.args.first() else {
-            return plan_err!("MATCH_CONDITION compares a left time with a right time");
-        };
-        let refs_left = |e: &Expr| e.column_refs().iter().all(|c| join.left.schema().has_column(c));
-        let refs_right = |e: &Expr| e.column_refs().iter().all(|c| join.right.schema().has_column(c));
-        // Written as `left_time op right_time`, or the other way round.
-        let (left_time, right_time, op) = if refs_left(left) && refs_right(right) {
-            ((**left).clone(), (**right).clone(), *op)
-        } else if refs_left(right) && refs_right(left) {
-            let Some(swapped) = op.swap() else { return plan_err!("MATCH_CONDITION takes >=, >, <= or <") };
-            ((**right).clone(), (**left).clone(), swapped)
-        } else {
-            return plan_err!("MATCH_CONDITION compares a left time with a right time");
-        };
-        let direction = match op {
-            Operator::GtEq => Direction::Before { inclusive: true },
-            Operator::Gt => Direction::Before { inclusive: false },
-            Operator::LtEq => Direction::After { inclusive: true },
-            Operator::Lt => Direction::After { inclusive: false },
-            _ => return plan_err!("MATCH_CONDITION takes >=, >, <= or <"),
-        };
-        let node = AsofJoin {
-            left: join.left.as_ref().clone(),
-            right: join.right.as_ref().clone(),
-            on: join.on.clone(),
-            left_time,
-            right_time,
-            direction,
-            keep_unmatched,
-            schema: Arc::clone(&join.schema),
-        };
-        Ok(Transformed::yes(LogicalPlan::Extension(Extension { node: Arc::new(node) })))
     }
+}
+
+/// `filter` with the parts that read only an [`AsofJoin`]'s left columns moved into its left input.
+fn push_left(filter: Filter) -> DfResult<Transformed<LogicalPlan>> {
+    let LogicalPlan::Extension(Extension { node }) = filter.input.as_ref() else {
+        return Ok(Transformed::no(LogicalPlan::Filter(filter)));
+    };
+    let Some(join) = node.as_any().downcast_ref::<AsofJoin>() else {
+        return Ok(Transformed::no(LogicalPlan::Filter(filter)));
+    };
+    let on_left = |e: &Expr| {
+        let columns = e.column_refs();
+        !e.is_volatile() && !columns.is_empty() && columns.iter().all(|c| join.left.schema().has_column(c))
+    };
+    let (left, kept): (Vec<Expr>, Vec<Expr>) =
+        split_conjunction_owned(filter.predicate.clone()).into_iter().partition(on_left);
+    let Some(left) = conjunction(left) else { return Ok(Transformed::no(LogicalPlan::Filter(filter))) };
+    let node =
+        AsofJoin { left: LogicalPlan::Filter(Filter::try_new(left, Arc::new(join.left.clone()))?), ..join.clone() };
+    let joined = LogicalPlan::Extension(Extension { node: Arc::new(node) });
+    Ok(Transformed::yes(match conjunction(kept) {
+        Some(kept) => LogicalPlan::Filter(Filter::try_new(kept, Arc::new(joined))?),
+        None => joined,
+    }))
 }
 
 fn is_marker(e: &Expr) -> bool {
@@ -636,6 +721,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(matched, ["| a | 20 | x |", "| a | 35 | y |"]);
+        // A filter on the right side's columns applies to the matches, after the nearest row is found.
+        let x = answer(&format!(
+            "{TABLES} SELECT l.k, l.t, r.s FROM l ASOF JOIN r MATCH_CONDITION (l.t >= r.t) ON l.k = r.k WHERE r.s = 'x' ORDER BY l.t"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(x, ["| a | 10 | x |", "| a | 20 | x |"]);
+        let inner = answer(&format!(
+            "{TABLES} SELECT l.t, r.s FROM l ASOF JOIN r ON l.k = r.k AND l.t >= r.t WHERE r.s = 'x' AND l.t > 10 ORDER BY l.t"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(inner, ["| 20 | x |"]);
         let bad = format!("{TABLES} SELECT * FROM l ASOF JOIN r MATCH_CONDITION (l.t = r.t) ON l.k = r.k");
         assert!(answer(&bad).await.is_err());
     }
