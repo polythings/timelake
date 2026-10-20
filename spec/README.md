@@ -60,7 +60,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | 2 | [Commits](0002-commits.md) | Done | 0.1.0, 0.2.0, unreleased | 2026-10-20 |
 | 3 | [Object-store catalog](0003-object-store-catalog.md) | Done | 0.1.0 | 2026-10-12 |
 | 4 | [Time-series table contract](0004-table-contract.md) | In progress | 0.1.0, 0.5.0 | 2026-10-18 |
-| 5 | [File layout and encodings](0005-file-layout.md) | In progress | 0.1.0, 0.6.0, 0.7.0, unreleased | 2026-10-19 |
+| 5 | [File layout and encodings](0005-file-layout.md) | In progress | 0.1.0, 0.6.0, 0.7.0, unreleased | 2026-10-20 |
 | 6 | [Last-value index](0006-last-value-index.md) | In progress | 0.1.0, 0.5.0, unreleased | 2026-10-19 |
 | 7 | [One-request table state and version checks](0007-table-head.md) | Done | 0.3.0, 0.6.0, 0.7.0 | 2026-10-17 |
 | 8 | [Table format versions and upgrades](0008-format-versions.md) | Done | 0.3.0, 0.4.0, 0.5.0 | 2026-10-14 |

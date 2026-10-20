@@ -25,6 +25,7 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::types::{ColumnDescriptor, ColumnPath};
 
 use crate::Contract;
+use crate::property::COMPRESSION_LEVEL;
 
 /// ZSTD level for data files: fast to write, close to the best ratio.
 pub const ZSTD_LEVEL: i32 = 3;
@@ -40,14 +41,25 @@ const PARALLEL_MIN_ROWS: usize = 8 * 1024;
 /// Measured on TSBS IoT (repeat queries, local disk): ZSTD 3 11.5 ms and 200 MB, ZSTD 1 11.1 ms
 /// and 204 MB, LZ4 12.3 ms and 242 MB, Snappy 10.8 ms and 277 MB: decoding isn't the bottleneck,
 /// and on object storage bytes are, so ZSTD 3 is the default (`bench/results/PERFORMANCE.md`).
-/// Codecs this build lacks (WebAssembly has ZSTD and Snappy) fail when a file is written.
-pub fn compression(codec: &str, level: Option<i32>) -> Result<Compression, ParquetError> {
+/// Codecs this build lacks (WebAssembly has ZSTD and Snappy) fail when a file is written, as does
+/// a level the codec doesn't have.
+pub fn compression(codec: &str, level: Option<&str>) -> Result<Compression, ParquetError> {
+    let level = |default: i32| -> Result<i32, ParquetError> {
+        level.map_or(Ok(default), |l| {
+            l.parse().map_err(|_| ParquetError::General(format!("{COMPRESSION_LEVEL} {l:?} is not an integer")))
+        })
+    };
+    let unsigned = |default: i32| -> Result<u32, ParquetError> {
+        let n = level(default)?;
+        u32::try_from(n)
+            .map_err(|_| ParquetError::General(format!("{COMPRESSION_LEVEL} {n} is out of range for {codec}")))
+    };
     Ok(match codec {
-        "zstd" => Compression::ZSTD(ZstdLevel::try_new(level.unwrap_or(ZSTD_LEVEL))?),
+        "zstd" => Compression::ZSTD(ZstdLevel::try_new(level(ZSTD_LEVEL)?)?),
         "lz4" | "lz4_raw" => Compression::LZ4_RAW,
         "snappy" => Compression::SNAPPY,
-        "gzip" => Compression::GZIP(GzipLevel::try_new(level.map_or(Ok(6), u32::try_from).unwrap_or(6))?),
-        "brotli" => Compression::BROTLI(BrotliLevel::try_new(level.map_or(Ok(1), u32::try_from).unwrap_or(1))?),
+        "gzip" => Compression::GZIP(GzipLevel::try_new(unsigned(6)?)?),
+        "brotli" => Compression::BROTLI(BrotliLevel::try_new(unsigned(1)?)?),
         "uncompressed" | "none" => Compression::UNCOMPRESSED,
         other => {
             return Err(ParquetError::General(format!(
@@ -72,7 +84,7 @@ pub fn writer_properties(
     default_page_rows: usize,
 ) -> Result<WriterProperties, ParquetError> {
     let mut b = WriterProperties::builder()
-        .set_compression(compression(&contract.compression_codec, contract.compression_level)?)
+        .set_compression(compression(&contract.compression_codec, contract.compression_level.as_deref())?)
         .set_max_row_group_row_count(Some(contract.row_group_rows))
         .set_statistics_enabled(EnabledStatistics::Page)
         .set_data_page_row_count_limit(contract.data_page_rows.unwrap_or(default_page_rows).max(1))
@@ -608,6 +620,16 @@ mod tests {
         assert_eq!(minimal_be(-129), [0xff, 0x7f]);
         assert_eq!(be_value(&minimal_be(-129)), -129);
         assert_eq!(be_value(&minimal_be(1 << 40)), 1 << 40);
+    }
+
+    /// A level the codec doesn't have is an error, not the default level.
+    #[test]
+    fn compression_levels_are_checked() {
+        assert_eq!(compression("zstd", Some("5")).unwrap(), Compression::ZSTD(ZstdLevel::try_new(5).unwrap()));
+        assert_eq!(compression("zstd", None).unwrap(), Compression::ZSTD(ZstdLevel::try_new(ZSTD_LEVEL).unwrap()));
+        for (codec, level) in [("zstd", "high"), ("zstd", "99"), ("gzip", "-1"), ("brotli", "-1"), ("gzip", "1.5")] {
+            assert!(compression(codec, Some(level)).is_err(), "{codec} {level}");
+        }
     }
 
     /// Floats get a dictionary falling back to byte-stream-split, or byte-stream-split alone.

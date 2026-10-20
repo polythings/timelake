@@ -3,7 +3,7 @@ number: 5
 title: File layout and encodings
 area: Tables and storage
 status: in-progress
-updated: 2026-10-19
+updated: 2026-10-20
 versions: [0.1.0, 0.6.0, 0.7.0, unreleased]
 related: [4, 19, 23]
 issues: [33, 44, 55, 74, 76, 131]
@@ -11,7 +11,7 @@ issues: [33, 44, 55, 74, 76, 131]
 
 # 5. File layout and encodings
 
-**In progress** · updated 2026-10-19 · versions 0.1.0, 0.6.0, 0.7.0, unreleased · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md)
+**In progress** · updated 2026-10-20 · versions 0.1.0, 0.6.0, 0.7.0, unreleased · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Fast first queries on object storage](milestones/fast-first-queries.md)
 · related: [spec 4](0004-table-contract.md), [spec 19](0019-compaction.md), [spec 23](0023-filter-pushdown.md)
 
 ## Summary
@@ -38,7 +38,8 @@ path.
 - **Writer:** Timelake writes Parquet with its own writer, shared with the WebAssembly writer, encoding each row
   group's columns on threads of their own (0.6.0: the same files byte for byte, compaction of TSBS IoT 2.37 → 1.17 s).
 - **Codec:** the codec in Iceberg's `write.parquet.compression-codec` and `write.parquet.compression-level` (ZSTD 3 by
-  default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Built 0.7.0.
+  default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Built 0.7.0. A level the codec doesn't have fails the
+  write rather than falling back to the default (unreleased).
 - **Encodings:** Parquet `DELTA_BINARY_PACKED` for the time column, dictionaries for the other columns (floats
   falling back to `BYTE_STREAM_SPLIT` once the dictionary outgrows its page; setting `float-encoding`), and ZSTD.
   Measured 2026-10-19 against `BYTE_STREAM_SPLIT` for floats: IIoT readings a third of the size (366 → 119 MB for 5
@@ -77,3 +78,4 @@ D16.
 - 2026-10-18: codec from Iceberg's write properties
 - 2026-10-19: dictionary-encoded floats (`float-encoding`); moved from SPEC.md into spec 6 and spec 20, then into this
   spec when the specs were regrouped one per feature.
+- 2026-10-20: a compression level the codec doesn't have is an error

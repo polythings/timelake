@@ -132,6 +132,10 @@ pub fn check_properties<'a>(
     let mut given: Vec<(&'static str, &'a String)> = vec![];
     for (key, value) in properties {
         if !key.trim().to_ascii_lowercase().starts_with(PREFIX) {
+            // Checked against the codec when a file is written; an integer at least, here.
+            if key.trim() == crate::property::COMPRESSION_LEVEL && value.trim().parse::<i32>().is_err() {
+                return Err(FormatError::new(format!("{key}: must be an integer, got {value:?}")));
+            }
             out.push((key.clone(), value.clone()));
             continue;
         }
@@ -724,6 +728,7 @@ mod tests {
             (("timelake.format-version", "0.3.0"), "set by Timelake itself"),
             (("timelake.no-such", "1"), "unknown setting"),
             (("timelake.retention", "forever"), "bad duration"),
+            (("write.parquet.compression-level", "high"), "must be an integer"),
         ] {
             let err = check_properties(&props(&[kv]), Level::Table).unwrap_err().to_string();
             assert!(err.contains(msg), "{kv:?}: {err}");

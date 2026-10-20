@@ -57,7 +57,7 @@
     "title": "File layout and encodings",
     "area": "Tables and storage",
     "status": "in-progress",
-    "updated": "2026-10-19",
+    "updated": "2026-10-20",
     "versions": ["0.1.0", "0.6.0", "0.7.0", "unreleased"],
     "summary": "How a Timelake table's data sits in Parquet: time partitions from the contract, files sorted by (series…, time), 1M-row row groups with page indexes, delta-encoded times, dictionary-encoded values (floats falling back to byte-stream-split) and ZSTD. Parquet stays the format; Vortex was measured and kept for places Timelake owns the read path.",
     "related": [4, 19, 23],

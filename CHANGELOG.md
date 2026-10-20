@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A `write.parquet.compression-level` that isn't a level of the codec (`high`, or a negative level for `gzip` or
+  `brotli`) was ignored, and files were written at the default level. Setting one is now an error, and writing to a
+  table that has one fails, naming the property.
 - A setting given twice in one call under its two spellings (`timelake.read-dedup` and `timelake.read_dedup`) kept
   either value, at random. It is now an error.
 - `timelake.row-group-rows=0` was accepted and then crashed every write; `timelake.target-file-size-bytes` and

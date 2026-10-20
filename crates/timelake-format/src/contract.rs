@@ -199,8 +199,9 @@ pub struct Contract {
     pub float_encoding: String,
     /// Iceberg's `write.parquet.compression-codec` (`zstd` when unset), lowercase.
     pub compression_codec: String,
-    /// Iceberg's `write.parquet.compression-level`, for codecs with levels.
-    pub compression_level: Option<i32>,
+    /// Iceberg's `write.parquet.compression-level`, for codecs with levels, as set: checked against
+    /// the codec when a file is written.
+    pub compression_level: Option<String>,
 }
 
 impl Contract {
@@ -270,7 +271,7 @@ impl Contract {
             float_encoding: p.get(property::FLOAT_ENCODING).unwrap_or("dictionary").to_ascii_lowercase(),
             // Iceberg's own properties: checked when a file is written, so a bad value never blocks reads.
             compression_codec: p.get(property::COMPRESSION_CODEC).unwrap_or("zstd").to_ascii_lowercase(),
-            compression_level: p.get(property::COMPRESSION_LEVEL).and_then(|v| v.parse().ok()),
+            compression_level: p.get(property::COMPRESSION_LEVEL).map(str::to_string),
         })
     }
 
