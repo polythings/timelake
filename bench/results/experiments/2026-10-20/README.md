@@ -14,3 +14,10 @@ local disk, under other load (load average 20–30), so absolute times are rough
 | Experiment | Workload, target | Arms (label: what differs) | Runs | Result | Decision |
 |---|---|---|---:|---|---|
 | Timelake tuned and default | IIoT small; local; reference checking answers | `tuning A/B tuned`: the hourly rollup and tuned queries; `tuning A/B default`: neither | 2 | After maintenance, geomean best repeat 43 → 16 ms; ingest 450 → 456 s, commit p50 132 ms both; dashboards 61 → 187 queries/s at 16 clients | rollup and tuned queries are Timelake's tuned IIoT configuration |
+
+## Rollups for the TSBS workloads (copies of the standard lakes, CLI best of 3, routing off → on, same answers)
+
+| Workload | Rollups | Queries that change | Kept |
+|---|---|---|---|
+| TSBS IoT | 10-minute per truck on readings (velocity, fuel sums and counts) and diagnostics (status, load) | avg-daily-driving-duration 95 → 30 ms, avg-daily-driving-session 100 → 40, avg-load 55 → 25, long-daily-sessions 44 → 35, daily-activity (tuned version, one bucket) 101 → 28; the rest within noise | both |
+| TSBS DevOps | 1-minute (maxima) and hourly (maxima, sums, counts) per host | double-groupby-1/5/all 146 → 68, 236 → 88, 348 → 112 ms; the minute queries already read one host's hour (about 20 ms) and didn't move; the 1-minute rollup has 17 M rows and took 37 s to build | hourly only |

@@ -11,6 +11,8 @@
 --   * Integer divisions that Postgres truncates use float division (results are reported, not checked).
 --   * breakdown-frequency: TSBS's `count(STATUS = 0) / count(*)` counts non-NULL booleans, so it is
 --     always 1. We use the intended fraction of rows with status = 0.
+--   * `-- name: <query> [timelake tuned]` is the version a tuned Timelake run reads (D23), as its docs write it
+--     for its rollups. Answers are checked like every other.
 
 -- name: last-loc
 -- Fleet map: the latest position of every truck in one fleet.
@@ -160,3 +162,15 @@ FROM tags t
 JOIN breakdowns_per_truck b ON t.id = b.tags_id
 WHERE t.name IS NOT NULL AND b.broken_down = false AND b.next_broken_down = true
 GROUP BY t.model;
+
+-- name: daily-activity [timelake tuned]
+-- Grouped by the 10-minute bucket alone, which the rollup answers; each bucket lies in one day.
+SELECT t.fleet, t.model, @B1D(y.ten_minutes) AS day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity
+FROM tags t
+JOIN (SELECT @B10M(time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day
+      FROM diagnostics
+      GROUP BY 1, 2
+      HAVING avg(status) < 1) y ON y.tags_id = t.id
+WHERE t.name IS NOT NULL
+GROUP BY t.fleet, t.model, @B1D(y.ten_minutes)
+ORDER BY day;

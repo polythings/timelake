@@ -53,7 +53,8 @@
     {
       "name": "daily-activity",
       "description": "Per fleet, model and day, the share of the day trucks were active.",
-      "sql": "SELECT t.fleet, t.model, y.day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '24 hours', time) AS day, date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day\n      FROM diagnostics\n      GROUP BY 1, 2, 3\n      HAVING avg(status) < 1) y ON y.tags_id = t.id\nWHERE t.name IS NOT NULL\nGROUP BY t.fleet, t.model, y.day\nORDER BY y.day"
+      "sql": "SELECT t.fleet, t.model, y.day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '24 hours', time) AS day, date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day\n      FROM diagnostics\n      GROUP BY 1, 2, 3\n      HAVING avg(status) < 1) y ON y.tags_id = t.id\nWHERE t.name IS NOT NULL\nGROUP BY t.fleet, t.model, y.day\nORDER BY y.day",
+      "tuned": "SELECT t.fleet, t.model, date_bin(INTERVAL '24 hours', y.ten_minutes) AS day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day\n      FROM diagnostics\n      GROUP BY 1, 2\n      HAVING avg(status) < 1) y ON y.tags_id = t.id\nWHERE t.name IS NOT NULL\nGROUP BY t.fleet, t.model, date_bin(INTERVAL '24 hours', y.ten_minutes)\nORDER BY day"
     },
     {
       "name": "breakdown-frequency",
