@@ -85,15 +85,19 @@ fn through_projections(plan: &LogicalPlan) -> &LogicalPlan {
     }
 }
 
-/// Splits `rn = 1` (either side) from the other conjuncts of a filter predicate.
-fn split_rn_equals_one(predicate: &Expr) -> (Option<&datafusion::common::Column>, Vec<Expr>) {
+/// Splits `rn = 1` (either side), where `is_rn` says which column is `rn`, from the other
+/// conjuncts of a filter predicate.
+fn split_rn_equals_one(
+    predicate: &Expr,
+    is_rn: impl Fn(&datafusion::common::Column) -> bool,
+) -> (Option<&datafusion::common::Column>, Vec<Expr>) {
     let mut rn = None;
     let mut others = vec![];
     for c in split_conjunction(predicate) {
         let hit = match c {
             Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) if rn.is_none() => {
                 match (left.as_ref(), right.as_ref()) {
-                    (Expr::Column(col), one) | (one, Expr::Column(col)) if is_one(one) => Some(col),
+                    (Expr::Column(col), one) | (one, Expr::Column(col)) if is_one(one) && is_rn(col) => Some(col),
                     _ => None,
                 }
             }
@@ -110,11 +114,6 @@ fn split_rn_equals_one(predicate: &Expr) -> (Option<&datafusion::common::Column>
 /// `Filter(rn = 1) ← [Projection] ← Window(row_number() PARTITION BY series ORDER BY time DESC) ← Scan`
 fn rewrite_row_number(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
     let LogicalPlan::Filter(filter) = node else { return Ok(None) };
-    // `rn = 1`, possibly AND-ed with other predicates (which are kept in a filter above).
-    let (Some(rn), others) = split_rn_equals_one(&filter.predicate) else { return Ok(None) };
-    if others.iter().any(|e| e.column_refs().iter().any(|c| c.name == rn.name)) {
-        return Ok(None);
-    }
     // Find the window node, allowing column-only/alias projections in between.
     let mut current = filter.input.as_ref();
     let mut projections = vec![];
@@ -128,6 +127,23 @@ fn rewrite_row_number(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
             _ => return Ok(None),
         }
     };
+    // `rn = 1` on the window's output (directly or via an alias in a projection), possibly AND-ed
+    // with other predicates, which are kept in a filter above.
+    let window_output = window.schema.fields().len() - 1;
+    let output_name = window.schema.field(window_output).name();
+    let is_rn = |rn: &datafusion::common::Column| {
+        rn.name == *output_name
+            || projections.iter().any(|p| {
+                p.expr.iter().any(|e| {
+                    matches!(e, Expr::Alias(a) if a.name == rn.name
+                        && matches!(a.expr.as_ref(), Expr::Column(c) if c.name == *output_name))
+                })
+            })
+    };
+    let (Some(rn), others) = split_rn_equals_one(&filter.predicate, is_rn) else { return Ok(None) };
+    if others.iter().any(|e| e.column_refs().iter().any(|c| c.name == rn.name)) {
+        return Ok(None);
+    }
     let [window_expr] = window.window_expr.as_slice() else { return Ok(None) };
     let LogicalPlan::TableScan(scan) = window.input.as_ref() else { return Ok(None) };
     if !scan.filters.is_empty() || scan.fetch.is_some() {
@@ -153,19 +169,6 @@ fn rewrite_row_number(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
     match params.order_by.as_slice() {
         [Sort { expr: Expr::Column(c), asc: false, .. }] if c.name == time_column => {}
         _ => return Ok(None),
-    }
-    // The filter column must be the window output (directly or via an alias in a projection).
-    let window_output = window.schema.fields().len() - 1;
-    let output_name = window.schema.field(window_output).name();
-    let refers = rn.name == *output_name
-        || projections.iter().any(|p| {
-            p.expr.iter().any(|e| {
-                matches!(e, Expr::Alias(a) if a.name == rn.name
-                    && matches!(a.expr.as_ref(), Expr::Column(c) if c.name == *output_name))
-            })
-        });
-    if !refers {
-        return Ok(None);
     }
     // Window → Projection(input columns…, 1 AS <window column>) over the index scan.
     let index_scan = latest_scan(scan, table);
@@ -317,6 +320,42 @@ mod tests {
         ];
         for (sql, rewritten) in cases {
             assert_eq!(reads_index(&s, &sql).await, rewritten, "{sql}");
+        }
+    }
+
+    /// `rn = 1` is found among other conjuncts that compare a column with 1.
+    #[tokio::test]
+    async fn finds_rn_among_other_equalities() {
+        use arrow::array::{Int32Array, RecordBatch, TimestampMicrosecondArray};
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let (lake, _store) = faulty_lake();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("time", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), false),
+            Field::new("device", DataType::Int32, true),
+            Field::new("code", DataType::Int32, true),
+        ]));
+        let t = lake.create_table("iot.c", &schema, opts()).await.unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampMicrosecondArray::from(vec![T0, T0 + 1, T0, T0 + 1]).with_timezone("UTC")),
+                Arc::new(Int32Array::from(vec![1, 1, 2, 2])),
+                Arc::new(Int32Array::from(vec![0, 1, 1, 0])),
+            ],
+        )
+        .unwrap();
+        t.append(&[batch], AppendOptions::default()).await.unwrap();
+        let s = Session::new(lake);
+        let inner = "(SELECT *, ROW_NUMBER() OVER (PARTITION BY device ORDER BY time DESC) AS rn FROM iot.c)";
+        for sql in [
+            format!("SELECT device FROM {inner} WHERE code = 1 AND rn = 1"),
+            format!("SELECT device FROM {inner} WHERE rn = 1 AND code = 1"),
+        ] {
+            assert!(reads_index(&s, &sql).await, "{sql}");
+            let batches = s.sql(&sql).await.unwrap().collect().await.unwrap();
+            let rows = arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string();
+            assert!(rows.contains("| 1      |") && !rows.contains("| 2      |"), "{sql}\n{rows}");
         }
     }
 

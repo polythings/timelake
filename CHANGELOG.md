@@ -162,6 +162,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - `CREATE EXTERNAL TABLE IF NOT EXISTS` naming an existing lake table failed instead of doing nothing, and the
   DataFusion context's `table_exist` was false for tables until an `information_schema` query had listed the lake. It
   now also knows the tables the process has created or read.
+- A latest-row query written `WHERE code = 1 AND rn = 1` (another column compared with 1 before `rn`) read every row
+  instead of the last-value index.
 
 ### Changed
 
