@@ -122,18 +122,24 @@ pub fn find(name: &str) -> Option<&'static Setting> {
 
 /// Checks Timelake's properties among `properties` for `level` ([`Level::Table`] when creating
 /// or altering a table) and returns them with every Timelake key in its canonical spelling. Keys
-/// outside the `timelake.` prefix (Iceberg's own) pass through.
+/// outside the `timelake.` prefix (Iceberg's own) pass through. One setting given in two
+/// spellings is an error, as either could win.
 pub fn check_properties<'a>(
     properties: impl IntoIterator<Item = (&'a String, &'a String)>,
     level: Level,
 ) -> Result<Vec<(String, String)>> {
     let mut out = vec![];
+    let mut given: Vec<(&'static str, &'a String)> = vec![];
     for (key, value) in properties {
         if !key.trim().to_ascii_lowercase().starts_with(PREFIX) {
             out.push((key.clone(), value.clone()));
             continue;
         }
         let setting = find(key).ok_or_else(|| unknown(key))?;
+        if let Some((_, first)) = given.iter().find(|(name, _)| *name == setting.name) {
+            return Err(FormatError::new(format!("{key:?} and {first:?} are the same setting: give it once")));
+        }
+        given.push((setting.name, key));
         if !setting.allows(level) {
             return Err(not_settable(setting, level));
         }
@@ -722,6 +728,9 @@ mod tests {
             let err = check_properties(&props(&[kv]), Level::Table).unwrap_err().to_string();
             assert!(err.contains(msg), "{kv:?}: {err}");
         }
+        let twice = props(&[("timelake.read_dedup", "false"), ("timelake.read-dedup", "true")]);
+        let err = check_properties(&twice, Level::Table).unwrap_err().to_string();
+        assert!(err.contains("the same setting"), "{err}");
         let err = check_properties(&props(&[("timelake.min-snapshots", "1")]), Level::Session).unwrap_err();
         assert!(err.to_string().contains("only at: table"), "{err}");
     }

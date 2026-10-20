@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A setting given twice in one call under its two spellings (`timelake.read-dedup` and `timelake.read_dedup`) kept
+  either value, at random. It is now an error.
 - `timelake.row-group-rows=0` was accepted and then crashed every write; `timelake.target-file-size-bytes` and
   `timelake.data-page-rows` took 0 too. All three must now be positive.
 - The WebAssembly reader compared the row-group statistics of a decimal column, stored unscaled (1.5 as 15), with a
