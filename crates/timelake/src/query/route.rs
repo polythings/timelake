@@ -231,7 +231,7 @@ impl RollupRewrite {
             if from_rollup.is_empty() {
                 continue;
             }
-            return Ok(Some(rewrite(a, &q, candidate, &answer, &from_rollup)?));
+            return rewrite(a, &q, candidate, &answer, &from_rollup);
         }
         Ok(None)
     }
@@ -660,20 +660,20 @@ fn full_buckets(from: i64, to: i64, width: i64) -> Option<(i64, i64)> {
 }
 
 /// `UNION ALL` of the aggregate over the raw rows outside `from_rollup` and the rollup's rows in
-/// it, under the aggregate's own schema.
+/// it, under the aggregate's own schema; `None` if the time column isn't in microseconds.
 fn rewrite(
     a: &Aggregate,
     q: &Query<'_>,
     candidate: &Candidate,
     answer: &Answer,
     from_rollup: &[(i64, i64)],
-) -> DfResult<LogicalPlan> {
+) -> DfResult<Option<LogicalPlan>> {
     // Raw side: the same aggregate, over the rows of the other buckets.
     let input_schema = a.input.schema();
     let (qualifier, field) = input_schema.qualified_field_with_unqualified_name(&q.time)?;
     let tz = match field.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, tz) => tz.clone(),
-        _ => return Ok(LogicalPlan::Aggregate(a.clone())),
+        _ => return Ok(None),
     };
     let time = Expr::Column(Column::new(qualifier.cloned(), &q.time));
     let at =
@@ -747,7 +747,7 @@ fn rewrite(
             Expr::Column(Column::new_unqualified(f.name())).alias_qualified(qualifier.cloned(), original.name())
         })
         .collect();
-    Ok(LogicalPlan::Projection(Projection::try_new_with_schema(names, Arc::new(union), a.schema.clone())?))
+    Ok(Some(LogicalPlan::Projection(Projection::try_new_with_schema(names, Arc::new(union), a.schema.clone())?)))
 }
 
 /// The rollup's rows in the buckets `from_rollup`, kept by the query's filters and semi-joins on grouping columns.
