@@ -27,6 +27,7 @@ use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Grou
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::prelude::{Expr, lit};
 
+use super::rollup::{DAY_MICROS, day_time_micros};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
 /// What a gap aggregate returns from a group's joined run.
@@ -82,14 +83,17 @@ pub(crate) fn of_rollup(function: &str) -> Option<(Output, i64)> {
 
 /// A threshold (µs) as the interval literal the aggregates take.
 pub(crate) fn threshold_literal(threshold: i64) -> Expr {
-    lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 0, threshold * 1_000))))
+    // Whole days apart, so the nanoseconds can't overflow.
+    let (days, micros) = (threshold.div_euclid(DAY_MICROS), threshold.rem_euclid(DAY_MICROS));
+    let days = i32::try_from(days).expect("i64 microseconds are fewer than i32::MAX days");
+    lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, days, micros * 1_000))))
 }
 
 /// The threshold (µs) of an interval literal without months, as the aggregates take it.
 pub(crate) fn threshold_of_literal(value: &ScalarValue) -> Option<i64> {
     match value {
         ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 && i.days >= 0 && i.nanoseconds >= 0 => {
-            Some(i64::from(i.days) * 86_400_000_000 + i.nanoseconds / 1_000)
+            day_time_micros(i.days, i.nanoseconds / 1_000)
         }
         _ => None,
     }
@@ -432,5 +436,20 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("without months"), "{err}");
+        let huge = "SELECT gap_count(t, INTERVAL '200000000 days') FROM (VALUES (TIMESTAMP '2026-01-01')) AS r(t)";
+        let err = match s.sql(huge).await {
+            Ok(df) => df.collect().await.unwrap_err().to_string(),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("threshold"), "{err}");
+    }
+
+    /// A threshold as a literal and back, up to the largest the microseconds hold.
+    #[test]
+    fn thresholds_round_trip() {
+        for threshold in [0, 1_500, 300_000_000, i64::MAX] {
+            let Expr::Literal(value, _) = threshold_literal(threshold) else { panic!("a literal") };
+            assert_eq!(threshold_of_literal(&value), Some(threshold));
+        }
     }
 }

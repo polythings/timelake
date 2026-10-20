@@ -20,7 +20,7 @@ use crate::lake::Lake;
 use crate::rollup::{Aggregate, Definition, FUNCTIONS};
 use crate::table::Table;
 
-const DAY_MICROS: i64 = 86_400_000_000;
+pub(crate) const DAY_MICROS: i64 = 86_400_000_000;
 const SECOND_MICROS: i64 = 1_000_000;
 
 /// The width of `date_bin(width, <time>)` (`time_bucket` is its alias) in microseconds: a fixed
@@ -40,14 +40,19 @@ pub(crate) fn bucket_width(e: &Expr, time: &str) -> Option<i64> {
     }
     let width = match stride {
         Expr::Literal(ScalarValue::IntervalMonthDayNano(Some(v)), _) if v.months == 0 && v.nanoseconds % 1000 == 0 => {
-            i64::from(v.days).checked_mul(DAY_MICROS)?.checked_add(v.nanoseconds / 1000)?
+            day_time_micros(v.days, v.nanoseconds / 1000)?
         }
         Expr::Literal(ScalarValue::IntervalDayTime(Some(v)), _) => {
-            i64::from(v.days).checked_mul(DAY_MICROS)?.checked_add(i64::from(v.milliseconds) * 1000)?
+            day_time_micros(v.days, i64::from(v.milliseconds) * 1000)?
         }
         _ => return None,
     };
     (width > 0).then_some(width)
+}
+
+/// `days` and `micros` as microseconds; `None` if that overflows.
+pub(crate) fn day_time_micros(days: i32, micros: i64) -> Option<i64> {
+    i64::from(days).checked_mul(DAY_MICROS)?.checked_add(micros)
 }
 
 /// `e` without the aliases around it.

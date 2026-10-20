@@ -20,12 +20,14 @@ use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Schema, TimeUnit};
 use datafusion::catalog::{MemTable, TableFunctionArgs, TableFunctionImpl, TableProvider};
 use datafusion::common::{ScalarValue, exec_err, plan_err};
-use datafusion::error::Result as DfResult;
+use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::logical_expr::function::{PartitionEvaluatorArgs, WindowUDFFieldArgs};
 use datafusion::logical_expr::simplify::SimplifyContextBuilder;
 use datafusion::logical_expr::{PartitionEvaluator, Signature, TypeSignature, Volatility, WindowUDF, WindowUDFImpl};
 use datafusion::optimizer::simplify_expressions::ExprSimplifier;
 use datafusion::prelude::Expr;
+
+use super::rollup::day_time_micros;
 
 /// The most buckets `time_buckets` makes: a guard against a width typed in the wrong unit.
 const MAX_BUCKETS: i64 = 10_000_000;
@@ -60,8 +62,9 @@ impl TableFunctionImpl for TimeBuckets {
         if width <= 0 {
             return plan_err!("time_buckets needs a positive width");
         }
-        let first = origin + (start - origin).div_euclid(width) * width;
-        let count = if end > first { (end - first + width - 1) / width } else { 0 };
+        let (first, count) = buckets(width, start, end, origin).ok_or_else(|| {
+            DataFusionError::Plan("time_buckets: the buckets fall outside the timestamp range".into())
+        })?;
         if count > MAX_BUCKETS {
             return plan_err!("time_buckets would make {count} buckets, more than {MAX_BUCKETS}");
         }
@@ -73,27 +76,33 @@ impl TableFunctionImpl for TimeBuckets {
     }
 }
 
+/// The first bucket (µs) and the number of buckets from the one holding `start` to the last one
+/// starting before `end`; `None` if they fall outside the microsecond range.
+fn buckets(width: i64, start: i64, end: i64, origin: i64) -> Option<(i64, i64)> {
+    let first = start.checked_sub(origin)?.div_euclid(width).checked_mul(width)?.checked_add(origin)?;
+    let count = if end > first { (end.checked_sub(first)? - 1) / width + 1 } else { 0 };
+    Some((first, count))
+}
+
 fn micros_of_interval(v: &ScalarValue) -> DfResult<i64> {
-    match v {
-        ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 => {
-            Ok(i64::from(i.days) * 86_400_000_000 + i.nanoseconds / 1_000)
-        }
-        ScalarValue::IntervalDayTime(Some(i)) => {
-            Ok(i64::from(i.days) * 86_400_000_000 + i64::from(i.milliseconds) * 1_000)
-        }
-        ScalarValue::DurationMicrosecond(Some(d)) => Ok(*d),
-        other => plan_err!("time_buckets needs a fixed width (seconds to days, not months), not {other}"),
-    }
+    let micros = match v {
+        ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 => day_time_micros(i.days, i.nanoseconds / 1_000),
+        ScalarValue::IntervalDayTime(Some(i)) => day_time_micros(i.days, i64::from(i.milliseconds) * 1_000),
+        ScalarValue::DurationMicrosecond(Some(d)) => Some(*d),
+        other => return plan_err!("time_buckets needs a fixed width (seconds to days, not months), not {other}"),
+    };
+    micros.ok_or_else(|| DataFusionError::Plan(format!("time_buckets: the width {v} overflows the microseconds")))
 }
 
 fn micros_of_time(v: &ScalarValue) -> DfResult<i64> {
-    Ok(match v {
-        ScalarValue::TimestampSecond(Some(t), _) => t * 1_000_000,
-        ScalarValue::TimestampMillisecond(Some(t), _) => t * 1_000,
-        ScalarValue::TimestampMicrosecond(Some(t), _) => *t,
-        ScalarValue::TimestampNanosecond(Some(t), _) => t.div_euclid(1_000),
+    let micros = match v {
+        ScalarValue::TimestampSecond(Some(t), _) => t.checked_mul(1_000_000),
+        ScalarValue::TimestampMillisecond(Some(t), _) => t.checked_mul(1_000),
+        ScalarValue::TimestampMicrosecond(Some(t), _) => Some(*t),
+        ScalarValue::TimestampNanosecond(Some(t), _) => Some(t.div_euclid(1_000)),
         other => return plan_err!("time_buckets needs timestamps, not {other}"),
-    })
+    };
+    micros.ok_or_else(|| DataFusionError::Plan(format!("time_buckets: {v} is outside the microsecond range")))
 }
 
 /// How a gap is filled.
@@ -264,6 +273,12 @@ mod tests {
         for bad in [
             "SELECT * FROM time_buckets(INTERVAL '1 month', TIMESTAMP '2026-01-01', TIMESTAMP '2026-03-01')",
             "SELECT * FROM time_buckets(INTERVAL '1 second', TIMESTAMP '2000-01-01', TIMESTAMP '2026-01-01')",
+            // Out of the microsecond range: an error, not an overflow.
+            "SELECT * FROM time_buckets(INTERVAL '200000000 days', TIMESTAMP '2026-01-01', TIMESTAMP '2026-01-02')",
+            "SELECT * FROM time_buckets(INTERVAL '1 day', arrow_cast(9000000000000000, 'Timestamp(Second, None)'),
+                                        arrow_cast(9000000000000001, 'Timestamp(Second, None)'))",
+            "SELECT * FROM time_buckets(INTERVAL '1 day', TIMESTAMP '2026-01-01', TIMESTAMP '2026-01-02',
+                                        arrow_cast(-9223000000000000000, 'Timestamp(Microsecond, None)'))",
         ] {
             assert!(answer(bad).await.is_err(), "{bad}");
         }

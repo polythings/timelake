@@ -154,6 +154,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   unsorted in the file's order. Such files are now sorted.
 - A `column IN (…)` list of more than 20 values with `NaN` among them could skip the parts of a file holding `NaN`
   rows. Such lists no longer prune.
+- `time_buckets`, `gap_count`, `gap_seconds` and the flatline aggregates overflowed (a panic in debug builds, wrong
+  buckets otherwise) on intervals or timestamps beyond the microsecond range, such as `INTERVAL '200000000 days'`.
+  They are now an error.
 
 ### Changed
 
