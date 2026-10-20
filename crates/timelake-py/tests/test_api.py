@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlparse
 
 import duckdb
@@ -245,6 +246,20 @@ def test_lake_settings_apply_to_every_session(tmp_path: Path) -> None:
     table.append(readings(), maintain=False)
     table.append(readings(), maintain=False)
     assert lake.sql("SELECT count(*) AS n FROM iot.readings").to_pylist() == [{"n": 600}]
+    assert lake.sql("SHOW timelake.read_dedup").to_pylist() == [{"name": "timelake.read_dedup", "value": "false"}]
+
+
+def test_settings_and_properties_take_any_mapping(tmp_path: Path) -> None:
+    lake = timelake.Lake(
+        str(tmp_path / "warehouse"),
+        storage_options=MappingProxyType({}),
+        settings=MappingProxyType({"read-dedup": "false"}),
+    )
+    table = lake.create_table(
+        "iot.readings", SCHEMA, time_column="time", properties=MappingProxyType({"retention": "30d"})
+    )
+    table.set_properties(MappingProxyType({"retention": None}))
+    assert table.version == 2
     assert lake.sql("SHOW timelake.read_dedup").to_pylist() == [{"name": "timelake.read_dedup", "value": "false"}]
 
 

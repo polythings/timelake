@@ -79,6 +79,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   stored under that name and ignored. They are now read as `alter` reads them, and an unknown setting is an error.
 - `timelake info` showed a retention shorter than a day as `0d`. It shows the duration as set (`12h`), and the JSON's
   `retention_days` is now `retention`, the same string.
+- Python: `Lake(storage_options=…, settings=…)`, `create_table(properties=…)` and `set_properties` take any mapping, as
+  the type stubs say; they raised `TypeError` for anything but a `dict`.
 
 ### Changed
 

@@ -11,7 +11,7 @@ use arrow_pyarrow::{FromPyArrow, IntoPyArrow};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyFileExistsError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyMapping};
 use timelake::arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use timelake::arrow::datatypes::Schema;
 use timelake::arrow::error::ArrowError;
@@ -82,6 +82,15 @@ fn read_batches(data: &Bound<'_, PyAny>) -> PyResult<Vec<RecordBatch>> {
     ArrowArrayStreamReader::from_pyarrow_bound(data)?.collect::<Result<_, _>>().map_err(arrow_err)
 }
 
+/// A `dict`, or any other `collections.abc.Mapping`, with string keys; `None` is empty.
+fn mapping<T>(map: Option<&Bound<'_, PyMapping>>) -> PyResult<HashMap<String, T>>
+where
+    for<'a, 'py> (String, T): FromPyObject<'a, 'py, Error = PyErr>,
+{
+    let Some(map) = map else { return Ok(HashMap::new()) };
+    map.items()?.iter().map(|item| item.extract()).collect()
+}
+
 /// Reads a pyarrow schema, or the `.schema` of an object that has one, such as a pyarrow Table.
 fn read_schema(schema: &Bound<'_, PyAny>) -> PyResult<Schema> {
     Schema::from_pyarrow_bound(schema).or_else(|_| Schema::from_pyarrow_bound(&schema.getattr("schema")?))
@@ -127,17 +136,17 @@ impl Lake {
     #[pyo3(signature = (location, storage_options=None, settings=None))]
     fn new(
         location: &str,
-        storage_options: Option<HashMap<String, String>>,
-        settings: Option<HashMap<String, String>>,
+        storage_options: Option<&Bound<'_, PyMapping>>,
+        settings: Option<&Bound<'_, PyMapping>>,
     ) -> PyResult<Self> {
         let mut config = Session::config();
-        for (key, value) in settings.unwrap_or_default() {
+        for (key, value) in mapping::<String>(settings)? {
             let key = if key.starts_with("datafusion.") { key } else { session_key(&key) };
             config.options_mut().set(&key, &value).map_err(|err| PyValueError::new_err(err.to_string()))?;
         }
         // Opening an object store may spawn tasks, so it needs a runtime context.
         let _guard = runtime().enter();
-        let inner = timelake::Lake::open(location, storage_options.unwrap_or_default()).map_err(to_py_err)?;
+        let inner = timelake::Lake::open(location, mapping(storage_options)?).map_err(to_py_err)?;
         Ok(Self { inner, config, sessions: Mutex::default() })
     }
 
@@ -164,7 +173,7 @@ impl Lake {
         retention: Option<&str>,
         dedup: Option<bool>,
         ingest_time: Option<bool>,
-        properties: Option<HashMap<String, String>>,
+        properties: Option<&Bound<'_, PyMapping>>,
     ) -> PyResult<Table> {
         let schema = read_schema(schema)?;
         let options = TableOptions {
@@ -174,7 +183,7 @@ impl Lake {
             dedup,
             ingest_time,
             retention: retention.map(timelake::parse_duration).transpose().map_err(|err| to_py_err(err.into()))?,
-            properties: properties.unwrap_or_default(),
+            properties: mapping(properties)?,
         };
         let lake = self.inner.clone();
         let table = run(py, async move { lake.create_table(&name, &schema, options).await })?;
@@ -348,7 +357,8 @@ impl Table {
     }
 
     /// Sets table settings and properties; `None` removes one (back to its default).
-    fn set_properties(&self, py: Python<'_>, properties: HashMap<String, Option<String>>) -> PyResult<()> {
+    fn set_properties(&self, py: Python<'_>, properties: &Bound<'_, PyMapping>) -> PyResult<()> {
+        let properties = mapping::<Option<String>>(Some(properties))?;
         let table = self.get();
         let table = run(py, async move {
             let changes: Vec<(&str, Option<&str>)> =
