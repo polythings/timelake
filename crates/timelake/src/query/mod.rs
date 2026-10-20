@@ -26,6 +26,7 @@ mod m4;
 mod moments;
 mod newest;
 mod provider;
+mod quantile;
 mod rewrite;
 mod rolling;
 mod rollup;

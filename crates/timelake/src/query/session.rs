@@ -104,7 +104,7 @@ impl Session {
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
         ctx.register_udaf(super::m4::m4_udaf());
-        for f in super::selection::udafs().into_iter().chain(super::moments::udafs()) {
+        for f in super::selection::udafs().into_iter().chain(super::moments::udafs()).chain(super::quantile::udafs()) {
             ctx.register_udaf(f);
         }
         // pandas' names for DataFusion's sample standard deviation and covariance.

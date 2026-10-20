@@ -137,6 +137,10 @@ running sums instead of reading each frame again. The aggregates `std` (`stddev`
 `corr`, `skewness` (`skew`) and `kurtosis` (`kurt`, the excess kurtosis) work as in pandas; the last two merge
 exactly across partitions.
 
+`quantile(x, q)` is the exact quantile, interpolated linearly between the two values around it as pandas does
+(`quantile(x, 0.5)` is the median). `approx_quantile(x, q)` estimates it from a t-digest in bounded memory, for very
+large groups.
+
 ## Gap filling
 
 `GROUP BY time_bucket(…)` gives no row for a bucket without readings. `time_buckets(width, start, end [, origin])` is

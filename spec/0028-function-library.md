@@ -36,7 +36,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Downsampling | `m4(time, value)`, a group's first, smallest, largest and last points ([spec 31](0031-m4.md)) | Built |
 | Gaps | `gap_count(time, threshold)` and `gap_seconds(time, threshold)`: how often and how long the readings stopped for longer than a threshold ([spec 30](0030-signal-aggregates.md)) | Built |
 | Selection | `first(time, value)`, `last(time, value)`, `value_at(time, value, at)`, the latest value at or before a time (`asof`); ASOF JOIN | Built, names for ordered `first_value` and `last_value`; ASOF JOIN planned (#124) |
-| Quantiles | `quantile`, `approx_quantile` (mergeable sketch state, so it rolls up across buckets) | Planned (#125) |
+| Quantiles | `quantile` (exact, pandas' linear interpolation), `approx_quantile` (a t-digest: mergeable sketch state, so it could roll up across buckets) | Built; a rollup storing the digest is planned (#125) |
 | Statistics | `mean`, `stddev` (`std`), `variance` (`var`), `skewness` (`skew`), `kurtosis` (`kurt`), `corr`, `covariance` (`cov`), `regr_slope`, `regr_intercept`, `regr_r2`, `histogram` | Built but `histogram` (#126): DataFusion's, with the pandas names added; `skewness` and `kurtosis` from mergeable moments, as pandas defines them |
 | Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) | Planned (#126) |
@@ -76,3 +76,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 - 2026-10-20: the pandas statistics names, `skewness` and `kurtosis`, `diff`, `percent_change`, `rate`, `rolling_mean`,
   `rolling_std` and `zscore` (#126).
 - 2026-10-20: `flatline_count` and `flatline_seconds` (#126).
+- 2026-10-20: `quantile` and `approx_quantile` (#125).

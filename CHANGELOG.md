@@ -10,6 +10,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Aggregates `quantile(x, q)`, exact with pandas' linear interpolation (DataFusion's `percentile_cont` drifts in the
+  sixth digit), and `approx_quantile(x, q)`, a name for the t-digest `approx_percentile_cont`.
 - Aggregates `flatline_count(time, value, threshold)` and `flatline_seconds(…)`: how often and how long a series kept
   exactly the same value for longer than a threshold (a stuck sensor). A day of 700 IIoT tags: 0.13 s, against 4.4 s
   written with window functions.
