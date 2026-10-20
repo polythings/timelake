@@ -1,6 +1,6 @@
 ---
 title: Embedded engine: DataFusion
-updated: 2026-10-12
+updated: 2026-10-20
 ---
 
 # Embedded engine: DataFusion
@@ -37,12 +37,20 @@ Writing all of that by hand would mean reimplementing a query engine.
 
 **Phase 0 spike to confirm:** Implement compaction (merge + dedup) and one rollup refresh in both DataFusion and embedded DuckDB. Compare throughput, memory, binary size, and build complexity.
 
+**Our own table provider, not `iceberg-datafusion`.** iceberg-rust ships a DataFusion integration, `iceberg-datafusion`. As of 0.10.1 its scan:
+- is one DataFusion partition, so a table decodes as one serial stream;
+- reads through iceberg-rust's `TableScan::to_arrow` and its `FileIO`, not DataFusion's `ParquetSource` over `object_store`, so it gets none of DataFusion's row-group and page pruning, its footer cache, byte-range splitting, statistics or declared sort order, and it bypasses the block cache ([spec 22](0022-block-cache.md));
+- prunes only with the filters it can turn into Iceberg predicates.
+
+The reader also needs a provider of its own for dedup on read ([spec 12](0012-late-data-and-dedup.md)), the last-value index rewrite ([spec 6](0006-last-value-index.md)), newest-first and series order ([spec 25](0025-newest-first.md), [spec 26](0026-series-order.md)), IN-list access plans ([spec 24](0024-in-list-pruning.md)), footers taken from the table head ([spec 7](0007-table-head.md)), and scan partitions sized for object storage. Built on `iceberg-datafusion`, we would replace its scan and filter conversion and keep only catalog glue, which Timelake already has (D13). So `TimelakeProvider` (`crates/timelake/src/query/provider.rs`) reads Timelake's manifests and plans DataFusion `ParquetSource` scans itself, and `iceberg-datafusion` is not a dependency.
+
 ## Decisions
 
 | ID | Decision | Status |
 |---|---|---|
 | D3 | DataFusion as the embedded engine; shared function kernels; DuckDB extension as the user-facing SQL path ([embedded engine](engine.md)) | Proposed, pending a Phase 0 spike |
 | D20 | v0 pins **DataFusion 54.1**, the newest release on Arrow 58, which iceberg-rust 0.10 requires. Revisit when iceberg-rust moves to Arrow 59+. | Accepted (v0) |
+| D24 | The reader uses its own DataFusion `TableProvider` over `ParquetSource` and `object_store`, not `iceberg-datafusion`, whose scan is one partition through iceberg-rust's reader. Revisit if `iceberg-datafusion` plans per-file `ParquetSource` scans over `object_store`. | Accepted (v0) |
 
 ## Open questions and issues
 
@@ -54,3 +62,4 @@ None open.
 - 2026-10-12: v0 built on DataFusion 54.1 (D20); Q12 settled by building on it
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 5; a background page since the specs were regrouped one per feature.
+- 2026-10-20: D24 records why the reader has its own table provider instead of `iceberg-datafusion` (a v0 choice).

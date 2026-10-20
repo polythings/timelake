@@ -24,7 +24,7 @@ interfaces, edge cases. Name alternatives that were measured and what the number
 
 | ID | Decision | Status |
 |---|---|---|
-| D23 | One sentence | Accepted |
+| D25 | One sentence | Accepted |
 
 ## Open questions and issues
 

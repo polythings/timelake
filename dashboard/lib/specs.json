@@ -265,7 +265,7 @@
     "title": "Timelake reader",
     "area": "Reading",
     "status": "in-progress",
-    "updated": "2026-10-17",
+    "updated": "2026-10-20",
     "versions": ["0.1.0"],
     "summary": "The Timelake reader (CLI, Rust, Python, and a WebAssembly reader for JavaScript) runs SQL on DataFusion over Timelake tables, and uses what a generic engine doesn't know: dedup on read, the last-value index, rollup routing, series-aware scans, time-series functions, and I/O tuned for object storage. Plain DuckDB still reads the same tables ([spec 1](0001-iceberg-tables.md)).",
     "related": [1, 6, 12, 22, 27, 33],

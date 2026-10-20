@@ -3,7 +3,7 @@ number: 21
 title: Timelake reader
 area: Reading
 status: in-progress
-updated: 2026-10-17
+updated: 2026-10-20
 versions: [0.1.0]
 related: [1, 6, 12, 22, 27, 33]
 issues: [32, 36, 56, 62]
@@ -11,7 +11,7 @@ issues: [32, 36, 56, 62]
 
 # 21. Timelake reader
 
-**In progress** · updated 2026-10-17 · versions 0.1.0 · milestone: [v0: a maintenance-free time-series table on S3](milestones/v0.md)
+**In progress** · updated 2026-10-20 · versions 0.1.0 · milestone: [v0: a maintenance-free time-series table on S3](milestones/v0.md)
 · related: [spec 1](0001-iceberg-tables.md), [spec 6](0006-last-value-index.md), [spec 12](0012-late-data-and-dedup.md), [spec 22](0022-block-cache.md), [spec 27](0027-rollups.md), [spec 33](0033-duckdb-extension.md)
 
 ## Summary
@@ -38,8 +38,9 @@ We don't try to beat DuckDB as a general engine. We win by using knowledge a gen
 
 **Engine:** a DataFusion `TableProvider` per table, optimizer rules (rollup routing, latest-row rewrites, newest-first,
 series order) and the function library ([spec 28](0028-function-library.md)); why DataFusion is in
-[embedded engine](engine.md). v0's reader lessons, now defaults: load all of a query's tables concurrently before
-planning, read each Parquet footer once, and use more scan partitions on object storage.
+[embedded engine](engine.md), and why the provider is ours rather than `iceberg-datafusion` in its D24. v0's reader
+lessons, now defaults: load all of a query's tables concurrently before planning, read each Parquet footer once, and use
+more scan partitions on object storage.
 
 **Python:**
 ```python
@@ -62,3 +63,4 @@ Results are Arrow, so Polars, pandas and DuckDB take them zero-copy.
 - 2026-10-11: reader design (SPEC.md §9)
 - 2026-10-12: built in v0
 - 2026-10-19: moved from SPEC.md into spec 17, then into this spec when the specs were regrouped one per feature.
+- 2026-10-20: links D24, the reason the table provider is Timelake's own rather than `iceberg-datafusion`.

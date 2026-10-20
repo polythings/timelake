@@ -14,7 +14,7 @@
   {
     "slug": "engine",
     "title": "Embedded engine: DataFusion",
-    "updated": "2026-10-12",
+    "updated": "2026-10-20",
     "summary": "Compaction, rollup refresh, ingest rules and the reader all run queries inside Timelake's own Rust processes, so Timelake embeds a query engine: Apache DataFusion, extended with table providers, optimizer rules and functions. DuckDB stays the main external SQL path; a DuckDB extension is planned."
   },
   {
