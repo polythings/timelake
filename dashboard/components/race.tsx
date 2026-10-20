@@ -117,7 +117,7 @@ function Lane({
     const css = getComputedStyle(c)
     const draw = () => {
       const on = css.getPropertyValue(/^var\((--[\w-]+)\)$/.exec(racer.color)?.[1] ?? "--muted-foreground").trim()
-      const off = css.getPropertyValue("--border").trim()
+      const off = css.getPropertyValue("--dot").trim()
       for (let i = 0; i < racer.dots; i++) {
         ctx.fillStyle = i < shown ? on : off
         ctx.fillRect((i % perRow) * (dot + GAP), Math.floor(i / perRow) * (dot + GAP), dot, dot)

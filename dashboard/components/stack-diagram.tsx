@@ -64,7 +64,7 @@ const STREAM_SEGMENTS: Segment[] = STREAM.join("")
   .split("")
   .map((ch) =>
     ch === " "
-      ? { count: 1, color: "var(--border)" }
+      ? { count: 1, color: "var(--dot)" }
       : { count: 1, color: "var(--primary)", alpha: ".,".includes(ch) ? 0.35 : 0.7 },
   )
 

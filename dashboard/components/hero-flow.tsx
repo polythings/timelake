@@ -57,8 +57,8 @@ const DIGITS: Record<string, string[]> = {
   "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
 }
 
-/** One color per parallel reader, spread around the color wheel. */
-const hue = (i: number, n: number) => `hsl(${Math.round((i * 360) / n + 30) % 360} 70% 62%)`
+/** One color per parallel reader, spread around the color wheel; `tone` is the theme's saturation and lightness. */
+const hue = (i: number, n: number, tone: string) => `hsl(${Math.round((i * 360) / n + 30) % 360} ${tone})`
 /** Columns and rows of one parallel reader's tile, gaps included. */
 const TILE = [15, 8] as const
 
@@ -106,7 +106,7 @@ export function HeroFlow() {
     const css = getComputedStyle(c)
     const color = (name: string) => css.getPropertyValue(name).trim()
     // The theme's colors, read again on each draw so a theme change shows.
-    let [paper, pen, muted, reads] = ["", "", "", ""]
+    let [paper, pen, muted, reads, tone] = ["", "", "", "", ""]
     const font = getComputedStyle(document.body).getPropertyValue("--font-mono") || "monospace"
 
     const writer = new Writer()
@@ -228,7 +228,7 @@ export function HeroFlow() {
           const slice = data.slice(from, from + w)
           const [least, most] = [Math.min(...slice), Math.max(...slice)]
           slice.forEach((v, i) =>
-            square(x0 + i, y0 + Math.round(((v - least) / (most - least || 1)) * h), hue(t, count), 1),
+            square(x0 + i, y0 + Math.round(((v - least) / (most - least || 1)) * h), hue(t, count, tone), 1),
           )
         })
         return
@@ -302,11 +302,12 @@ export function HeroFlow() {
     }
 
     const draw = () => {
-      ;[paper, pen, muted, reads] = [
-        color("--border"),
+      ;[paper, pen, muted, reads, tone] = [
+        color("--dot"),
         color("--primary"),
         color("--muted-foreground"),
         color("--chart-4"),
+        color("--reader-tone"),
       ]
       const dpr = window.devicePixelRatio || 1
       const [w, h] = [c.clientWidth, c.clientHeight]
@@ -386,7 +387,7 @@ export function HeroFlow() {
           const many = turn?.chart === "parallel"
           const n = writer.days.flat().indexOf(f)
           const [fill, alpha] = read.has(f)
-            ? [many ? hue(n * 5, 24) : reads, 1]
+            ? [many ? hue(n * 5, 24, tone) : reads, 1]
             : [pen, f === writer.fresh ? 0.9 : 0.35]
           for (let dx = 0; dx < width; dx++) for (const dy of [1, 2, 3]) square(x + dx, y + dy, fill, alpha)
           x += width + 1
@@ -416,7 +417,7 @@ export function HeroFlow() {
               if (tileLoaded(i)) return
               const filled = Math.round((TILE[0] - 3) * tileLoad(i, LOAD - loading + 1))
               for (let dx = 0; dx < TILE[0] - 3; dx++)
-                square(t.x0 + dx, t.y0 - 1, hue(i, all.length), dx < filled ? 1 : 0.15)
+                square(t.x0 + dx, t.y0 - 1, hue(i, all.length, tone), dx < filled ? 1 : 0.15)
             })
           } else bar(x0, width, barY)
           // Many readers decide tile by tile what to show while loading.

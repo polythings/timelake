@@ -311,7 +311,7 @@ export function UseCaseArt({ kind, cols = COLS }: { kind: ArtKind; cols?: number
     const draw = (upTo: number) => {
       drawn = upTo
       const colors = new Map(cells.map((p) => [p.color, resolve(c, p.color)]))
-      const paper = resolve(c, "var(--border)")
+      const paper = resolve(c, "var(--dot)")
       ctx.clearRect(0, 0, cols * CELL, ROWS * CELL)
       ctx.globalAlpha = 0.6
       ctx.fillStyle = paper

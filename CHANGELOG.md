@@ -10,6 +10,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- The website has a light theme. It follows the system's setting, and a button in the header switches between light and
+  dark.
 - `ASOF JOIN … MATCH_CONDITION (l.time >= r.time) ON l.key = r.key` (Snowflake's form): each left row with the right
   row nearest in time. A day of 8.6 M IIoT readings matched with machine states: 0.23 s, against 78 s as a range join.
 - Aggregates `ohlc(time, price)`, a group's open, high, low and close; `lttb(time, value, n)`, a series downsampled

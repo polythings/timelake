@@ -54,6 +54,7 @@
 
 :root {
   /* Light: paper panels on a light gray ground; Ice (darker for contrast) is the one accent. See brand/README.md. */
+  color-scheme: light;
   --background: #F4F5F5;
   --foreground: #0D1113;
   --card: #FFFFFF;
@@ -73,15 +74,20 @@
   --input: #D9DEE0;
   --ring: #0B7FA6;
   --ascii: #C3CACD;
-  --chart-1: #0B7FA6;
+  /* Unlit squares of the dot pictures: fainter than the hairlines, so the lit squares read on white. */
+  --dot: #E3E7E9;
+  /* Saturation and lightness of the hero's one-color-per-reader hues. */
+  --reader-tone: 75% 44%;
+  /* Chart colors a step more saturated than the dark theme's, so 3px squares hold up on white. */
+  --chart-1: #0A8CBC;
   --chart-2: #9AA5AA;
-  --chart-3: #1B9E70;
-  --chart-4: #B07A00;
-  --chart-5: #C94F7C;
-  --chart-6: #5B34B0;
+  --chart-3: #12A06C;
+  --chart-4: #C08300;
+  --chart-5: #D4497F;
+  --chart-6: #6A3DCC;
   --chart-7: #3A3A3A;
-  --chart-8: #E8603C;
-  --chart-9: #4D86F0;
+  --chart-8: #E5552F;
+  --chart-9: #3B75EC;
   --radius: 0.375rem;
   --sidebar: #FFFFFF;
   --sidebar-foreground: #0D1113;
@@ -94,7 +100,8 @@
 }
 
 .dark {
-  /* Dark (default): near-black instrument panels, hairline borders, Ice accent. */
+  /* Dark: near-black instrument panels, hairline borders, Ice accent. */
+  color-scheme: dark;
   --background: #0B0D0E;
   --foreground: #E6EBED;
   --card: #101315;
@@ -114,6 +121,8 @@
   --input: #2B3236;
   --ring: #67D4F0;
   --ascii: #343C40;
+  --dot: #23292C;
+  --reader-tone: 70% 62%;
   --chart-1: #67D4F0;
   --chart-2: #5C676C;
   --chart-3: #3DBF8E;
