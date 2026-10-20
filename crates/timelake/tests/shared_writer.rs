@@ -508,3 +508,70 @@ async fn the_largest_counts_and_sizes_dont_overflow() {
         maintain(&&host, state, &SharedMaintain { expire: false, ..SharedMaintain::default() }).await.unwrap();
     assert_eq!(report.files_rewritten, 3);
 }
+
+/// Tags `snapshot` as `name` the way another engine would: a new metadata version with the ref.
+fn tag(dir: &tempfile::TempDir, snapshot: i64, name: &str) {
+    let mut versions: Vec<_> =
+        walk(dir.path()).into_iter().filter(|p| p.to_string_lossy().ends_with(".metadata.json")).collect();
+    versions.sort_by_key(|p| {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        name.trim_start_matches('v').trim_end_matches(".metadata.json").parse::<u64>().unwrap()
+    });
+    let newest = versions.last().unwrap();
+    let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(newest).unwrap()).unwrap();
+    metadata["refs"][name] = serde_json::json!({ "snapshot-id": snapshot, "type": "tag" });
+    let version = versions.len() as u64 + 1;
+    let next = newest.with_file_name(format!("v{version}.metadata.json"));
+    std::fs::write(next, serde_json::to_vec(&metadata).unwrap()).unwrap();
+}
+
+/// Expiry keeps a snapshot another engine tagged, and the files it uses, in the engine and the
+/// shared writer.
+#[tokio::test(flavor = "multi_thread")]
+async fn expiry_keeps_tagged_snapshots() {
+    use timelake_format::maintain::{MaintainOptions as SharedMaintain, maintain};
+
+    let (dir, lake) = temp_lake();
+    let mut o = opts();
+    o.properties.insert(timelake::property::SNAPSHOT_RETENTION.into(), "0s".into());
+    o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
+    let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+    let location = t.location().to_string();
+    let (t, _) = t.append(&[batch(T0, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap();
+    let tagged = t.metadata().current_snapshot_id().unwrap();
+    // A rewrite of the same keys, so compaction would leave the tagged snapshot's file unused.
+    let (t, _) = t.append(&[batch(T0, 1, 1, 2, |_, _| 2.0)], no_maintenance()).await.unwrap();
+    t.maintain(MaintainOptions { expire: false, ..MaintainOptions::default() }).await.unwrap();
+    timelake::flush().await;
+    tag(&dir, tagged, "audit");
+    let snapshots = |lake: Lake| async move {
+        let t = lake.table("iot.r").await.unwrap();
+        t.metadata().snapshots().map(|s| s.snapshot_id()).collect::<Vec<_>>()
+    };
+
+    let t = reopen(&dir).table("iot.r").await.unwrap();
+    let (_, report) = t.maintain(MaintainOptions { compact: false, ..MaintainOptions::default() }).await.unwrap();
+    assert!(report.snapshots_expired >= 1, "{report:?}");
+    assert!(snapshots(reopen(&dir)).await.contains(&tagged), "the engine keeps the tagged snapshot");
+
+    let host = EngineHost::new(&lake);
+    let state = TableState::load(&&host, &location).await.unwrap();
+    let state =
+        append(&&host, state, &[batch(T0 + DAY, 1, 1, 2, |_, _| 3.0)], &shared_no_maintenance()).await.unwrap().0;
+    let expire_only = SharedMaintain { compact: false, retention: false, ..SharedMaintain::default() };
+    let (_, report) = maintain(&&host, state, &expire_only).await.unwrap();
+    assert!(report.snapshots_expired >= 1, "{report:?}");
+    assert_eq!(snapshots(reopen(&dir)).await.len(), 2, "the current snapshot and the tagged one");
+    assert!(snapshots(reopen(&dir)).await.contains(&tagged), "the shared writer keeps the tagged snapshot");
+
+    // Every file the tagged snapshot uses is still there.
+    let t = reopen(&dir).table("iot.r").await.unwrap();
+    let list = t.metadata().snapshot_by_id(tagged).unwrap().manifest_list().to_string();
+    let list = (&&host).get(&list).await.unwrap().expect("the tagged snapshot's manifest list");
+    for m in timelake_format::iceberg::read_manifest_list(&list).unwrap() {
+        let bytes = (&&host).get(&m.path).await.unwrap().expect("its manifest");
+        for e in timelake_format::iceberg::read_manifest(&m, &bytes).unwrap() {
+            assert!((&&host).exists(&e.file.path).await.unwrap(), "{} is gone", e.file.path);
+        }
+    }
+}

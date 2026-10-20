@@ -86,7 +86,7 @@ On each append, the newest row of every series in the new data is merged with th
 
 ## Snapshot expiry
 
-Snapshots older than `timelake.snapshot-retention` are expired, keeping at least `timelake.min-snapshots` and at most `timelake.max-snapshots`. Files reachable only from expired snapshots (data files, manifests, manifest lists, indexes) are deleted, along with metadata files older than the metadata log. What the kept snapshots use is read in full before anything changes: if a manifest list or manifest of a kept snapshot is missing, expiry stops with an error that names it, and deletes nothing. Inline, expiry runs in batches of about 20 snapshots.
+Snapshots older than `timelake.snapshot-retention` are expired, keeping at least `timelake.min-snapshots` and at most `timelake.max-snapshots`. The current snapshot and any snapshot a branch or tag points at (made by another engine) are never expired. Files reachable only from expired snapshots (data files, manifests, manifest lists, indexes) are deleted, along with metadata files older than the metadata log. What the kept snapshots use is read in full before anything changes: if a manifest list or manifest of a kept snapshot is missing, expiry stops with an error that names it, and deletes nothing. Inline, expiry runs in batches of about 20 snapshots.
 
 ## Reader
 

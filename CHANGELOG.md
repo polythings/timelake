@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- Snapshot expiry removed branches and tags that another engine had made on old snapshots, and deleted the files only
+  they used. A snapshot a branch or tag points at is now never expired.
 - A `max-snapshots` or `min-snapshots` near 2^64 overflowed the check for inline snapshot expiry after an append, and
   a `target-file-size-bytes` near 2^63 the compaction plan: a crash in debug builds, a wrong decision in release ones.
 - Data files recorded the bounds of a decimal column wider than 18 digits as 16 padded bytes; the Iceberg spec asks

@@ -656,7 +656,8 @@ async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainRepor
 }
 
 /// Snapshots (newest first) to expire: past the newest `min_snapshots`, and either older than the
-/// snapshot retention or beyond `max_snapshots`. The current snapshot always stays.
+/// snapshot retention or beyond `max_snapshots`. The current snapshot, and any a branch or tag
+/// points at (another engine's), always stay.
 fn expired_snapshots(
     table: &TableState,
     newest_first: &[crate::metadata::SnapshotRef],
@@ -667,13 +668,17 @@ fn expired_snapshots(
         return vec![];
     }
     let current = table.metadata.current_snapshot_id();
+    let referenced = table.metadata.referenced_snapshots();
     let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
     let cutoff = now_ms.saturating_sub(retention_ms);
     newest_first
         .iter()
         .enumerate()
         .filter(|(i, s)| {
-            Some(s.id) != current && *i >= c.min_snapshots && (s.timestamp_ms < cutoff || *i >= c.max_snapshots)
+            Some(s.id) != current
+                && !referenced.contains(&s.id)
+                && *i >= c.min_snapshots
+                && (s.timestamp_ms < cutoff || *i >= c.max_snapshots)
         })
         .map(|(_, s)| s.clone())
         .collect()

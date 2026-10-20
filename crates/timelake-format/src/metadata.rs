@@ -2,7 +2,7 @@
 //! Timelake doesn't know are kept, and updated the way iceberg-rust's metadata builder updates it
 //! when a snapshot is added.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
@@ -81,7 +81,8 @@ impl Metadata {
         s.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
     }
 
-    /// The batch ids of the current snapshot and its ancestors (`timelake.batch-id`).
+    /// Whether the current snapshot or one of its ancestors committed batch `batch_id`
+    /// (`timelake.batch-id`).
     pub fn history_has_batch(&self, batch_id: &str) -> bool {
         let mut id = self.current_snapshot_id();
         while let Some(s) = id.and_then(|id| self.snapshot(id)) {
@@ -178,6 +179,12 @@ impl Metadata {
                 })
             })
             .collect()
+    }
+
+    /// The snapshots a branch or tag points at (`main` among them).
+    pub fn referenced_snapshots(&self) -> HashSet<i64> {
+        let Some(Value::Object(refs)) = self.0.get("refs") else { return HashSet::new() };
+        refs.values().filter_map(|r| r.get("snapshot-id")?.as_i64()).collect()
     }
 
     /// Entries in the metadata log.

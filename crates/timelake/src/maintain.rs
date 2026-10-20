@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use futures::{StreamExt, TryStreamExt};
-use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadataBuilder};
+use iceberg::spec::{
+    DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata, TableMetadataBuilder,
+};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::properties::WriterProperties;
@@ -383,7 +385,7 @@ async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
     loop {
         let mut snapshots: Vec<SnapshotRef> = table.metadata().snapshots().cloned().collect();
         snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
-        let expired = expired_snapshots(&table, &snapshots);
+        let expired = expired_snapshots(&table, &snapshots)?;
         if expired.is_empty() {
             return Ok(table);
         }
@@ -416,26 +418,37 @@ async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
 }
 
 /// Snapshots (newest first) to expire: past the newest `min_snapshots`, and either older than
-/// the snapshot retention or beyond `max_snapshots`. The current snapshot always stays.
-fn expired_snapshots(table: &Table, newest_first: &[SnapshotRef]) -> Vec<SnapshotRef> {
+/// the snapshot retention or beyond `max_snapshots`. The current snapshot, and any a branch or tag
+/// points at (another engine's), always stay.
+fn expired_snapshots(table: &Table, newest_first: &[SnapshotRef]) -> Result<Vec<SnapshotRef>> {
     let c = table.contract();
     let now_ms = chrono::Utc::now().timestamp_millis();
     if c.keep_snapshots_until.is_some_and(|until| now_ms < until) {
-        return vec![];
+        return Ok(vec![]);
     }
     let current = table.metadata().current_snapshot_id();
+    let referenced = referenced_snapshots(table.metadata())?;
     let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
     let cutoff = now_ms.saturating_sub(retention_ms);
-    newest_first
+    Ok(newest_first
         .iter()
         .enumerate()
         .filter(|(i, s)| {
             Some(s.snapshot_id()) != current
+                && !referenced.contains(&s.snapshot_id())
                 && *i >= c.min_snapshots
                 && (s.timestamp_ms() < cutoff || *i >= c.max_snapshots)
         })
         .map(|(_, s)| s.clone())
-        .collect()
+        .collect())
+}
+
+/// The snapshots a branch or tag points at, read from the metadata as written (iceberg-rust has
+/// no accessor for every ref).
+fn referenced_snapshots(metadata: &TableMetadata) -> Result<HashSet<i64>> {
+    let json = serde_json::to_value(metadata)?;
+    let Some(serde_json::Value::Object(refs)) = json.get("refs") else { return Ok(HashSet::new()) };
+    Ok(refs.values().filter_map(|r| r.get("snapshot-id")?.as_i64()).collect())
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) a set of snapshots uses.

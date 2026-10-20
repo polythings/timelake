@@ -29,7 +29,7 @@ Timelake has to be scheduled. Orphan-file cleanup and sharded runs are open.
 | Compaction | [spec 19](0019-compaction.md) | Built |
 | Rollup refresh | Incremental, from the raw table's changed buckets ([spec 27](0027-rollups.md)) | Built (0.5.0) |
 | Retention | Per-table TTL (e.g. raw 90 d, 1-min rollup 2 y, 1-h rollup forever). Drops whole partitions (metadata-only when aligned) | Built |
-| Snapshot expiry | Expires old snapshots and deletes the files only they reference; `timelake.keep-snapshots-until` keeps them longer (0.3.0, for upgrades). What the kept snapshots use is read in full first: if a manifest list or manifest of one is missing, expiry stops with an error naming it and deletes nothing | Built |
+| Snapshot expiry | Expires old snapshots and deletes the files only they reference, never one a branch or tag points at; `timelake.keep-snapshots-until` keeps them longer (0.3.0, for upgrades). What the kept snapshots use is read in full first: if a manifest list or manifest of one is missing, expiry stops with an error naming it and deletes nothing | Built |
 | Orphan cleanup | Deletes files no snapshot references (#50) | Planned |
 | Manifest rewrite | Clusters manifests by time so planning stays fast as tables grow | Planned |
 
@@ -57,3 +57,4 @@ Timelake has to be scheduled. Orphan-file cleanup and sharded runs are open.
 - 2026-10-17: rollup refresh in maintenance; byte cap per run (WASM)
 - 2026-10-19: moved from SPEC.md into spec 15, then into this spec when the specs were regrouped one per feature.
 - 2026-10-20: expiry reads what the kept snapshots use in full before it changes anything (#46).
+- 2026-10-20: expiry keeps snapshots a branch or tag points at.
