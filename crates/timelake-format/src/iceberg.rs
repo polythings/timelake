@@ -3,6 +3,7 @@
 //! and header metadata. The engine's tests check that iceberg-rust reads what this writes.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use apache_avro::types::Value;
@@ -159,7 +160,7 @@ pub fn avro_name(name: &str) -> String {
                 out.push('_');
                 out.push(c);
             }
-            _ => out.push_str(&format!("_x{:X}", u32::from(c))),
+            _ => write!(out, "_x{:X}", u32::from(c)).expect("writing to a String can't fail"),
         }
     }
     out
