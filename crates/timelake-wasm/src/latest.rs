@@ -8,6 +8,7 @@ use arrow_select::interleave::interleave_record_batch;
 use crate::error::{Error, Result};
 use crate::filter::micros;
 use crate::keys::KeyEncoder;
+use crate::output::unify;
 
 /// Keeps the newest row per series key across batches. Only the current winners are kept, so
 /// memory grows with the number of series, not rows. On equal times the later row wins, like the
@@ -33,6 +34,10 @@ impl LatestRows {
         let time = micros(time)?;
         let keys = self.keys.encode(batch)?;
         let winners = self.winners.take().unwrap_or_else(|| batch.slice(0, 0));
+        // Files may differ in columns or types: the winners and the batch must share a schema.
+        let (_, both) = unify(&[winners, batch.clone()])?;
+        let [winners, batch] = <[RecordBatch; 2]>::try_from(both).map_err(|_| Error::invalid("two batches"))?;
+        let batch = &batch;
         // Rows of the new winners batch, as (0 = old winners | 1 = this batch, row).
         let mut picks: Vec<(usize, usize)> = (0..winners.num_rows()).map(|row| (0, row)).collect();
         for row in (0..batch.num_rows()).filter(|&r| time.is_valid(r)) {
@@ -91,6 +96,22 @@ mod tests {
         // Older rows don't replace newer ones; an equal time replaces (later write wins).
         latest.push(&batch(&[(2, 1, 12), (5, 2, 21), (9, 3, 30)])).unwrap();
         assert_eq!(values(&latest), [(1, 11), (2, 21), (3, 30)]);
+    }
+
+    /// Files with different columns: the winners take every column, null where a file lacks it.
+    #[test]
+    fn batches_with_different_columns() {
+        let mut latest = LatestRows::new("time".into(), vec!["tag".into()]);
+        let old = RecordBatch::try_from_iter([
+            ("time", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("tag", Arc::new(Int32Array::from(vec![1]))),
+        ])
+        .unwrap();
+        latest.push(&old).unwrap();
+        latest.push(&batch(&[(5, 2, 20)])).unwrap();
+        let rows = &latest.rows()[0];
+        assert_eq!(rows.num_columns(), 3);
+        assert_eq!(rows.column(2).null_count(), 1, "the old file has no v");
     }
 
     #[test]

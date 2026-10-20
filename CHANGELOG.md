@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The TypeScript client failed to return rows or latest values from files with different columns (written before a
+  column was added, or by another writer), or with a column at a narrower type (`int` before it became `long`). Rows
+  are now matched by column name, with nulls where a file lacks a column.
 - The TypeScript client ignored a series filter or time column the table doesn't have (a typo such as `tags_Id`) and
   returned every row; such a query is now an error naming the column. A file written before a filtered column was
   added has no rows matching the filter, rather than all of them.
