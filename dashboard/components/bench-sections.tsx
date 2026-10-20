@@ -15,15 +15,6 @@ import { cn } from "@/lib/utils"
 /** Each suite's queries as the query files describe them (bench/queries; timebench queries --site). */
 const DESCRIBED = QUERIES as Record<string, { name: string; description: string; sql: string }[]>
 
-/** Within 5% of the fastest counts as the fastest. */
-const SAME = 1.05
-
-/** A square in the color of how a time compares with the fastest: fastest, within 2×, or slower. */
-function Mark({ ratio }: { ratio: number }) {
-  const color = ratio <= SAME ? "bg-emerald-500" : ratio <= 2 ? "bg-amber-500" : "bg-red-500"
-  return <span className={cn("inline-block size-2 shrink-0 align-middle", color)} aria-hidden />
-}
-
 /**
  * One suite at one checkpoint: the overall ranking next to the list of its queries, each with where Timelake placed;
  * a query opens its own ranking and its history over the runs below.
@@ -56,13 +47,7 @@ export function SectionResults({
         <RankingCard ranking={section.ranking} perSystem={false} learnMore="" />
         <Panel
           title="Per query"
-          note={
-            <>
-              Timelake&apos;s first run, against the fastest reader with a right answer: <Mark ratio={1} /> fastest,{" "}
-              <Mark ratio={1.5} /> within 2×, <Mark ratio={3} /> slower. Open a query for every reader, its SQL and its
-              history.
-            </>
-          }
+          note="Timelake's first run, and its time over the fastest reader with a right answer (1.0× is the fastest). Open a query for every reader, its SQL and its history."
         >
           <ul className="flex flex-col">
             {section.queries.map((q) => {
@@ -76,7 +61,7 @@ export function SectionResults({
                     onClick={() => setOpen(selected ? null : q.query)}
                     aria-expanded={selected}
                     className={cn(
-                      "grid w-full grid-cols-[minmax(0,1fr)_auto_3.5rem_1rem] items-center gap-x-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted sm:grid-cols-[minmax(0,1fr)_4.5rem_4rem_1rem]",
+                      "grid w-full grid-cols-[minmax(0,1fr)_auto_3.5rem_1rem] items-center gap-x-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted sm:grid-cols-[minmax(0,1fr)_4rem_4rem_1rem]",
                       selected && "bg-muted",
                     )}
                   >
@@ -88,21 +73,14 @@ export function SectionResults({
                         </span>
                       )}
                     </span>
-                    <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <span className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
                       {own?.wrong ? (
                         <>
                           <CircleAlert className="size-3" aria-hidden />{" "}
                           <span className="sr-only sm:not-sr-only">wrong</span>
                         </>
                       ) : own && fastest ? (
-                        <>
-                          <Mark ratio={own.value / fastest.value} />
-                          <span className="sr-only sm:not-sr-only">
-                            {own.value <= fastest.value * SAME
-                              ? "fastest"
-                              : `${(own.value / fastest.value).toFixed(1)}×`}
-                          </span>
-                        </>
+                        <span className="font-mono tabular-nums">{(own.value / fastest.value).toFixed(1)}×</span>
                       ) : q.failed.includes("Timelake") ? (
                         "failed"
                       ) : (
