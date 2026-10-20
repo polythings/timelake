@@ -9,6 +9,7 @@ use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use serde_json::{Map, Value, json};
 
 use crate::error::{WriteError, WriteResult};
+use crate::iceberg::PartitionField;
 use crate::rows::UTC;
 use crate::{Chunk, Contract};
 
@@ -139,10 +140,21 @@ impl Metadata {
         Ok((i32::try_from(id).map_err(|_| corrupt("spec id"))?, fields))
     }
 
-    /// The partition field's name and chunk, for tables partitioned by time.
-    pub fn partition_field(&self) -> WriteResult<Option<(String, Chunk)>> {
+    /// The partition field, for tables partitioned by time. A spec of more than one field is an
+    /// error: Timelake partitions by time alone.
+    pub fn partition_field(&self) -> WriteResult<Option<PartitionField>> {
         let (_, fields) = self.partition_spec()?;
-        let Some(field) = fields.as_array().and_then(|f| f.first()) else { return Ok(None) };
+        let fields = fields.as_array().map_or(&[][..], Vec::as_slice);
+        let field = match fields {
+            [] => return Ok(None),
+            [field] => field,
+            _ => {
+                return Err(WriteError::invalid(format!(
+                    "{} partition fields: only one, by time, is supported",
+                    fields.len()
+                )));
+            }
+        };
         let chunk = match field.get("transform").and_then(Value::as_str) {
             Some("hour") => Chunk::Hour,
             Some("day") => Chunk::Day,
@@ -150,7 +162,12 @@ impl Metadata {
             other => return Err(WriteError::invalid(format!("unsupported partition transform {other:?}"))),
         };
         let name = field.get("name").and_then(Value::as_str).ok_or_else(|| corrupt("partition field name"))?;
-        Ok(Some((name.to_string(), chunk)))
+        let field_id = field
+            .get("field-id")
+            .and_then(Value::as_i64)
+            .and_then(|id| i32::try_from(id).ok())
+            .ok_or_else(|| corrupt("partition field id"))?;
+        Ok(Some(PartitionField { name: name.to_string(), field_id, chunk }))
     }
 
     /// The default sort order's id.

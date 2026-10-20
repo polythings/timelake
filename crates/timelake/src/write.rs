@@ -307,7 +307,11 @@ mod shared_iceberg_tests {
             schema_id: metadata.current_schema_id(),
             spec_fields_json: &spec_json,
             spec_id: spec.spec_id(),
-            partition: Some(("time_day", t.contract().chunk.unwrap())),
+            partition: Some(&shared::PartitionField {
+                name: "time_day".into(),
+                field_id: spec.fields()[0].field_id,
+                chunk: t.contract().chunk.unwrap(),
+            }),
         };
         let writes: Vec<ManifestWrite> = ours
             .iter()

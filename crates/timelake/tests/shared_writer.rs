@@ -603,3 +603,43 @@ async fn the_shared_writer_refuses_tables_with_delete_files() {
     let err = append(&&host, state, &[batch(T0, 1, 1, 2, |_, _| 2.0)], &shared_no_maintenance()).await.unwrap_err();
     assert!(err.to_string().contains("delete files"), "{err}");
 }
+
+/// A time column whose name isn't a valid Avro name (`event-time`) names the partition field
+/// `event-time_day`: both writers write manifests the other reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_time_column_named_outside_avro_names() {
+    use arrow::datatypes::{Field, Schema};
+
+    let rename = |b: arrow::array::RecordBatch| {
+        let fields: Vec<Field> = b
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| if f.name() == "time" { f.as_ref().clone().with_name("event-time") } else { f.as_ref().clone() })
+            .collect();
+        arrow::array::RecordBatch::try_new(Arc::new(Schema::new(fields)), b.columns().to_vec()).unwrap()
+    };
+    let (dir, lake) = temp_lake();
+    let mut o = opts();
+    o.time_column = Some("event-time".into());
+    let t = lake.create_table("iot.r", &rename(batch(T0, 1, 1, 1, |_, _| 0.0)).schema(), o).await.unwrap();
+    let (t, _) = t.append(&[rename(batch(T0, 1, 1, 2, |_, _| 1.0))], no_maintenance()).await.unwrap();
+    let host = EngineHost::new(&lake);
+    let state = TableState::load(&&host, t.location()).await.unwrap();
+    let rows = rename(batch(T0 + DAY, 1, 1, 2, |_, _| 2.0));
+    let (state, _) = append(&&host, state, &[rows], &shared_no_maintenance()).await.unwrap();
+    for m in state.manifests(&&host).await.unwrap() {
+        assert_eq!(TableState::manifest(&&host, &m).await.unwrap().len(), 1, "each writer's manifest reads back");
+    }
+    // Without the head, the engine reads the manifests too.
+    timelake::flush().await;
+    for head in walk(dir.path()).into_iter().filter(|p| p.ends_with("timelake-head")) {
+        std::fs::remove_file(head).unwrap();
+    }
+    assert_eq!(reopen(&dir).table("iot.r").await.unwrap().files().await.unwrap().len(), 2);
+    assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 4);
+    let t = reopen(&dir).table("iot.r").await.unwrap();
+    let (t, _) = t.append(&[rename(batch(T0 + 2 * DAY, 1, 1, 2, |_, _| 3.0))], no_maintenance()).await.unwrap();
+    t.maintain(MaintainOptions::default()).await.unwrap();
+    assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 6);
+}

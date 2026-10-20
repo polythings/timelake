@@ -35,7 +35,7 @@ stateless: everything durable is in object storage.
     <uuid-v7>.parquet                       plain tables (no time column) are not partitioned
 ```
 
-This is Iceberg’s Hadoop-catalog convention, which is why DuckDB’s `iceberg_scan` can open a table directory directly. Tables are Iceberg format version 2.
+This is Iceberg’s Hadoop-catalog convention, which is why DuckDB’s `iceberg_scan` can open a table directory directly. Tables are Iceberg format version 2. Manifests record the partition as an Avro field, so a time column whose name isn't a valid Avro name gets the partition name Iceberg's Avro encoding gives it: `event-time` is partitioned as `event_x2Dtime_day`.
 
 ## Commit protocol
 

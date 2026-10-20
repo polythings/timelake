@@ -41,6 +41,7 @@ use crate::settings::{self, Level};
 use crate::storage::{Storage, warehouse_url};
 use crate::table::{FreshnessCheck, LiveEntry, Table};
 use timelake_format::INGEST_TIME_COLUMN;
+use timelake_format::iceberg::avro_name;
 
 /// Where a cold load starts.
 enum Start {
@@ -559,7 +560,8 @@ fn time_series_layout(
     };
     creation.partition_spec = Some(
         UnboundPartitionSpec::builder()
-            .add_partition_field(time_id, format!("{time_column}_{chunk}"), transform)?
+            // A valid Avro name: manifests record it as an Avro field, which readers reject otherwise.
+            .add_partition_field(time_id, avro_name(&format!("{time_column}_{chunk}")), transform)?
             .build(),
     );
     let mut order = SortOrder::builder();

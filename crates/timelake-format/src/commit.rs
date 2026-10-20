@@ -286,7 +286,7 @@ async fn write_manifests<H: Host>(
         schema_id: metadata.schema_id(),
         spec_fields_json: &spec_fields_json,
         spec_id,
-        partition: partition.as_ref().map(|(name, chunk)| (name.as_str(), *chunk)),
+        partition: partition.as_ref(),
     };
     let mut write = |kind: &str, entries: &[ManifestWrite]| -> WriteResult<ManifestFile> {
         let uri = format!("{}/metadata/{}-{kind}-m.avro", base.location, uuid_v4(host));

@@ -67,6 +67,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A time column whose name isn't a valid Avro name, such as `event-time`, gave the table a partition field
+  (`event-time_day`) that manifests can't hold: reading them without the head failed, and the TypeScript client
+  couldn't commit at all. New tables name it as Iceberg's Avro encoding does (`event_x2Dtime_day`), and the TypeScript
+  client writes any partition name, with the field id the partition spec gives it. Existing tables with such a
+  column need recreating.
 - On a table with delete files (row-level deletes another engine such as Spark or Trino wrote), the TypeScript
   client's reads skipped them, so deleted rows came back, and its commits wrote their manifests back as data
   manifests. Both are now an error naming the delete file.

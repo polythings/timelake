@@ -131,20 +131,53 @@ pub struct ManifestContext<'a> {
     pub spec_fields_json: &'a str,
     /// The spec's id.
     pub spec_id: i32,
-    /// The partition field's name and transform, if the table is partitioned.
-    pub partition: Option<(&'a str, Chunk)>,
+    /// The partition field, if the table is partitioned.
+    pub partition: Option<&'a PartitionField>,
+}
+
+/// A table's time partition field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartitionField {
+    /// Its name in the partition spec.
+    pub name: String,
+    /// Its field id.
+    pub field_id: i32,
+    /// The time transform.
+    pub chunk: Chunk,
+}
+
+/// `name` as a valid Avro name, by the rule Iceberg's Avro schemas use: a leading digit gets a
+/// `_` before it, and any other character outside `[A-Za-z0-9_]` becomes `_x` and its code in
+/// uppercase hex (`event-time` → `event_x2Dtime`). Valid names are unchanged.
+pub fn avro_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (i, c) in name.chars().enumerate() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '_' => out.push(c),
+            '0'..='9' if i > 0 => out.push(c),
+            '0'..='9' => {
+                out.push('_');
+                out.push(c);
+            }
+            _ => out.push_str(&format!("_x{:X}", u32::from(c))),
+        }
+    }
+    out
 }
 
 /// The Avro schema of manifest entries for a table partitioned as `partition`.
-fn manifest_schema(partition: Option<(&str, Chunk)>) -> WriteResult<Schema> {
+fn manifest_schema(partition: Option<&PartitionField>) -> WriteResult<Schema> {
     let partition_fields = match partition {
         None => String::new(),
-        Some((name, chunk)) => {
-            let ty = match chunk {
-                Chunk::Day => r#"{"type": "int", "logicalType": "date"}"#,
-                _ => r#""int""#,
+        Some(p) => {
+            let ty = match p.chunk {
+                Chunk::Day => serde_json::json!({"type": "int", "logicalType": "date"}),
+                _ => serde_json::json!("int"),
             };
-            format!(r#"{{"name": "{name}", "type": ["null", {ty}], "default": null, "field-id": 1000}}"#)
+            let field = serde_json::json!({
+                "name": avro_name(&p.name), "type": ["null", ty], "default": null, "field-id": p.field_id,
+            });
+            field.to_string()
         }
     };
     let map = |name: &str, key: i32, value: i32, ty: &str| {
@@ -273,10 +306,10 @@ pub fn write_manifest(ctx: &ManifestContext<'_>, entries: &[ManifestWrite]) -> W
         let f = &e.file;
         let partition = match (ctx.partition, f.partition) {
             (None, _) => vec![],
-            (Some((name, chunk)), v) => {
+            (Some(p), v) => {
                 let value =
-                    v.map_or_else(null, |v| some(if chunk == Chunk::Day { Value::Date(v) } else { Value::Int(v) }));
-                vec![(name.to_string(), value)]
+                    v.map_or_else(null, |v| some(if p.chunk == Chunk::Day { Value::Date(v) } else { Value::Int(v) }));
+                vec![(avro_name(&p.name), value)]
             }
         };
         let data_file = Value::Record(vec![
@@ -606,7 +639,7 @@ mod tests {
             schema_id: 0,
             spec_fields_json: "[]",
             spec_id: 0,
-            partition: Some(("time_day", Chunk::Day)),
+            partition: Some(&PartitionField { name: "time_day".into(), field_id: 1000, chunk: Chunk::Day }),
         };
         let entries = vec![
             ManifestWrite {
@@ -648,5 +681,19 @@ mod tests {
         assert_eq!((read[0].sequence_number, read[0].snapshot_id, read[0].status), (5, 7, Status::Added));
         assert_eq!((read[1].sequence_number, read[1].snapshot_id, read[1].status), (2, 3, Status::Existing));
         assert_eq!(read[0].file, entries[0].file);
+
+        // A partition field named outside Avro's names is written under its Avro name.
+        let odd = PartitionField { name: "event-time \"day\"".into(), field_id: 1001, chunk: Chunk::Hour };
+        let ctx = ManifestContext { partition: Some(&odd), ..ctx };
+        let bytes = write_manifest(&ctx, &entries).unwrap();
+        assert_eq!(read_manifest(&mf, &bytes).unwrap()[0].file.partition, Some(20_000));
+    }
+
+    #[test]
+    fn avro_names() {
+        assert_eq!(avro_name("time_day"), "time_day");
+        assert_eq!(avro_name("event-time_day"), "event_x2Dtime_day");
+        assert_eq!(avro_name("1st"), "_1st");
+        assert_eq!(avro_name("a b\"é"), "a_x20b_x22_xE9");
     }
 }
