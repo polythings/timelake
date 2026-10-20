@@ -4,6 +4,7 @@ import Link from "next/link"
 
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { READERS, SYSTEMS, SYSTEM_INFO } from "@/lib/bench-systems"
 import { BENCHMARKS, type Status } from "@/lib/benchmark-catalog"
 import { REPO_URL } from "@/lib/site"
 
@@ -17,15 +18,6 @@ const STATUS: Record<Status, { label: string; variant: "default" | "secondary" |
   planned: { label: "Planned", variant: "secondary" },
   "not planned": { label: "Not planned", variant: "outline" },
 }
-
-const SYSTEMS = [
-  ["Timelake", "Timelake's own writer, with its inline maintenance", "Timelake; DuckDB"],
-  ["Iceberg (PyIceberg)", "PyIceberg appends: what a Firehose stream into S3 Tables writes", "DuckDB"],
-  ["S3 Tables", "the same appends into AWS's managed Iceberg, with its managed compaction", "DuckDB"],
-  ["Lance", "Lance datasets with append writes", "DuckDB; DataFusion"],
-  ["Parquet files", "a new Parquet file per commit, as an S3 sink writes without a table format", "DuckDB; DataFusion"],
-  ["TimescaleDB", "hypertables, with chunks converted to its columnstore", "PostgreSQL"],
-]
 
 function H2({ id, children }: { id?: string; children: React.ReactNode }) {
   return (
@@ -146,31 +138,36 @@ export default function TimebenchPage() {
       </section>
 
       <section className="space-y-3">
-        <H2>Systems</H2>
+        <H2 id="systems">Systems</H2>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>System</TableHead>
-                <TableHead>How it&apos;s used</TableHead>
+                <TableHead>What it is</TableHead>
+                <TableHead>Written</TableHead>
+                <TableHead>Maintenance</TableHead>
                 <TableHead>Read by</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {SYSTEMS.map(([name, how, readers]) => (
-                <TableRow key={name}>
-                  <TableCell className="font-medium">{name}</TableCell>
-                  <TableCell className="min-w-56 whitespace-normal text-muted-foreground">{how}</TableCell>
-                  <TableCell className="text-muted-foreground">{readers}</TableCell>
+              {Object.entries(SYSTEM_INFO).map(([system, info]) => (
+                <TableRow key={system}>
+                  <TableCell className="font-medium whitespace-normal">{SYSTEMS[system] ?? system}</TableCell>
+                  <TableCell className="min-w-56 whitespace-normal text-muted-foreground">{info.summary}</TableCell>
+                  <TableCell className="min-w-48 whitespace-normal text-muted-foreground">{info.writes}</TableCell>
+                  <TableCell className="min-w-48 whitespace-normal text-muted-foreground">{info.maintenance}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {info.readers.map((r) => READERS[r] ?? r).join(", ")}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
         <p className="text-muted-foreground">
-          Each benchmark&apos;s methodology lists what each system does in it. More systems are planned: InfluxDB 3,
-          ClickHouse, QuestDB, and Iceberg written the way an expert team would, with a streaming sink and scheduled
-          compaction.
+          Each benchmark&apos;s page lists the systems in its results, and its methodology what each does in it.
+          Planned: Iceberg written the way an expert team would, with a streaming sink and scheduled compaction.
         </p>
       </section>
 

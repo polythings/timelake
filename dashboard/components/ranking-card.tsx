@@ -1,7 +1,8 @@
 import { CircleAlert } from "lucide-react"
 
 import { DotGrid } from "@/components/dots"
-import { type Rank, type Ranking, SYSTEM_COLORS } from "@/lib/bench-systems"
+import { EntryLabel } from "@/components/entry-label"
+import { type Rank, type Ranking, SYSTEM_COLORS, entryAnchor, entryDescription } from "@/lib/bench-systems"
 import { formatCompact, formatTime } from "@/lib/format"
 
 /** Columns of squares in the longest bar of a card. */
@@ -41,11 +42,14 @@ export function RankingBars({
   ranking,
   perSystem = true,
   queries = 1,
+  learnMore,
 }: {
   ranking: Ranking
   perSystem?: boolean
   /** How many queries a row's value is over, for "2 of 5 wrong". */
   queries?: number
+  /** The benchmark page whose list of entries an entry's "learn more" opens ("" for this page). */
+  learnMore?: string
 }) {
   // One row per system in each group: its best engine there (rows come best first), so a system's reader with right
   // answers isn't hidden behind a faster one with wrong answers. Timelake's own reader is always shown.
@@ -71,16 +75,16 @@ export function RankingBars({
             key={r.key}
             className="grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,12rem)_4.5rem_minmax(0,1fr)]"
           >
-            <span
-              className={r.timelake ? "truncate text-sm" : "truncate text-sm text-muted-foreground"}
-              title={[
-                r.label,
+            <EntryLabel
+              label={r.label}
+              description={entryDescription(r.key)}
+              details={[
                 ...(r.repeat === undefined ? [] : [`best repeat ${formatTime(r.repeat)}`]),
                 ...(r.requests === undefined ? [] : [`${Math.round(r.requests)} requests`]),
-              ].join(" · ")}
-            >
-              {r.label}
-            </span>
+              ]}
+              href={learnMore === undefined ? undefined : `${learnMore}#${entryAnchor(r.key)}`}
+              className={r.timelake ? "text-sm" : "text-sm text-muted-foreground"}
+            />
             <span
               className={`text-right font-mono text-xs tabular-nums ${r.timelake ? "text-foreground" : "text-muted-foreground"}`}
             >
@@ -123,10 +127,18 @@ export function RankingBars({
 }
 
 /** One ranking as a card. */
-export function RankingCard({ ranking, perSystem = true }: { ranking: Ranking; perSystem?: boolean }) {
+export function RankingCard({
+  ranking,
+  perSystem = true,
+  learnMore,
+}: {
+  ranking: Ranking
+  perSystem?: boolean
+  learnMore?: string
+}) {
   return (
     <Panel title={ranking.title} note={`${ranking.note}; ${ranking.higherIsBetter ? "higher" : "lower"} is better`}>
-      <RankingBars ranking={ranking} perSystem={perSystem} queries={ranking.queries} />
+      <RankingBars ranking={ranking} perSystem={perSystem} queries={ranking.queries} learnMore={learnMore} />
     </Panel>
   )
 }

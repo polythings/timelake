@@ -1,5 +1,6 @@
 import { Race, type Racer } from "@/components/race"
 import { RankingCard } from "@/components/ranking-card"
+import { BENCHMARKS } from "@/lib/benchmark-catalog"
 import { type Run, SYSTEM_COLORS, engineLabel, rankings } from "@/lib/benchmarks"
 
 /** Each system's own reader for the request race, then the others through DuckDB. */
@@ -10,6 +11,9 @@ const RACE_ENGINES = ["timelake+timelake", "lance+duckdb", "iceberg+duckdb", "pa
  * them by suite), commit or load times, and the requests one query takes on each system.
  */
 export function BenchCards({ run, queries = true }: { run: Run; queries?: boolean }) {
+  // Entries' "learn more" goes to the list of entries on the benchmark's page.
+  const id = BENCHMARKS.find((b) => b.workload === run.header.workload)?.id
+  const page = id ? `/benchmarks/${id}` : undefined
   const racers: Racer[] = RACE_ENGINES.flatMap((e) => {
     const q = run.queries.find(
       (x) =>
@@ -35,7 +39,7 @@ export function BenchCards({ run, queries = true }: { run: Run; queries?: boolea
       {rankings(run)
         .filter((r) => queries || r.queries === undefined)
         .map((r) => (
-          <RankingCard key={r.title} ranking={r} />
+          <RankingCard key={r.title} ranking={r} learnMore={page} />
         ))}
       {racers.length > 1 ? (
         <Race

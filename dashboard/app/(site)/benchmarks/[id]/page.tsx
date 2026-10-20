@@ -12,6 +12,7 @@ import { RunInfoButton } from "@/components/run-info"
 import { MoreLink, SectionHead } from "@/components/section-head"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { READERS, SYSTEM_INFO, readerDescription } from "@/lib/bench-systems"
 import { BENCHMARKS, benchmark } from "@/lib/benchmark-catalog"
 import {
   CHECKPOINTS,
@@ -164,8 +165,64 @@ async function Results({ workload }: { workload: Workload }) {
         note="Left out of the rankings above; each query's list says which readers it lost."
         variants={failing.map((r) => ({ run: r, node: <FailedPanel failed={failures(r)} /> }))}
       />
+      <EntriesSection latest={latest} />
       <OverTime runs={runs} latest={latest} workload={workload} />
     </>
+  )
+}
+
+/**
+ * What every entry in the results is: each system, how it's written and maintained, and what reads it. A ranking's
+ * entry links here (`#entry-<system>`).
+ */
+function EntriesSection({ latest }: { latest: Run[] }) {
+  const systems = new Map<string, Set<string>>()
+  for (const r of latest) {
+    for (const [system, readers] of Object.entries(r.header.readers)) {
+      const known = systems.get(system) ?? new Set<string>()
+      for (const reader of readers) known.add(reader)
+      systems.set(system, known)
+    }
+  }
+  const order = Object.keys(SYSTEM_INFO)
+  const listed = [...systems].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
+  return (
+    <section className="flex flex-col gap-4">
+      <SectionHead label="What each entry means">
+        Each system is written, maintained, and read the way its own docs suggest, on the same data. An entry in a
+        ranking is a system, or a system and the reader that queried it, such as Lance + DuckDB.
+      </SectionHead>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {listed.map(([system, readers]) => {
+          const info = SYSTEM_INFO[system]
+          return (
+            <div key={system} id={`entry-${system}`} className="scroll-mt-20 rounded-lg target:ring-2 target:ring-ring">
+              <Panel title={SYSTEMS[system] ?? system} note={info?.summary} className="h-full">
+                <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[6.5rem_minmax(0,1fr)]">
+                  {info && (
+                    <>
+                      <dt className="text-muted-foreground">Written</dt>
+                      <dd>{info.writes}</dd>
+                      <dt className="text-muted-foreground">Maintenance</dt>
+                      <dd>{info.maintenance}</dd>
+                    </>
+                  )}
+                  <dt className="text-muted-foreground">Read by</dt>
+                  <dd className="flex flex-col gap-1">
+                    {[...readers].map((reader) => (
+                      <span key={reader}>
+                        <span className="font-medium">{READERS[reader] ?? reader}</span>:{" "}
+                        {readerDescription(system, reader)}
+                      </span>
+                    ))}
+                  </dd>
+                </dl>
+              </Panel>
+            </div>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

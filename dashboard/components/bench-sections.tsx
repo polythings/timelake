@@ -46,7 +46,7 @@ export function SectionResults({
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-4 lg:grid-cols-2">
-        <RankingCard ranking={section.ranking} perSystem={false} />
+        <RankingCard ranking={section.ranking} perSystem={false} learnMore="" />
         <Panel
           title="Per query"
           note="Timelake's first run and its place among the readers with right answers; open a query for all of them, its SQL and history"
@@ -107,7 +107,7 @@ export function SectionResults({
             title={<span className="font-mono text-base">{query.query}</span>}
             note={about ? `${about.description} First run of every reader.` : "First run of every reader."}
           >
-            <RankingBars ranking={query.ranking} perSystem={false} />
+            <RankingBars ranking={query.ranking} perSystem={false} learnMore="" />
             {query.failed.length > 0 && (
               <p className="text-xs text-muted-foreground">Failed or timed out: {query.failed.join(", ")}.</p>
             )}
