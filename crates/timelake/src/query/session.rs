@@ -128,6 +128,9 @@ impl Session {
         for output in super::gaps::Output::ALL {
             ctx.register_udaf(super::gaps::udaf(output));
         }
+        for output in super::flatline::Output::ALL {
+            ctx.register_udaf(super::flatline::udaf(output));
+        }
         Self { lake, ctx, catalog, routes }
     }
 

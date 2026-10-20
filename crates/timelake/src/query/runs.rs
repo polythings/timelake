@@ -5,8 +5,8 @@
 //! interleaved): the result is an error, and scans under these aggregates read each series in time
 //! order to avoid it ([`super::series_order`]).
 //!
-//! The signal aggregates ([`super::signal`]) and the gap aggregates ([`super::gaps`]) are run
-//! aggregates; each gives its run, how it reads its input, and how it writes its state and result.
+//! The signal aggregates ([`super::signal`]), the gap aggregates ([`super::gaps`]) and the
+//! flatline aggregates ([`super::flatline`]) are run aggregates; each gives its run, how it reads its input, and how it writes its state and result.
 
 use std::fmt::Debug;
 
@@ -204,6 +204,8 @@ impl<A: RunAggregate> GroupsAccumulator for AllGroups<A> {
 pub(crate) fn over_readings(e: &Expr, schema: &DFSchema) -> bool {
     let Expr::AggregateFunction(AggregateFunction { func, params }) = unalias(e) else { return false };
     let name = func.name();
-    let runs = super::signal::Output::of(name).is_some() || super::gaps::Output::of(name).is_some();
+    let runs = super::signal::Output::of(name).is_some()
+        || super::gaps::Output::of(name).is_some()
+        || super::flatline::Output::of(name).is_some();
     runs && params.args.first().is_some_and(|t| matches!(t.get_type(schema), Ok(DataType::Timestamp(..))))
 }

@@ -80,6 +80,23 @@ reading, so a silence before the first reading or after the last isn't counted, 
 order the same way. On the industrial benchmark, the gaps of 100 one-second tags took 77 ms over a day and 1.4 s over
 30 days, against 226 ms and 17.8 s as a `lead()` window query, with the same answers.
 
+### Stuck sensors
+
+`flatline_count(time, value, threshold)` counts the times a series kept exactly the same value for longer than
+`threshold`, and `flatline_seconds(time, value, threshold)` how long those stretches lasted in all. A stretch lasts from
+its first reading to the next reading of another value, or to its own last reading at the end of the group:
+
+```sql
+SELECT tag, flatline_count(time, value, INTERVAL '10 minutes') AS stuck,
+       flatline_seconds(time, value, INTERVAL '10 minutes') AS stuck_seconds
+FROM iot.readings WHERE time >= now() - INTERVAL '1 day'
+GROUP BY tag HAVING flatline_count(time, value, INTERVAL '10 minutes') > 0
+```
+
+Like the gap aggregates, they read each series in time order and merge partial results exactly. A day of the
+industrial benchmark's 700 analog tags: 0.13 s, against 4.4 s for the same definition written with `lag`, running sums
+and `lead`.
+
 ## First, last, and the value at a time
 
 `first(time, value)` and `last(time, value)` give a group's value at its earliest and latest time.

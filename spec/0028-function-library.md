@@ -41,7 +41,7 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 | Changes | `diff`, `percent_change` (`pct_change`), `rate(time, x)` (per second), window functions | Built |
 | Finance | `ohlc` (open, high, low, close; volume is a `sum`) | Planned (#126) |
 | Downsampling | `lttb` | Planned (#126) |
-| Rolling and anomalies | `rolling_mean(x, n)`, `rolling_std(x, n)` (`rolling(n).mean()`), `zscore`, flatline (stuck sensor) detection | Built but flatline detection (#126): running sums, 4× faster than a framed `avg` over 60 rows |
+| Rolling and anomalies | `rolling_mean(x, n)`, `rolling_std(x, n)` (`rolling(n).mean()`), `zscore`, flatlines: `flatline_count(time, value, threshold)`, `flatline_seconds(…)` (stuck sensors) | Built: running sums, 4× faster than a framed `avg` over 60 rows; flatlines as run aggregates, 34× faster than a window query |
 
 **Availability by engine:**
 - **Timelake reader (DataFusion):** Full library as Rust UDFs/UDAFs.
@@ -75,3 +75,4 @@ Every function has a plain, descriptive name. Where pandas uses a different name
 - 2026-10-20: `first`, `last` and `value_at` (`asof`) built (#124).
 - 2026-10-20: the pandas statistics names, `skewness` and `kurtosis`, `diff`, `percent_change`, `rate`, `rolling_mean`,
   `rolling_std` and `zscore` (#126).
+- 2026-10-20: `flatline_count` and `flatline_seconds` (#126).

@@ -18,6 +18,7 @@
 mod catalog;
 mod changes;
 mod dedup;
+mod flatline;
 mod gapfill;
 mod gaps;
 mod in_list;
