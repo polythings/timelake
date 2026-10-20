@@ -6,7 +6,7 @@ import { useState } from "react"
 import { BenchHistory, type HistoryLine } from "@/components/bench-history"
 import { Panel, RankingBars, RankingCard } from "@/components/ranking-card"
 import type { HistoryPoint, Section } from "@/lib/benchmarks"
-import { formatTime, timeUnit } from "@/lib/format"
+import { formatTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 const place = (n: number) => `${n}${n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th"}`
@@ -28,7 +28,6 @@ export function SectionResults({
 }) {
   const [open, setOpen] = useState<string | null>(null)
   const query = section.queries.find((q) => q.query === open)
-  const unit = timeUnit(section.queries.flatMap((q) => q.ranking.rows.map((r) => r.value)))
   const points = query ? (history[query.query] ?? []) : []
   const drawn = lines.filter((l) => points.some((p) => typeof p[l.engine] === "number"))
   return (
@@ -69,7 +68,7 @@ export function SectionResults({
                       )}
                     </span>
                     <span className="text-right font-mono text-xs tabular-nums">
-                      {own ? formatTime(own.value, unit) : "—"}
+                      {own ? formatTime(own.value) : "—"}
                     </span>
                     <ChevronRight
                       className={cn("size-3.5 text-muted-foreground transition-transform", selected && "rotate-90")}

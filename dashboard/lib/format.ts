@@ -22,23 +22,16 @@ export function formatCompact(n: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n)
 }
 
-/** Seconds as "42 ms" below 0.1 s, otherwise "1.25 s". */
-export function formatSeconds(s: number): string {
-  return s < 0.1 ? `${(s * 1000).toFixed(0)} ms` : `${s.toFixed(2)} s`
-}
-
-export type TimeUnit = "ms" | "s"
-
-/** One unit for a set of times shown together: milliseconds when all are under a second. */
-export function timeUnit(seconds: number[]): TimeUnit {
-  return Math.max(...seconds) < 1 ? "ms" : "s"
-}
-
-/** Seconds in a given unit: "48 ms", "0.4 ms" or "1.25 s". */
-export function formatTime(s: number, unit: TimeUnit): string {
-  if (unit === "s") return `${s.toFixed(2)} s`
-  const ms = s * 1000
-  return `${ms < 10 ? ms.toFixed(1).replace(/\.0$/, "") : Math.round(ms)} ms`
+/**
+ * Seconds as milliseconds below a second ("40 ms", "0.4 ms"), else seconds ("2.31 s", "17.8 s", "325 s"): each value
+ * in the unit that reads best, so "40 ms" and "30 ms" never show as "0.04 s" and "0.03 s".
+ */
+export function formatTime(s: number): string {
+  if (s < 1) {
+    const ms = s * 1000
+    return `${ms < 10 ? ms.toFixed(1).replace(/\.0$/, "") : Math.round(ms)} ms`
+  }
+  return `${s.toFixed(s < 10 ? 2 : s < 100 ? 1 : 0)} s`
 }
 
 /** Epoch milliseconds as "2026-01-03 12:00:00" in UTC, or to the minute. */

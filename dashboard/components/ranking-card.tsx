@@ -2,7 +2,7 @@ import { CircleAlert } from "lucide-react"
 
 import { DotGrid } from "@/components/dots"
 import { type Rank, type Ranking, SYSTEM_COLORS } from "@/lib/bench-systems"
-import { formatCompact, formatTime, timeUnit } from "@/lib/format"
+import { formatCompact, formatTime } from "@/lib/format"
 
 /** Columns of squares in the longest bar of a card. */
 const SCALE = 40
@@ -56,11 +56,10 @@ export function RankingBars({
   const rows = [...right, ...wrong]
   const largest = Math.max(...rows.map((r) => r.value))
   const best = (right[0] ?? rows[0])?.value ?? 0
-  const unit = timeUnit(rows.map((r) => (ranking.unit === "seconds" ? r.value : r.value / 1000)))
   const show = (r: Rank) =>
     ranking.unit === "rows/s"
       ? `${formatCompact(r.value)}/s`
-      : formatTime(ranking.unit === "seconds" ? r.value : r.value / 1000, unit)
+      : formatTime(ranking.unit === "seconds" ? r.value : r.value / 1000)
   // A bar is two rows of squares, as long as its value against the largest.
   const columns = (value: number) => Math.max(1, Math.round((value / largest) * SCALE))
   const list = (rs: Rank[]) => (
@@ -76,7 +75,7 @@ export function RankingBars({
               className={r.timelake ? "truncate text-sm" : "truncate text-sm text-muted-foreground"}
               title={[
                 r.label,
-                ...(r.repeat === undefined ? [] : [`best repeat ${formatTime(r.repeat, unit)}`]),
+                ...(r.repeat === undefined ? [] : [`best repeat ${formatTime(r.repeat)}`]),
                 ...(r.requests === undefined ? [] : [`${Math.round(r.requests)} requests`]),
               ].join(" · ")}
             >

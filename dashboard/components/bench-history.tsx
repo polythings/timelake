@@ -4,7 +4,7 @@ import { CartesianGrid, Line, LineChart, XAxis, YAxis, type TooltipContentProps 
 
 import { ChartTooltipCard } from "@/components/chart-tooltip-card"
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
-import { formatTime, timeUnit } from "@/lib/format"
+import { formatTime } from "@/lib/format"
 
 /** One line per system; its color is the system's (lib/benchmarks.ts, SYSTEM_COLORS), whatever else is shown. */
 export type HistoryLine = { engine: string; label: string; color: string }
@@ -24,17 +24,13 @@ export function BenchHistory({ lines, rows }: { lines: HistoryLine[]; rows: Hist
   const config = Object.fromEntries(
     lines.map((l, i) => [keys[i], { label: l.label, color: l.color }]),
   ) satisfies ChartConfig
-  // One unit for the whole chart: axis and tooltips.
-  const unit = timeUnit(
-    rows.flatMap((r) => lines.flatMap((l) => (typeof r[l.engine] === "number" ? [r[l.engine] as number] : []))),
-  )
   const data = rows.map((r) => ({
     date: r.date,
     commit: r.commit.slice(0, 7),
     ...Object.fromEntries(lines.map((l, i) => [keys[i], r[l.engine]])),
     tooltip: lines.flatMap((l) => {
       const v = r[l.engine]
-      return typeof v === "number" ? [[l.label, formatTime(v, unit)] as [string, string]] : []
+      return typeof v === "number" ? [[l.label, formatTime(v)] as [string, string]] : []
     }),
   }))
 
@@ -46,7 +42,7 @@ export function BenchHistory({ lines, rows }: { lines: HistoryLine[]; rows: Hist
         <YAxis
           scale="log"
           domain={["auto", "auto"]}
-          tickFormatter={(v: number) => formatTime(v, unit)}
+          tickFormatter={(v: number) => formatTime(v)}
           tickLine={false}
           axisLine={false}
           width={56}

@@ -35,7 +35,7 @@ import {
   type Run,
   type Workload,
 } from "@/lib/benchmarks"
-import { formatBytes, formatNumber, formatTime, timeUnit } from "@/lib/format"
+import { formatBytes, formatNumber, formatTime } from "@/lib/format"
 import { REPO_URL } from "@/lib/site"
 
 type Props = { params: Promise<{ id: string }> }
@@ -333,7 +333,6 @@ function IngestSection({ run }: { run: Run }) {
 function LiveSection({ run }: { run: Run }) {
   const rows = liveRows(run)
   if (rows.length === 0) return null
-  const unit = timeUnit(rows.flatMap((r) => (r.queryMedian == null ? [] : [r.queryMedian])))
   return (
     <section className="flex flex-col gap-4">
       <SectionHead label="While ingesting">
@@ -363,7 +362,7 @@ function LiveSection({ run }: { run: Run }) {
                   {r.behind ? `${r.maxLag.toFixed(1)} s` : "—"}
                 </TableCell>
                 <TableCell className="text-right font-mono tabular-nums">
-                  {r.queryMedian == null ? "—" : formatTime(r.queryMedian, unit)}
+                  {r.queryMedian == null ? "—" : formatTime(r.queryMedian)}
                 </TableCell>
               </TableRow>
             ))}
@@ -379,7 +378,6 @@ function ConcurrencySection({ run }: { run: Run }) {
   if (run.concurrency.length === 0) return null
   const counts = [...new Set(run.concurrency.map((c) => c.clients))].sort((a, b) => a - b)
   const systems = [...new Set(run.concurrency.map((c) => c.system))]
-  const unit = timeUnit(run.concurrency.flatMap((c) => (c.p95_s == null ? [] : [c.p95_s])))
   return (
     <section className="flex flex-col gap-4">
       <SectionHead label="Concurrent dashboards">
@@ -409,7 +407,7 @@ function ConcurrencySection({ run }: { run: Run }) {
                   const c = run.concurrency.find((x) => x.system === system && x.clients === n)
                   return (
                     <TableCell key={n} className="text-right font-mono whitespace-nowrap tabular-nums">
-                      {c ? `${c.qps.toFixed(1)} q/s · ${c.p95_s == null ? "—" : formatTime(c.p95_s, unit)}` : "—"}
+                      {c ? `${c.qps.toFixed(1)} q/s · ${c.p95_s == null ? "—" : formatTime(c.p95_s)}` : "—"}
                       {c && c.errors > 0 ? ` (${c.errors} errors)` : ""}
                     </TableCell>
                   )
