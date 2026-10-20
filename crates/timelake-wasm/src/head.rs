@@ -8,12 +8,11 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{ArrowPrimitiveType, Int32Type, UInt32Type, UInt64Type};
 use arrow_array::{Array, BinaryArray, PrimitiveArray, RecordBatch, StringArray};
 use bytes::Bytes;
-use timelake_format::bounds::decode;
 use timelake_format::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
 use timelake_format::head::{HeadDoc, Header, LAYOUT, LAYOUT_KEY, built_in};
 
 use crate::error::{Error, Result};
-use crate::meta::{DataFile, Field, TableMeta};
+use crate::meta::{DataFile, Field, TableMeta, decode_bound};
 
 /// A table version as its head describes it.
 #[derive(Debug)]
@@ -85,10 +84,10 @@ fn files(doc: &HeadDoc, schema: &[Field]) -> Result<Vec<DataFile>> {
             .ok()
             .and_then(|i| out.get_mut(i))
             .ok_or_else(|| Error::invalid("head statistics for a missing file"))?;
-        if let Some(b) = lower.is_valid(row).then(|| decode(&f.ty, lower.value(row))).flatten() {
+        if let Some(b) = lower.is_valid(row).then(|| decode_bound(f, lower.value(row), false)).flatten() {
             df.lower.insert(f.name.clone(), b);
         }
-        if let Some(b) = upper.is_valid(row).then(|| decode(&f.ty, upper.value(row))).flatten() {
+        if let Some(b) = upper.is_valid(row).then(|| decode_bound(f, upper.value(row), true)).flatten() {
             df.upper.insert(f.name.clone(), b);
         }
     }

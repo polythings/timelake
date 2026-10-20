@@ -4,11 +4,16 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, TimestampMillisecondArray, TimestampNanosecondArray};
+use arrow_array::{
+    ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    TimestampNanosecondArray, UInt32Array, UInt64Array,
+};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use serde_json::{Value, json};
-use timelake_wasm::{Collector, FileReader, QuerySpec};
+use timelake_format::head::section::{COLUMNS, FILES, METADATA};
+use timelake_format::head::{HeadDoc, LAYOUT, LAYOUT_KEY, built_in, encode};
+use timelake_wasm::{Collector, FileReader, Head, QuerySpec, plan_files};
 
 /// 2026-01-01T00:00:00Z in microseconds.
 const T0: i64 = 1_767_225_600_000_000;
@@ -67,4 +72,48 @@ fn nanosecond_time_columns() {
 fn millisecond_time_columns() {
     let millis: Vec<i64> = (0..4).map(|h| (T0 + h * HOUR) / 1000).collect();
     check(&file(Arc::new(TimestampMillisecondArray::from(millis).with_timezone("+00:00"))));
+}
+
+/// A head listing one file whose `timestamptz_ns` column spans `[lower, upper]` nanoseconds.
+fn head_with_nanosecond_bounds(lower: i64, upper: i64) -> Vec<u8> {
+    let metadata = json!({
+        "format-version": 2, "location": "s3://b/t", "current-schema-id": 0,
+        "schemas": [{ "schema-id": 0, "fields": [{ "id": 1, "name": "time", "type": "timestamptz_ns", "required": true }] }],
+        "properties": { "timelake.time-column": "time" },
+    });
+    let mut doc = HeadDoc::default();
+    doc.properties.insert(LAYOUT_KEY.into(), LAYOUT.into());
+    let section = |columns: Vec<(&str, ArrayRef)>| RecordBatch::try_from_iter(columns).unwrap();
+    doc.sections
+        .insert(METADATA.into(), section(vec![("json", Arc::new(StringArray::from(vec![metadata.to_string()])))]));
+    doc.sections.insert(
+        FILES.into(),
+        section(vec![
+            ("path", Arc::new(StringArray::from(vec!["s3://b/t/data/a.parquet"]))),
+            ("size", Arc::new(UInt64Array::from(vec![100]))),
+            ("records", Arc::new(UInt64Array::from(vec![2]))),
+            ("partition", Arc::new(Int32Array::from(vec![None]))),
+        ]),
+    );
+    doc.sections.insert(
+        COLUMNS.into(),
+        section(vec![
+            ("file", Arc::new(UInt32Array::from(vec![0]))),
+            ("field_id", Arc::new(Int32Array::from(vec![1]))),
+            ("lower", Arc::new(BinaryArray::from(vec![lower.to_le_bytes().as_slice()]))),
+            ("upper", Arc::new(BinaryArray::from(vec![upper.to_le_bytes().as_slice()]))),
+        ]),
+    );
+    encode(1, built_in("arrow").unwrap(), &doc).unwrap()
+}
+
+/// A head's file bounds are scaled like a manifest's: a file of nanosecond times is planned for a
+/// microsecond range inside it, and skipped for one after it.
+#[test]
+fn head_bounds_of_nanosecond_columns() {
+    let head = Head::parse(&head_with_nanosecond_bounds(T0 * 1000, (T0 + HOUR) * 1000 + 1)).unwrap();
+    let planned = |spec: Value| plan_files(&head.files, &serde_json::from_value(spec).unwrap()).len();
+    assert_eq!(planned(json!({ "timeColumn": "time", "from": T0 + 1, "to": T0 + 2 })), 1);
+    assert_eq!(planned(json!({ "timeColumn": "time", "from": T0 + HOUR + 1 })), 1, "rounded up");
+    assert_eq!(planned(json!({ "timeColumn": "time", "from": T0 + HOUR + 2 })), 0);
 }

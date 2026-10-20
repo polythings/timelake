@@ -263,8 +263,17 @@ pub struct DataFile {
     pub upper: HashMap<String, Bound>,
 }
 
-/// Column bounds by name; nanosecond timestamps in microseconds, as queries give times (rounded
-/// outward, so the bounds still contain every row).
+/// A column's Iceberg bound (`bytes` in Iceberg's single-value encoding) as queries compare it:
+/// nanosecond timestamps in microseconds, as queries give times (rounded outward, so the bounds
+/// still contain every row).
+pub(crate) fn decode_bound(f: &Field, bytes: &[u8], upper: bool) -> Option<Bound> {
+    Some(match (f.ty.as_str(), decode(&f.ty, bytes)?) {
+        ("timestamp_ns" | "timestamptz_ns", Bound::Int(x)) => Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper)),
+        (_, bound) => bound,
+    })
+}
+
+/// Column bounds by name (see [`decode_bound`]).
 fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashMap<String, Bound> {
     let Some(Value::Array(entries)) = v else { return HashMap::new() };
     entries
@@ -273,13 +282,7 @@ fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashM
             let id = i32::try_from(as_i64(field(e, "key"))?).ok()?;
             let Some(Value::Bytes(b)) = field(e, "value") else { return None };
             let f = by_id.get(&id)?;
-            let bound = match (f.ty.as_str(), decode(&f.ty, b)?) {
-                ("timestamp_ns" | "timestamptz_ns", Bound::Int(x)) => {
-                    Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper))
-                }
-                (_, bound) => bound,
-            };
-            Some((f.name.clone(), bound))
+            Some((f.name.clone(), decode_bound(f, b, upper)?))
         })
         .collect()
 }

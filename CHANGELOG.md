@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The WebAssembly reader read the file bounds of a `timestamp_ns` column in a table's head as microseconds, so a
+  time range skipped files that held matching rows. It scales them as it does a manifest's.
 - Compaction from the TypeScript client dropped the table's last-value index: later appends didn't rebuild it, so
   `latest` queries read every file from then on. Compaction and retention now keep it, as the engine's do.
 - Appending nanosecond timestamps to a microsecond column (or a `date64` with a time of day to a date column)
