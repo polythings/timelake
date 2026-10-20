@@ -7,7 +7,6 @@ import { SITE_URL } from "@/lib/site"
 import { BACKGROUND, MILESTONES, SPECS } from "@/lib/specs"
 
 // The site's pages, so search engines index timelake.dev rather than the domains that redirect to it.
-// The explorer is left out: it shows the lake configured on the deployment.
 export default function sitemap(): MetadataRoute.Sitemap {
   const paths = [
     "/",

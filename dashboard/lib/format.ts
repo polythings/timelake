@@ -33,34 +33,3 @@ export function formatTime(s: number): string {
   }
   return `${s.toFixed(s < 10 ? 2 : s < 100 ? 1 : 0)} s`
 }
-
-/** Epoch milliseconds as "2026-01-03 12:00:00" in UTC, or to the minute. */
-export function formatUtc(ms: number, precision: "seconds" | "minutes" = "seconds"): string {
-  return new Date(ms)
-    .toISOString()
-    .replace("T", " ")
-    .slice(0, precision === "seconds" ? 19 : 16)
-}
-
-/** How long before `now` a time was, e.g. "5m ago"; "never" for null. */
-export function formatAgo(ms: number | null, now: number): string {
-  if (ms == null) return "never"
-  const s = Math.max(0, Math.round((now - ms) / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 48) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
-
-/** A query result cell: grouped integers, up to 4 decimals, "—" for null. */
-export function formatValue(v: unknown): string {
-  if (v === null || v === undefined) return "—"
-  if (typeof v === "number") return Number.isInteger(v) ? formatNumber(v) : v.toFixed(4).replace(/\.?0+$/, "")
-  return String(v)
-}
-
-export function tableHref(name: string): string {
-  return `/explore/tables/${encodeURIComponent(name)}`
-}

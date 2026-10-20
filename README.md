@@ -128,7 +128,7 @@ SELECT * FROM iceberg_scan('s3://lake/wh/iot/readings');   -- reads metadata/ver
 | `crates/timelake-py` | Python package (PyO3 + maturin) |
 | `crates/timelake-wasm` | WebAssembly reader: metadata, pruning, Parquet decoding, latest/range/bucket queries (no I/O) |
 | `packages/timelake-client` | `@timelake/client`: TypeScript client around the WASM reader, with Zod-typed rows |
-| `dashboard/` | Web app: website, docs, benchmark results, and the Explorer (`/explore`). Deploys to Vercel; see its README |
+| `dashboard/` | Web app: website, docs, and benchmark results. Deploys to Vercel; see its README |
 | `brand/` | Logo, wordmark, colors and words ([brand/README.md](brand/README.md)); `bun run brand:editor` opens the mark editor |
 | `bench/` | Benchmarks: TSBS IoT, TPC-H, ClickBench, the v0 comparison (`bench/v0`), TimescaleDB on Tiger Cloud |
 | `scripts/` | Demo warehouse build (`build-demo-warehouse.sh`) and a static server with Range support for testing (`serve-range.mjs`) |

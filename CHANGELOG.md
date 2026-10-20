@@ -93,6 +93,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `time_weighted_mean` created by 0.7.0 is no longer used to answer queries, and its refresh fails until it is dropped
   and created again.
 
+### Removed
+
+- The website's Explorer (`/explore`, with `/api/sql` and `/api/series`): the browser for tables, latest values,
+  series charts and SQL is developed in its own project.
+
 ## 0.7.0 – 2026-10-18
 
 ### Added

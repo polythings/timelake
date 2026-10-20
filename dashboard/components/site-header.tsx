@@ -18,7 +18,6 @@ import { cn } from "@/lib/utils"
 const LINKS = [
   { href: "/docs", label: "Docs" },
   { href: "/benchmarks", label: "Benchmarks" },
-  { href: "/explore", label: "Explorer" },
   { href: "/roadmap", label: "Roadmap" },
   { href: "/spec", label: "Specs" },
   { href: "/contribute", label: "Contribute" },

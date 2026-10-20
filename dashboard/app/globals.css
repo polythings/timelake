@@ -10,14 +10,6 @@
   --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
   --font-heading: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
   --color-chart-9: var(--chart-9);
   --color-chart-8: var(--chart-8);
   --color-chart-7: var(--chart-7);
@@ -89,14 +81,6 @@
   --chart-8: #E5552F;
   --chart-9: #3B75EC;
   --radius: 0.375rem;
-  --sidebar: #FFFFFF;
-  --sidebar-foreground: #0D1113;
-  --sidebar-primary: #0B7FA6;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #EEF1F2;
-  --sidebar-accent-foreground: #0D1113;
-  --sidebar-border: #D9DEE0;
-  --sidebar-ring: #0B7FA6;
 }
 
 .dark {
@@ -132,14 +116,6 @@
   --chart-7: #E2E2E2;
   --chart-8: #F0603E;
   --chart-9: #3F7DF0;
-  --sidebar: #0E1112;
-  --sidebar-foreground: #E6EBED;
-  --sidebar-primary: #67D4F0;
-  --sidebar-primary-foreground: #0B0D0E;
-  --sidebar-accent: #161A1C;
-  --sidebar-accent-foreground: #E6EBED;
-  --sidebar-border: #23292C;
-  --sidebar-ring: #67D4F0;
 }
 
 @layer base {

@@ -57,7 +57,7 @@ An `http://` or `https://` warehouse (Vercel Blob, a public bucket, a CDN) can b
 timelake -w https://<store>.public.blob.vercel-storage.com/demo \
          -o timelake_local_root=./site-files \
          import tsbs.readings readings.parquet --time-column time --series-key tags_id
-# upload ./site-files/** to the store, keeping paths (dashboard: bun run upload-demo)
+# upload ./site-files/** to the store, keeping paths
 ```
 
 `timelake_local_root` works with any URL: objects are written under the local directory while every path recorded in Iceberg metadata keeps the URL.

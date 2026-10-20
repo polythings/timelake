@@ -35,10 +35,10 @@ What lives where, which technologies are used and why, and how a write and a que
 | `crates/timelake-py` | Rust + Python | The Python package. Thin bindings over the engine (PyO3), built with maturin. |
 | `crates/timelake-wasm` | Rust | A small read-only engine for browsers and JavaScript, compiled to WebAssembly. It does no network I/O itself. |
 | `packages/timelake-client` | TypeScript | @timelake/client: fetches files over HTTPS and hands them to the WASM reader. Rows can be typed with Zod. |
-| `dashboard` | TypeScript (Next.js) | The website timelake.dev: landing page, docs, benchmark charts, and the Explorer. |
+| `dashboard` | TypeScript (Next.js) | The website timelake.dev: landing page, docs, and benchmark charts. |
 | `bench` | Python, Go, shell | Benchmarks: the `timebench` runner with its workloads and system adapters, the run history, AWS scripts, and a request-counting S3 proxy. |
 | `brand` | JavaScript | Logo and wordmark sources and the mark editor. |
-| `scripts` | shell, JavaScript | Builds the demo warehouse for the website; a static file server with Range support for testing. |
+| `scripts` | shell, JavaScript | Builds a demo warehouse to serve over HTTPS; a static file server with Range support for testing. |
 | `spikes/iceberg-write` | Markdown | Findings of an early experiment with iceberg-rust's write support (the code is in git history). |
 | `pyproject.toml` | TOML | The uv workspace: the Python package and the benchmarks share one environment (.venv). |
 | `spec/` | Markdown | The design, one numbered spec per feature with its status and releases, the milestones made of them (`spec/milestones/`), and background pages. Shown on the site at [/spec](/spec) and [/roadmap](/roadmap). |
@@ -58,9 +58,9 @@ What lives where, which technologies are used and why, and how a write and a que
 | `wasm-bindgen` | WASM bindings | Exposes the Rust reader to JavaScript |
 | `TypeScript, Zod 4` | Client package | Typed rows, validated at runtime |
 | `Bun` | JavaScript runtime and package manager | Installs, runs scripts and tests for the website and client |
-| `Next.js 16, React 19` | Website | Server-rendered pages, route handlers for the Explorer |
+| `Next.js 16, React 19` | Website | Server-rendered pages |
 | `Tailwind CSS 4, shadcn/ui (Base UI), Recharts` | Website styling, components, and charts |  |
-| `Vercel, Vercel Blob` | Website hosting; demo data | Deploys on every push to main; Blob serves the demo warehouse |
+| `Vercel` | Website hosting | Deploys on every push to main |
 | `Python + uv` | Python package and benchmarks | One uv workspace; uv.lock pins every version |
 | `DuckDB, PyIceberg, Lance, Polars` | Benchmark competitors and helpers |  |
 | `Go` | s3proxy | A small proxy that counts S3 requests and signs them for AWS |
@@ -141,14 +141,11 @@ The WASM module never makes network requests. The TypeScript client fetches byte
 | Path | What |
 | --- | --- |
 | `dashboard/app/(site)` | Landing page, `/docs` (one folder per page), and `/benchmarks`. |
-| `dashboard/app/(app)/explore` | The Explorer: tables, a table's details and latest values, a series chart, a SQL console. |
-| `dashboard/app/api` | Two route handlers used by the Explorer: `/api/sql` and `/api/series`. |
-| `dashboard/lib/lake` | The Explorer's data layer, with two backends behind one interface: `wasm.ts` reads a public warehouse with `@timelake/client` (used on timelake.dev, no SQL), `cli.ts` runs the `timelake` binary (local, full SQL). `index.ts` picks one by environment variable. |
 | `dashboard/lib/benchmarks.ts` | Reads the run files in `dashboard/data/runs` (a copy of `bench/results/runs`, made by `bun run sync-results`) and computes the numbers for the charts and the history. |
 | `dashboard/lib/benchmark-catalog.ts` | Every benchmark we run, plan, or skip: status, why, links to the original, and the methodology pages' text. |
 | `dashboard/components` | Page pieces (diagrams, charts, tables); `components/ui` holds shadcn/ui components. |
 
-Vercel builds and deploys the site on every push to `main` (project root `dashboard/`). The demo data on timelake.dev is a small warehouse on Vercel Blob, built by `scripts/build-demo-warehouse.sh` and uploaded with `bun run upload-demo`.
+Vercel builds and deploys the site on every push to `main` (project root `dashboard/`).
 
 ## The benchmarks
 

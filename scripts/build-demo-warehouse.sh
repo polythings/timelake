@@ -8,7 +8,7 @@
 # Output: bench/data/demo-site/<host and path of the URL>/, e.g. bench/data/demo-site/127.0.0.1_4100_demo/,
 # holding the files to upload with paths relative to the URL origin. Each URL gets its own folder, so
 # a local build never overwrites one made for a public host.
-# Then upload with `bun run upload-demo` in dashboard/ (Vercel Blob) or any static host with Range support.
+# Then upload them, keeping paths, to any static host with Range support (Vercel Blob, a public bucket, a CDN).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BASE_URL=${1:-http://127.0.0.1:4100/demo}
