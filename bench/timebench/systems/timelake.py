@@ -100,7 +100,7 @@ class Timelake(System):
             import timelake
 
             options = {**(PROXY.object_store_options() if place.target.s3 else {}), **reader_options()}
-            lake = timelake.Lake(state["root"], storage_options=options)
+            lake = timelake.Lake(state["root"], storage_options=options, settings=reader_settings())
             return lambda sql: arrow_result(lake.sql(sql, namespace=state["namespace"]))
         # Plain DuckDB over the Iceberg tables Timelake wrote.
         con = duckdb_connection(place.target)
@@ -132,7 +132,7 @@ def reader_options() -> dict[str, str]:
 
 
 def reader_settings() -> dict[str, str]:
-    """Session settings for the CLI reader, from ``TIMEBENCH_TIMELAKE_SETTINGS`` (``key=value,...``).
+    """Session settings for Timelake's readers, from ``TIMEBENCH_TIMELAKE_SETTINGS`` (``key=value,...``).
 
     For comparing settings such as ``timelake.filter_pushdown=true`` on the same tables.
     """

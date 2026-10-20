@@ -486,3 +486,22 @@ def test_an_s3_run_sets_and_records_every_proxy_setting(monkeypatch: pytest.Monk
     assert settings == [("ttfb", "ms=20"), ("mibps", "v=0")]
     header = harness.run_header(spec, dt.datetime.now(dt.UTC))
     assert (header["ttfb_ms"], header["mibps"]) == (20, 0)
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_timelake_reader_settings_reach_the_python_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Probes and dashboard clients read through the Python binding: an A/B arm's settings must apply there too."""
+    from timebench.systems.timelake import Timelake
+
+    place = Place(Target("local"), "tiny", "timelake")
+    place.clear()
+    system = Timelake(place, "tiny")
+    system.create(TableSpec("readings", "time", ("device",), dedup=True), SCHEMA)
+    batch = next(Tiny().stream())[0][1]
+    system.append("readings", batch)
+    system.append("readings", batch)  # arrives twice
+    place.save_state(system.state())
+    count = "SELECT count(*) FROM readings"
+    assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 120
+    monkeypatch.setenv("TIMEBENCH_TIMELAKE_SETTINGS", "read_dedup=false")
+    assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 240
