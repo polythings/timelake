@@ -146,10 +146,10 @@ def main() -> None:
     if run("git", "branch", "--show-current").strip() != "main":
         raise SystemExit("release from main")
     previous = previous_tag()
-    # Always: the new version must come after the previous tag's, whether or not the API is checked.
-    kind = release_type(parse(previous.removeprefix("v")), new) if previous else None
-    if kind and not args.skip_semver_checks:
-        for package in LIBRARIES:
+    if previous:
+        # Always: the new version must come after the previous tag's, whether or not the API is checked.
+        kind = release_type(parse(previous.removeprefix("v")), new)
+        for package in [] if args.skip_semver_checks else LIBRARIES:
             run(
                 "cargo",
                 "semver-checks",
