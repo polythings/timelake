@@ -77,7 +77,7 @@
     "title": "Millions of series",
     "status": "in-progress",
     "versions": "",
-    "updated": "2026-10-19",
+    "updated": "2026-10-20",
     "description": "Ingest, latest values and dashboards that stay flat from thousands to millions of series, measured at each size.",
     "summary": "Requirement R27 ([purpose and requirements](../purpose.md)): a typical deployment has about 20,000 devices with 5–20 metrics each (100k–400k series); the top end is millions of devices with hundreds of metrics each (hundreds of millions of series). Everything that grows with the number of series must hold up at both: the last-value index, rollups, join filters, planning. Was P10 of the performance plan.",
     "specs": [6, 24, 27],

@@ -2,7 +2,7 @@
 number: 7
 title: Millions of series
 status: in-progress
-updated: 2026-10-19
+updated: 2026-10-20
 description: Ingest, latest values and dashboards that stay flat from thousands to millions of series, measured at each size.
 specs: [6, 24, 27]
 issues: [122]
@@ -10,7 +10,7 @@ issues: [122]
 
 # Millions of series
 
-**In progress** · updated 2026-10-19
+**In progress** · updated 2026-10-20
 
 ## Summary
 
@@ -41,12 +41,14 @@ rollups, join filters, planning. Was P10 of the performance plan.
   the sorted indexes instead of sorting them. What remains (~80 ms) is encoding the whole index, ~1.5 s per commit at
   10M series ([spec 6](../0006-last-value-index.md)).
 
+- **Join filters listing more keys** (2026-10-20, #121): letting a join's runtime filter list up to 10,000 keys instead
+  of 150 made TSBS IoT's fleet joins up to 3.4× slower (avg-load 55 → 189 ms): a fleet's trucks are in every file, so
+  the list prunes nothing and costs a lookup per row. The limit stays.
+
 ## Open
 
 - The last-value index is one object rewritten on every commit: deltas per commit (#119) or shards
   ([spec 6](../0006-last-value-index.md)); an index for mostly idle series (#120).
-- A join's runtime filter lists at most 150 keys, so a dashboard over thousands of devices prunes by bounds only
-  ([spec 24](../0024-in-list-pruning.md), #121).
 - IIoT `gaps` grows with rows (88 s at 400k series), a rollup case (#122). Since 2026-10-19 it is an aggregate
   (`gap_count`, `gap_seconds`: a month 13× faster) that rollups store and answer time ranges from (a month from an
   hourly rollup: 1.34 s → 44 ms on IIoT small); to measure at 400k.
@@ -57,3 +59,4 @@ rollups, join filters, planning. Was P10 of the performance plan.
 - 2026-10-18: planned (P10); 100k and 400k series measured
 - 2026-10-19: last-value index merged instead of sorted; was spec 26, a milestone on the roadmap since the specs were
   regrouped one per feature.
+- 2026-10-20: a longer join filter list measured and rejected (#121).

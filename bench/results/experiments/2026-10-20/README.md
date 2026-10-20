@@ -22,3 +22,11 @@ local disk, under other load (load average 20–30), so absolute times are rough
 |---|---|---|---|
 | TSBS IoT | 10-minute per truck on readings (velocity, fuel sums and counts) and diagnostics (status, load) | avg-daily-driving-duration 95 → 30 ms, avg-daily-driving-session 100 → 40, avg-load 55 → 25, long-daily-sessions 44 → 35, daily-activity (tuned version, one bucket) 101 → 28; the rest within noise | both |
 | TSBS DevOps | 1-minute (maxima) and hourly (maxima, sums, counts) per host | double-groupby-1/5/all 146 → 68, 236 → 88, 348 → 112 ms; the minute queries already read one host's hour (about 20 ms) and didn't move; the 1-minute rollup has 17 M rows and took 37 s to build | hourly only |
+
+## Join filters listing more keys (#121)
+
+TSBS IoT standard (1,004 of the trucks in the `South` fleet), CLI, interleaved, best of 5, same answers:
+`hash_join_inlist_pushdown_max_distinct_values` 150 (DataFusion's default, the filter then holds the keys' bounds only)
+against 10,000 (the filter lists the keys). The fleet's trucks are spread through every file, so listing them prunes
+nothing and costs a hash lookup per row: avg-load 55 → 189 ms, avg-daily-driving-duration 94 → 258, daily-activity
+112 → 262, long-daily-sessions 37 → 68; the queries without a fleet join unchanged. Decision: keep 150.
