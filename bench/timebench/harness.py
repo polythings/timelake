@@ -389,26 +389,29 @@ def ingest(
 ) -> tuple[IngestRecord, LiveRecord | None]:
     """Creates the tables, loads the initial rows, then commits every arrival of the stream, stage by stage.
 
-    After each stage, ``checkpoint`` runs its queries (not counted as ingest time). With ``live_interval`` set,
-    fresh readers probe the tables during the live stage.
+    After each stage, ``checkpoint`` runs its queries (not counted as ingest time or requests). With
+    ``live_interval`` set, fresh readers probe the tables during the live stage, through the proxy's uncounted
+    listener (``live.py``).
     """
     out: IngestRecord = {"kind": "ingest", "system": system.name}
     workload = spec.workload
     writer = Writer(spec, system)
-    before = PROXY.stats() if counted(system) else None
+    spent: list[IngestRecord] = []
     stages: dict[str, StageRecord] = {}
     try:
         system.reset()  # not timed: its cost depends on what the last run left
-        start = time.perf_counter()
-        for t in workload.tables:
-            system.create(t, workload.schema(t.name))
-        if system.tuned:
-            system.tune(workload.tuning_statements(system.name))
-        for table, data in workload.initial():
-            system.append(table, data)
-        setup = time.perf_counter() - start
+        with requests_into(spent, system):
+            start = time.perf_counter()
+            for t in workload.tables:
+                system.create(t, workload.schema(t.name))
+            if system.tuned:
+                system.tune(workload.tuning_statements(system.name))
+            for table, data in workload.initial():
+                system.append(table, data)
+            setup = time.perf_counter() - start
         for stage in workload.stages():
-            done = writer.stage(stage)
+            with requests_into(spent, system):
+                done = writer.stage(stage)
             system.place.save_state({**system.state(), "phase": stage.checkpoint or stage.name, "ingested_at": now()})
             stats = system.stats()
             done.update(
@@ -439,7 +442,7 @@ def ingest(
     probes = writer.finish_probes()
     if probes:
         out["probed"] = True
-    return priced({**out, **proxy_delta(before)}, system), probes
+    return priced({**out, **sum_requests(spent)}, system), probes
 
 
 class Writer:
@@ -555,6 +558,30 @@ def priced(r: IngestRecord, system: System) -> IngestRecord:
     ):
         r["storage_usd_month"] = month
     return r
+
+
+@contextlib.contextmanager
+def requests_into(spent: list[IngestRecord], system: System) -> Generator[None]:
+    """Adds the S3 requests made inside the block to ``spent`` (nothing if the system's traffic isn't counted)."""
+    before = PROXY.stats() if counted(system) else None
+    try:
+        yield
+    finally:
+        spent.append(proxy_delta(before))
+
+
+def sum_requests(spent: list[IngestRecord]) -> IngestRecord:
+    """The requests of several ``proxy_delta`` results together."""
+    if not any("requests" in r for r in spent):
+        return {}
+    out: IngestRecord = {"requests": sum(r.get("requests", 0) for r in spent)}
+    kinds: dict[str, int] = {}
+    for r in spent:
+        for k, n in r.get("kinds", {}).items():
+            kinds[k] = kinds.get(k, 0) + n
+    if kinds:
+        out["kinds"] = kinds
+    return out
 
 
 def proxy_delta(before: ProxyStats | None) -> IngestRecord:

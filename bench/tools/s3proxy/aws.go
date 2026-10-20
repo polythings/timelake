@@ -75,7 +75,10 @@ type awsProxy struct {
 
 type connKey struct{}
 
-func serveAWS(listen, clientBucket, bucket, region string) {
+// countedKey marks a request from the counting listener (a bool).
+type countedKey struct{}
+
+func serveAWS(listen, uncounted, clientBucket, bucket, region string) {
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
 	if err != nil {
 		log.Fatal(err)
@@ -94,8 +97,18 @@ func serveAWS(listen, clientBucket, bucket, region string) {
 		Transport:    p,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) { log.Print(err); w.WriteHeader(502) },
 	}
-	srv := &http.Server{
-		Addr:    listen,
+	log.Printf("proxy %s (bucket %q) -> https://%s (%s)", listen, clientBucket, p.host, p.service)
+	if uncounted != "" {
+		log.Printf("uncounted proxy %s", uncounted)
+		go func() { log.Fatal(p.server(uncounted, rp, false).ListenAndServe()) }()
+	}
+	log.Fatal(p.server(listen, rp, true).ListenAndServe())
+}
+
+// server listens on addr; counted says whether its requests and bytes show in the stats.
+func (p *awsProxy) server(addr string, rp *httputil.ReverseProxy, counted bool) *http.Server {
+	return &http.Server{
+		Addr:    addr,
 		Handler: rp,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			t := &http.Transport{
@@ -103,7 +116,7 @@ func serveAWS(listen, clientBucket, bucket, region string) {
 				IdleConnTimeout: 90 * time.Second, ForceAttemptHTTP2: false,
 			}
 			p.conns.Store(c, t)
-			return context.WithValue(ctx, connKey{}, t)
+			return context.WithValue(context.WithValue(ctx, connKey{}, t), countedKey{}, counted)
 		},
 		ConnState: func(c net.Conn, s http.ConnState) {
 			if s == http.StateClosed || s == http.StateHijacked {
@@ -113,8 +126,6 @@ func serveAWS(listen, clientBucket, bucket, region string) {
 			}
 		},
 	}
-	log.Printf("proxy %s (bucket %q) -> https://%s (%s)", listen, clientBucket, p.host, p.service)
-	log.Fatal(srv.ListenAndServe())
 }
 
 // rewrite maps a path-style request to a virtual-hosted one: the client bucket to the real bucket, any other
@@ -153,8 +164,16 @@ func classify(r *http.Request) string {
 }
 
 func (p *awsProxy) RoundTrip(r *http.Request) (*http.Response, error) {
-	requests.Add(1)
-	countKind(classify(r))
+	counted, _ := r.Context().Value(countedKey{}).(bool)
+	count := func(kind string) {
+		if counted {
+			countKind(kind)
+		}
+	}
+	if counted {
+		requests.Add(1)
+	}
+	count(classify(r))
 
 	payload := r.Header.Get("X-Amz-Content-Sha256")
 	if strings.Contains(r.Header.Get("Content-Encoding"), "aws-chunked") {
@@ -214,7 +233,7 @@ func (p *awsProxy) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.RoundTrip(r)
 	// Retry reads on a dropped connection (S3 resets some under load), as SDKs talking to S3 directly do.
 	for attempt := 1; err != nil && attempt <= 3 && (r.Method == http.MethodGet || r.Method == http.MethodHead); attempt++ {
-		countKind("RETRY")
+		count("RETRY")
 		log.Printf("retry %d %s %s: %v", attempt, r.Method, r.URL.Path, err)
 		time.Sleep(time.Duration(attempt*100) * time.Millisecond)
 		resp, err = t.RoundTrip(r)
@@ -226,7 +245,7 @@ func (p *awsProxy) RoundTrip(r *http.Request) (*http.Response, error) {
 		time.Sleep(time.Duration(d) * time.Millisecond)
 	}
 	if resp.StatusCode >= 500 {
-		countKind(fmt.Sprintf("HTTP%d", resp.StatusCode))
+		count(fmt.Sprintf("HTTP%d", resp.StatusCode))
 	}
 	if resp.StatusCode == 400 || resp.StatusCode == 403 || resp.StatusCode >= 500 {
 		// Header names only: values include credentials.
@@ -242,7 +261,9 @@ func (p *awsProxy) RoundTrip(r *http.Request) (*http.Response, error) {
 			log.Printf("%s", body)
 		}
 	}
-	resp.Body = &countingBody{resp.Body}
+	if counted {
+		resp.Body = &countingBody{resp.Body}
+	}
 	return resp, nil
 }
 

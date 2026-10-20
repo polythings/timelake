@@ -131,7 +131,7 @@ RUSTFS_ACCESS_KEY=benchkey RUSTFS_SECRET_KEY=benchsecret123 \
   rustfs server --address 127.0.0.1:59000 --console-address 127.0.0.1:59001 data/rustfs &
 # Linux: docker run -d --name timelake-bench-rustfs -p 59000:9000 -v timelake-bench-rustfs:/data \
 #   -e RUSTFS_ACCESS_KEY=benchkey -e RUSTFS_SECRET_KEY=benchsecret123 rustfs/rustfs:latest
-.bin/s3proxy -listen :59100 -upstream localhost:59000 -admin :59101 -ttfb 20ms &
+.bin/s3proxy -listen :59100 -listen-uncounted :59102 -upstream localhost:59000 -admin :59101 -ttfb 20ms &
 uv run timebench run tsbs-iot --scale small --target s3 --ttfb-ms 20 --mibps 50
 ```
 Create the bucket `bench` first (any S3 client against `localhost:59000`). `--ttfb-ms` is the latency the proxy adds

@@ -8,6 +8,7 @@ RustFS, or in AWS mode (``bench/infra``) to a real bucket that the proxy re-sign
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -137,8 +138,13 @@ class S3Endpoint:
             return cast("ProxyStats", json.load(response))
 
 
-PROXY = S3Endpoint("localhost:59100", admin="localhost:59101")
+PROXY_ENV = "TIMEBENCH_PROXY"
+"""Overrides ``PROXY``'s address in a process: probe readers set it to ``PROBE_PROXY``'s."""
+PROXY = S3Endpoint(os.environ.get(PROXY_ENV, "localhost:59100"), admin="localhost:59101")
 """The counting proxy that measured runs go through."""
+PROBE_PROXY = S3Endpoint("localhost:59102")
+"""The counting proxy's uncounted listener (``-listen-uncounted``): the same latency, but requests that run beside a
+measured phase, such as probes while a system ingests, stay out of its counts."""
 SETUP_PROXY = S3Endpoint("localhost:59000")
 """Setup work (loading data, listing sizes) that must not show up in the counts: an uncounted proxy on AWS,
 RustFS itself locally."""

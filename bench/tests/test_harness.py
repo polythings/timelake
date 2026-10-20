@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import subprocess
+import sys
 import time
 from typing import TYPE_CHECKING, ClassVar, override
 
@@ -13,10 +15,11 @@ import pytest
 
 from timebench import harness, targets
 from timebench.cost import PRICES, phase_cost, query_cost, requests_cost, storage_month
-from timebench.live import Commit, lag
+from timebench.live import Commit, Prober, lag
 from timebench.queries import apply_dialect
 from timebench.report import Run, markdown
 from timebench.results import QueryRecord, read_jsonl
+from timebench.s3 import PROBE_PROXY, PROXY
 from timebench.systems import DIALECTS
 from timebench.systems.iceberg import Iceberg
 from timebench.systems.timescaledb import csv_chunks, pg_type
@@ -302,3 +305,57 @@ def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.Mon
     done, _ = harness.ingest(spec, system, lambda _: None)
     assert done["status"] == "ok", done
     assert done["seconds"] < 2
+
+
+class FakeProxy:
+    """Counters like the proxy's /stats, bumped by hand."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def stats(self) -> dict[str, object]:
+        return {"requests": self.requests, "bytes": 0, "kinds": {"GET": self.requests}}
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_ingest_requests_leave_out_the_checkpoint_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = FakeProxy()
+    monkeypatch.setattr(harness, "PROXY", proxy)
+    monkeypatch.setattr(harness, "counted", lambda _: True)
+    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"])
+    system = spec.system("parquet")
+    append = system.append
+
+    def counted_append(table: str, data: pa.Table) -> None:
+        proxy.requests += 1
+        append(table, data)
+
+    def queries(_stage: object) -> None:
+        proxy.requests += 1000
+
+    monkeypatch.setattr(system, "append", counted_append)
+    done, _ = harness.ingest(spec, system, queries)
+    assert done["status"] == "ok", done
+    assert done["requests"] == 1 + 48  # the devices, then each arrival
+    assert done["kinds"] == {"GET": 49}
+
+
+def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Probes run while a system ingests; through the counting listener, their requests would count as ingest's."""
+    envs: list[dict[str, str]] = []
+
+    def run(*_args: object, env: dict[str, str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        envs.append(env)
+        return subprocess.CompletedProcess([], 0, '{"times": [0.1], "value": 1}', "")
+
+    spec = harness.RunSpec(workload=Tiny(), target=Target("s3"), systems=["parquet"])
+    prober = Prober(spec.workload, spec.system("parquet"), 1)
+    with monkeypatch.context() as m:
+        m.setattr(subprocess, "run", run)
+        prober.probe(spec.workload.dashboard_queries()[0])
+    assert len(envs) == 1
+    # What the probe's worker process connects to.
+    address = subprocess.check_output(
+        [sys.executable, "-c", "from timebench.s3 import PROXY; print(PROXY.address)"], env=envs[0], text=True
+    )
+    assert address.strip() == PROBE_PROXY.address != PROXY.address

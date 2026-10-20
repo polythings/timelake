@@ -29,7 +29,7 @@ Each run covers three storage targets, all on the same machine:
 
 All S3 traffic goes through `tools/s3proxy` in AWS mode:
 - Engines keep reading `s3://bench/...` over plain HTTP with dummy keys. The proxy maps that path to the real bucket and re-signs each request (SigV4; `CreateSession` for S3 Express).
-- It counts requests by kind (GET, HEAD, LIST, PUT, ...) and the bytes returned. Those counts give the per-query request cost.
+- It counts requests by kind (GET, HEAD, LIST, PUT, ...) and the bytes returned. Those counts give the per-query request cost. Probes that run while a system ingests use its uncounted listener (`:59102`), so the ingest counts are the writer's alone.
 - Each client connection gets its own upstream TLS connection, so a fresh process pays the same connection setup it would pay talking to S3 directly.
 - `remote.sh direct` measures what the proxy itself adds, by running plain DuckDB straight against S3.
 

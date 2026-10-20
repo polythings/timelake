@@ -9,6 +9,10 @@
 //	curl -X POST 'localhost:59101/ttfb?ms=0'
 //	curl -X POST 'localhost:59101/mibps?v=0'   # 0: no cap
 //
+// -listen-uncounted adds a second listener with the same latency and throughput cap whose requests aren't
+// counted: readers that run alongside a measured phase (probes while a system ingests) use it, so the counts stay
+// the phase's own.
+//
 // With -aws-bucket it proxies to real S3 or S3 Express One Zone instead (aws.go), and /stats also reports
 // requests by kind.
 package main
@@ -33,6 +37,7 @@ var (
 
 func main() {
 	listen := flag.String("listen", ":59100", "proxy listen address")
+	uncounted := flag.String("listen-uncounted", "", "listen address whose requests aren't counted (optional)")
 	upstream := flag.String("upstream", "localhost:59000", "S3 endpoint")
 	admin := flag.String("admin", ":59101", "stats/admin listen address")
 	ttfb := flag.Duration("ttfb", 20*time.Millisecond, "time to first byte added per request")
@@ -46,24 +51,32 @@ func main() {
 
 	go serveAdmin(*admin)
 	if *awsBucket != "" {
-		serveAWS(*listen, *bucket, *awsBucket, *awsRegion)
+		serveAWS(*listen, *uncounted, *bucket, *awsBucket, *awsRegion)
 		return
 	}
-	ln, err := net.Listen("tcp", *listen)
+	log.Printf("proxy %s -> %s, ttfb %v, %d MiB/s per response, admin %s", *listen, *upstream, *ttfb, *rate, *admin)
+	if *uncounted != "" {
+		log.Printf("uncounted proxy %s -> %s", *uncounted, *upstream)
+		go serveTCP(*uncounted, *upstream, false)
+	}
+	serveTCP(*listen, *upstream, true)
+}
+
+func serveTCP(listen, upstream string, counted bool) {
+	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("proxy %s -> %s, ttfb %v, %d MiB/s per response, admin %s", *listen, *upstream, *ttfb, *rate, *admin)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handle(c, *upstream)
+		go handle(c, upstream, counted)
 	}
 }
 
-func handle(client net.Conn, upstream string) {
+func handle(client net.Conn, upstream string, counted bool) {
 	defer client.Close()
 	server, err := net.Dial("tcp", upstream)
 	if err != nil {
@@ -81,7 +94,7 @@ func handle(client net.Conn, upstream string) {
 		for {
 			n, err := client.Read(buf)
 			if n > 0 {
-				if awaiting.CompareAndSwap(false, true) {
+				if awaiting.CompareAndSwap(false, true) && counted {
 					requests.Add(1)
 				}
 				if _, werr := server.Write(buf[:n]); werr != nil {
@@ -107,7 +120,9 @@ func handle(client net.Conn, upstream string) {
 					}
 					started, sent = time.Now(), 0
 				}
-				bytesOut.Add(int64(n))
+				if counted {
+					bytesOut.Add(int64(n))
+				}
 				if _, werr := client.Write(buf[:n]); werr != nil {
 					break
 				}

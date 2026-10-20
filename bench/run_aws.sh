@@ -14,11 +14,12 @@ export BENCH_TABLE_BUCKET_ARN=$(output TableBucketArn)
 export BENCH_MACHINE="laptop (M1 Pro) to S3 us-east-2 over the internet"
 export BENCH_ICEBERG_S3_DIR=iceberg-aws
 
-# Counting proxy on :59100 and an uncounted one on :59000 for setup work, both in AWS mode.
+# Counting proxy on :59100 (uncounted listener :59102 for probes) and an uncounted one on :59000 for setup work,
+# both in AWS mode.
 proxy() {
   pkill -f '.bin/s3proxy' || true
   sleep 1
-  nohup .bin/s3proxy -aws-bucket "$bucket" -listen :59100 -admin :59101 -ttfb 0ms >> data/s3proxy-aws.log 2>&1 &
+  nohup .bin/s3proxy -aws-bucket "$bucket" -listen :59100 -listen-uncounted :59102 -admin :59101 -ttfb 0ms >> data/s3proxy-aws.log 2>&1 &
   nohup .bin/s3proxy -aws-bucket "$bucket" -listen :59000 -admin :59001 -ttfb 0ms >> data/s3proxy-aws-setup.log 2>&1 &
   until curl -sf localhost:59101/stats > /dev/null && curl -sf localhost:59001/stats > /dev/null; do sleep 0.2; done
 }

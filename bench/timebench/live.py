@@ -1,7 +1,8 @@
 """Probes while a system ingests: fresh readers run the dashboard queries and ask for the newest timestamp they see.
 
 A probe round starts every ``interval`` seconds while the stream is being committed. Each query runs in a fresh
-process with the system's own reader, as a dashboard opening during ingest would. The freshness probe tells how far
+process with the system's own reader, as a dashboard opening during ingest would, through the proxy's uncounted
+listener so that ingest's request counts stay the writer's. The freshness probe tells how far
 behind a reader is: the seconds since the oldest commit it didn't see had finished (0 when it sees every finished
 commit).
 """
@@ -9,12 +10,14 @@ commit).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from timebench.s3 import PROBE_PROXY, PROXY_ENV
 from timebench.worker import command
 
 if TYPE_CHECKING:
@@ -101,6 +104,7 @@ class Prober:
             "runs": 0,
             "count": False,  # the proxy's counters include the writer's requests
         }
+        env = {**os.environ, PROXY_ENV: PROBE_PROXY.address}
         started = time.time()
         commits = list(self.commits)
         now = max((c.newest for c in commits), default=None)  # the data's present, as far as the writer got
@@ -112,6 +116,7 @@ class Prober:
                 text=True,
                 timeout=PROBE_TIMEOUT_S,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             self.errors.append(f"{query.name}: timeout")
