@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import { ThemeProvider } from "@/components/theme-provider"
@@ -18,6 +18,14 @@ export const metadata: Metadata = {
   openGraph: { siteName: SITE_NAME, type: "website" },
 }
 
+// The browser bar's color on phones, the page background of each theme (globals.css).
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#F4F5F5" },
+    { media: "(prefers-color-scheme: dark)", color: "#0B0D0E" },
+  ],
+}
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
@@ -26,7 +34,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full">
-        <ThemeProvider attribute="class" forcedTheme="dark" disableTransitionOnChange>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <TooltipProvider>{children}</TooltipProvider>
         </ThemeProvider>
       </body>

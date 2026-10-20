@@ -127,7 +127,7 @@ export function DotText({ text, color = "var(--primary)", dot = 4 }: { text: str
               [...row].map((bit, c) => (
                 <span
                   key={`${r}-${c}`}
-                  style={{ background: bit === "1" ? color : "var(--border)", opacity: bit === "1" ? 1 : 0.35 }}
+                  style={{ background: bit === "1" ? color : "var(--dot)", opacity: bit === "1" ? 1 : 0.35 }}
                 />
               )),
             )}

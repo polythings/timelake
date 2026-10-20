@@ -10,6 +10,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- The website has a light theme. It follows the system's setting, and a button in the header switches between light and
+  dark.
 - The design moved from one file, `SPEC.md`, to numbered specs in `spec/` (in the spirit of Rust's RFCs and Python's
   PEPs): one spec per feature with the same template, its status (done, in progress, planned, dropped), the releases
   that changed it, and its history, and an index for people and agents. Milestones made of specs (`spec/milestones/`,

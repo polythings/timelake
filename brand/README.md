@@ -43,6 +43,8 @@ Everything is generated: edit `marks.mjs` and run `bun brand/marks.mjs` (marks) 
 ## Color
 
 Instrument-panel look: near-black panels with hairline borders, mono labels, ASCII illustrations, and **one accent**.
+The site follows the system's light or dark setting, and a button in the header switches it; the light theme is the same
+panels in paper and ink.
 
 | Token | Dark | Light |
 |---|---|---|
@@ -50,6 +52,7 @@ Instrument-panel look: near-black panels with hairline borders, mono labels, ASC
 | panel | `#101315` | `#FFFFFF` |
 | line (hairlines) | `#23292C` | `#D9DEE0` |
 | dim (ASCII fields) | `#343C40` | `#C3CACD` |
+| dot (unlit squares) | `#23292C` | `#E3E7E9` |
 | foreground | `#E6EBED` | `#0D1113` |
 | muted | `#8B969B` | `#59656A` |
 | **accent: Ice** (Timelake) | `#67D4F0` | `#0B7FA6` |
