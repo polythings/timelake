@@ -9,6 +9,8 @@
 --       @B10M(x) 10-minute time bucket, @B1D(x) 1-day bucket, @EPOCH(x) seconds since epoch,
 --       @TS('...') timestamptz literal.
 --   * Integer divisions that Postgres truncates use float division (results are reported, not checked).
+--   * Some engines (ClickHouse) return 0, false or 1970 instead of NULL from lag/lead past a series' edge, so
+--     edges are told apart by comparing epoch times (prev_t > 0, stop_t > start_t), not by NULL.
 --   * breakdown-frequency: TSBS's `count(STATUS = 0) / count(*)` counts non-NULL booleans, so it is
 --     always 1. We use the intended fraction of rows with status = 0.
 --   * `-- name: <query> [timelake tuned]` is the version a tuned Timelake run reads (D23), as its docs write it
@@ -111,14 +113,16 @@ WITH driver_status AS (
     FROM readings
     GROUP BY 1, 2
 ), driver_status_change AS (
-    SELECT tags_id, ten_minutes AS start_ts,
-           lead(ten_minutes) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_ts, driving
+    SELECT tags_id, ten_minutes AS start_ts, @EPOCH(ten_minutes) AS start_t,
+           lead(@EPOCH(ten_minutes)) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_t, driving
     FROM (SELECT tags_id, ten_minutes, driving,
-                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving
+                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving,
+                 lag(@EPOCH(ten_minutes)) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_t
           FROM driver_status) x
-    WHERE x.driving <> x.prev_driving
+    WHERE x.prev_t > 0 AND x.driving <> x.prev_driving
 )
-SELECT t.name, @B1D(d.start_ts) AS day, avg(@EPOCH(d.stop_ts) - @EPOCH(d.start_ts)) AS duration_s
+SELECT t.name, @B1D(d.start_ts) AS day,
+       avg(CASE WHEN d.stop_t > d.start_t THEN d.stop_t - d.start_t END) AS duration_s
 FROM tags t
 JOIN driver_status_change d ON t.id = d.tags_id
 WHERE t.name IS NOT NULL AND d.driving = true
@@ -225,14 +229,16 @@ WITH driver_status AS (
     FROM readings_10m
     GROUP BY 1, 2
 ), driver_status_change AS (
-    SELECT tags_id, ten_minutes AS start_ts,
-           lead(ten_minutes) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_ts, driving
+    SELECT tags_id, ten_minutes AS start_ts, @EPOCH(ten_minutes) AS start_t,
+           lead(@EPOCH(ten_minutes)) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_t, driving
     FROM (SELECT tags_id, ten_minutes, driving,
-                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving
+                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving,
+                 lag(@EPOCH(ten_minutes)) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_t
           FROM driver_status) x
-    WHERE x.driving <> x.prev_driving
+    WHERE x.prev_t > 0 AND x.driving <> x.prev_driving
 )
-SELECT t.name, @B1D(d.start_ts) AS day, avg(@EPOCH(d.stop_ts) - @EPOCH(d.start_ts)) AS duration_s
+SELECT t.name, @B1D(d.start_ts) AS day,
+       avg(CASE WHEN d.stop_t > d.start_t THEN d.stop_t - d.start_t END) AS duration_s
 FROM tags t
 JOIN driver_status_change d ON t.id = d.tags_id
 WHERE t.name IS NOT NULL AND d.driving = true

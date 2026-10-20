@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -132,3 +133,42 @@ def test_the_weekly_profiles_name_real_workloads_systems_and_scales(name: str) -
         assert set(entry["systems"]) <= set(systems())
         assert set(entry.get("checkpoints", [])) <= {"ingested", "maintained"}
         assert workload.dataset
+
+
+def clickhouse_edges(sql: str) -> str:
+    """``sql`` with ``lag``/``lead`` giving their type's default past a partition's edge, as ClickHouse's do."""
+
+    def default(m: re.Match[str]) -> str:
+        arg = m.group(2)
+        if arg in ("driving", "broken_down"):
+            zero = "false"
+        else:
+            zero = "0" if arg.startswith("epoch(") else "TIMESTAMPTZ '1970-01-01 00:00:00+00'"
+        return f"{m.group(1)}({arg}, 1, {zero}) OVER"
+
+    return re.sub(r"\b(lag|lead)\(((?:[^()]|\([^()]*\))*)\) OVER", default, sql)
+
+
+@pytest.mark.parametrize("query", ["avg-daily-driving-session", "breakdown-frequency"])
+def test_tsbs_iot_answers_hold_where_lag_and_lead_give_defaults_at_the_edges(query: str) -> None:
+    """ClickHouse's ``lag``/``lead`` return 0, false or 1970 instead of NULL before a series' first row or after its
+    last, so the queries must not tell edges apart by NULL (#183)."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("SET TimeZone = 'UTC'")
+    con.execute(
+        "CREATE TABLE tags AS SELECT * FROM (VALUES (1, 'truck_1', 'F-150'), (2, 'truck_2', 'H-2')) t(id, name, model)"
+    )
+    # Truck 1 starts driving, stops and drives again; truck 2 starts stopped. 10-minute buckets over two days.
+    con.execute(
+        """CREATE TABLE readings AS
+        SELECT tags_id, TIMESTAMPTZ '2026-01-01 00:00:00 UTC' + INTERVAL (i * 10) MINUTE AS time,
+               CASE WHEN (i // (5 + tags_id)) % 2 = tags_id - 1 THEN 30.0 ELSE 1.0 END AS velocity,
+               (i % 7 = 0) AS status, 50.0 AS fuel_state
+        FROM range(288) r(i), (VALUES (1), (2)) t(tags_id)"""
+    )
+    con.execute("CREATE TABLE diagnostics AS SELECT tags_id, time, status::INT AS status FROM readings")
+    sql = apply_dialect(dict(raw_queries("tsbs_iot"))[query], DUCKDB)
+    assert clickhouse_edges(sql) != sql
+    assert con.execute(clickhouse_edges(sql)).fetchall() == con.execute(sql).fetchall()
