@@ -128,6 +128,14 @@
   html {
     @apply font-sans;
   }
+  /* No rubber-band scrolling past the ends with a mouse or trackpad: it drags the sticky header along. Touch screens
+     keep it, for pull-to-refresh. */
+  @media (pointer: fine) {
+    html,
+    body {
+      overscroll-behavior-y: none;
+    }
+  }
 }
 /* House style: mono labels, hairline cell grids, dim ASCII illustrations. */
 @layer components {

@@ -63,52 +63,55 @@ export function SiteHeader() {
           <ActiveNavLinks />
         </Suspense>
         <div className="flex-1" />
-        <span className="hidden font-mono text-[13px] text-muted-foreground sm:inline">
-          Apache 2.0 ·{" "}
-          <Tooltip>
-            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4 hover:text-foreground">
-              v0
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              Timelake is at v0 and not ready for production yet. Formats and APIs may change between releases.
-            </TooltipContent>
-          </Tooltip>
-        </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Timelake on GitHub"
-          nativeButton={false}
-          render={<a href={REPO_URL} target="_blank" rel="noreferrer" />}
-        >
-          <GithubIcon className="size-4" />
-        </Button>
-        <ThemeToggle />
-        <Sheet>
-          <SheetTrigger render={<Button variant="ghost" size="icon" className="md:hidden" aria-label="Open menu" />}>
-            <Menu className="size-4" />
-          </SheetTrigger>
-          <SheetContent side="left" className="w-72 overflow-y-auto">
-            <SheetHeader>
-              <SheetTitle>
-                <TimelakeLockup size={22} />
-              </SheetTitle>
-            </SheetHeader>
-            <div className="space-y-6 px-4 pb-6">
-              <div className="space-y-1">
-                {[{ href: "/", label: "Home" }, ...LINKS].map((l) => (
-                  <Link key={l.href} href={l.href} className="block py-1 text-sm">
-                    {l.label}
-                  </Link>
-                ))}
-                <a href={REPO_URL} className="block py-1 text-sm">
-                  GitHub
-                </a>
+        {/* The icon buttons' own padding spaces them; the text gets the same 16px with its margin plus that padding. */}
+        <div className="-mr-2 flex items-center">
+          <span className="mr-2 hidden font-mono text-[13px] text-muted-foreground sm:inline">
+            Apache 2.0 ·{" "}
+            <Tooltip>
+              <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4 hover:text-foreground">
+                v0
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Timelake is at v0 and not ready for production yet. Formats and APIs may change between releases.
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Timelake on GitHub"
+            nativeButton={false}
+            render={<a href={REPO_URL} target="_blank" rel="noreferrer" />}
+          >
+            <GithubIcon className="size-4" />
+          </Button>
+          <ThemeToggle />
+          <Sheet>
+            <SheetTrigger render={<Button variant="ghost" size="icon" className="md:hidden" aria-label="Open menu" />}>
+              <Menu className="size-4" />
+            </SheetTrigger>
+            <SheetContent side="left" className="w-72 overflow-y-auto">
+              <SheetHeader>
+                <SheetTitle>
+                  <TimelakeLockup size={22} />
+                </SheetTitle>
+              </SheetHeader>
+              <div className="space-y-6 px-4 pb-6">
+                <div className="space-y-1">
+                  {[{ href: "/", label: "Home" }, ...LINKS].map((l) => (
+                    <Link key={l.href} href={l.href} className="block py-1 text-sm">
+                      {l.label}
+                    </Link>
+                  ))}
+                  <a href={REPO_URL} className="block py-1 text-sm">
+                    GitHub
+                  </a>
+                </div>
+                <MenuNav />
               </div>
-              <MenuNav />
-            </div>
-          </SheetContent>
-        </Sheet>
+            </SheetContent>
+          </Sheet>
+        </div>
       </div>
     </header>
   )
