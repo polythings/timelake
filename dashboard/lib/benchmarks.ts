@@ -4,6 +4,10 @@ import path from "node:path"
 
 import { cacheLife } from "next/cache"
 
+import { ENGINES, SYSTEMS, engineLabel, type Rank, type Ranking } from "./bench-systems"
+
+export { SYSTEM_COLORS, SYSTEMS, engineLabel, type Rank, type Ranking } from "./bench-systems"
+
 /** Run files bundled with the app (bun run sync-results copies them from ../bench/results/runs). */
 const RUNS = process.env.TIMELAKE_BENCH_RUNS ?? path.resolve(/*turbopackIgnore: true*/ process.cwd(), "data/runs")
 
@@ -130,49 +134,6 @@ export const WORKLOADS = [
 
 export type Workload = (typeof WORKLOADS)[number]
 
-/** How the site names each system and reader pair; a system's own reader comes first. */
-const ENGINES: Record<string, string> = {
-  "timelake+timelake": "Timelake",
-  "timelake+duckdb": "Timelake tables + DuckDB",
-  "iceberg+duckdb": "Iceberg (PyIceberg) + DuckDB",
-  "s3tables+duckdb": "S3 Tables + DuckDB",
-  "lance+duckdb": "Lance + DuckDB",
-  "lance+datafusion": "Lance + DataFusion",
-  "parquet+duckdb": "Parquet files + DuckDB",
-  "parquet+datafusion": "Parquet files + DataFusion",
-  "timescaledb+postgres": "TimescaleDB",
-  "clickhouse+clickhouse": "ClickHouse",
-  "questdb+questdb": "QuestDB",
-  "influxdb3+influxdb3": "InfluxDB 3 Core",
-  "influxdb3-defaults+influxdb3": "InfluxDB 3 Core, as shipped",
-}
-
-export const SYSTEMS: Record<string, string> = {
-  timelake: "Timelake",
-  iceberg: "Iceberg (PyIceberg)",
-  s3tables: "S3 Tables (PyIceberg)",
-  lance: "Lance",
-  parquet: "Parquet files",
-  timescaledb: "TimescaleDB",
-  clickhouse: "ClickHouse",
-  questdb: "QuestDB",
-  influxdb3: "InfluxDB 3 Core",
-  "influxdb3-defaults": "InfluxDB 3 Core, as shipped",
-}
-
-/**
- * Each system's color in charts, fixed so it never changes with what else is shown. S3 Tables and TimescaleDB share
- * one: they never run on the same target (AWS only, and a database server).
- */
-export const SYSTEM_COLORS: Record<string, string> = {
-  timelake: "var(--chart-1)",
-  iceberg: "var(--chart-3)",
-  lance: "var(--chart-4)",
-  parquet: "var(--chart-5)",
-  s3tables: "var(--chart-2)",
-  timescaledb: "var(--chart-2)",
-}
-
 export const TARGETS: Record<string, string> = {
   "aws-s3": "AWS S3",
   "aws-s3x": "S3 Express One Zone",
@@ -181,11 +142,12 @@ export const TARGETS: Record<string, string> = {
   "tiger-cloud": "Tiger Cloud",
 }
 
+/** Checkpoints in the order pages show them: the main result first. */
 export const CHECKPOINTS: Record<string, string> = {
+  maintained: "After maintenance",
+  ingested: "Right after ingest",
   "1d": "After 1 day",
   "7d": "After 7 days",
-  ingested: "Right after ingest",
-  maintained: "After maintenance",
 }
 
 /** The checkpoints a run's top-level results show (the others are on its detail page). */
@@ -194,7 +156,6 @@ const MAIN_CHECKPOINTS = ["maintained", "ingested"]
 /** The system whose answers the others are checked against; it keeps the right answers and isn't ranked. */
 const REFERENCE = "reference"
 
-export const engineLabel = (engine: string) => ENGINES[engine] ?? engine
 export const targetLabel = (target: string) => TARGETS[target] ?? target
 const engineOrder = (engine: string) => {
   const i = Object.keys(ENGINES).indexOf(engine)
@@ -247,33 +208,48 @@ const gm = (xs: number[]) => Math.exp(xs.reduce((s, x) => s + Math.log(Math.max(
 /** The best repeat, or the first run when there were no repeats. */
 const best = ([first, ...repeats]: Times) => Math.min(...(repeats.length > 0 ? repeats : [first]))
 
-export type BenchBar = {
-  engine: string
-  label: string
-  timelake: boolean
-  first: number
-  best: number
-  requests: number | null
-  /** Of the queries averaged, how many answers didn't match the reference. */
-  wrong: number
-}
-export type QueryRow = {
+export type QueryResult = {
   query: string
-  times: Record<string, number | null>
-  rows: Record<string, number | null>
-  /** Engines whose answer didn't match the reference. */
-  wrong: string[]
+  /** Each engine's first run on this query, fastest first; engines that failed it are left out. */
+  ranking: Ranking
+  /** Engines that failed or timed out on it. */
+  failed: string[]
 }
-export type BenchPanel = { suite: string; state: string; bars: BenchBar[]; queries: number; perQuery: QueryRow[] }
+
+/** One suite at one checkpoint of a run: its overall ranking and each query's. */
+export type Section = {
+  suite: string
+  suiteLabel: string
+  checkpoint: string
+  label: string
+  /** Geometric mean of first runs over the queries every engine completed. */
+  ranking: Ranking
+  queries: QueryResult[]
+}
 
 const engineOf = (q: QueryRecord) => `${q.system}+${q.reader}`
 
+/** An engine's row in a ranking of query times over `rs`: first runs, best repeats and requests, averaged. */
+const rank = (engine: string, rs: QueryRecord[]): Rank => {
+  const requests = rs.map((r) => r.requests?.[0])
+  return {
+    key: engine,
+    label: engineLabel(engine),
+    system: engine.split("+", 1)[0] ?? engine,
+    value: gm(rs.map((r) => r.times[0])),
+    repeat: gm(rs.map((r) => best(r.times))),
+    requests: requests.every((n) => n !== undefined) ? requests.reduce((s, n) => s + n, 0) / rs.length : undefined,
+    timelake: engine === "timelake+timelake",
+    wrong: rs.filter((r) => r.correct === false).length,
+  }
+}
+
 /**
- * One chart per suite and checkpoint: each engine's geometric-mean first run over the queries every engine
- * completed, so the bars compare the same work.
+ * A run's results by suite and checkpoint: each engine's geometric-mean first run over the queries every engine
+ * completed (so the bars compare the same work), and each query's times.
  */
-export function panels(run: Run, workload: Workload): BenchPanel[] {
-  const out: BenchPanel[] = []
+export function sections(run: Run, workload: Workload): Section[] {
+  const out: Section[] = []
   for (const suite of workload.suites) {
     for (const [checkpoint, label] of Object.entries(CHECKPOINTS)) {
       const all = run.queries.filter((q) => q.suite === suite.id && q.checkpoint === checkpoint)
@@ -284,30 +260,80 @@ export function panels(run: Run, workload: Workload): BenchPanel[] {
       const allQueries = [...new Set(all.map((q) => q.query))]
       const common = allQueries.filter((q) => engines.every((e) => by.has(`${e}|${q}`)))
       if (common.length === 0) continue
-      const bars = engines.map((e) => {
-        const rs = common.flatMap((q) => by.get(`${e}|${q}`) ?? [])
-        const requests = rs.map((r) => r.requests?.[0])
-        return {
-          engine: e,
-          label: engineLabel(e),
-          timelake: e === "timelake+timelake",
-          first: gm(rs.map((r) => r.times[0])),
-          best: gm(rs.map((r) => best(r.times))),
-          requests: requests.every((n) => n !== undefined) ? requests.reduce((s, n) => s + n, 0) / rs.length : null,
-          wrong: rs.filter((r) => r.correct === false).length,
-        }
-      })
-      const perQuery = allQueries.map((q) => ({
-        query: q,
-        times: Object.fromEntries(engines.map((e) => [e, by.get(`${e}|${q}`)?.times[0] ?? null])),
-        rows: Object.fromEntries(engines.map((e) => [e, by.get(`${e}|${q}`)?.rows ?? null])),
-        wrong: engines.filter((e) => by.get(`${e}|${q}`)?.correct === false),
+      const ranking: Ranking = {
+        title: "All queries",
+        note: `first run, geometric mean of ${common.length} queries`,
+        unit: "seconds",
+        queries: common.length,
+        rows: engines
+          .map((e) =>
+            rank(
+              e,
+              common.flatMap((q) => by.get(`${e}|${q}`) ?? []),
+            ),
+          )
+          .sort((a, b) => a.value - b.value),
+      }
+      const queries = allQueries.map((query) => ({
+        query,
+        ranking: {
+          title: query,
+          note: "first run",
+          unit: "seconds" as const,
+          rows: engines
+            .flatMap((e) => {
+              const r = by.get(`${e}|${query}`)
+              return r ? [rank(e, [r])] : []
+            })
+            .sort((a, b) => a.value - b.value),
+        },
+        failed: all.filter((q) => q.query === query && q.status !== "ok").map((q) => engineLabel(engineOf(q))),
       }))
-      out.push({ suite: suite.id, state: label, bars, queries: common.length, perQuery })
+      out.push({ suite: suite.id, suiteLabel: suite.label, checkpoint, label, ranking, queries })
     }
   }
   return out
 }
+
+/**
+ * Each query's first run over time, per engine, at one suite and checkpoint, across the runs of `run`'s workload,
+ * target and variant: query -> one point per run.
+ */
+export function queryHistory(runs: Run[], run: Run, suite: string, checkpoint: string): Record<string, HistoryPoint[]> {
+  const same = runs.filter(
+    (r) =>
+      r.header.workload === run.header.workload &&
+      r.header.target === run.header.target &&
+      r.header.variant === run.header.variant,
+  )
+  const out: Record<string, HistoryPoint[]> = {}
+  for (const r of same) {
+    const points = new Map<string, HistoryPoint>()
+    for (const q of r.queries) {
+      if (q.suite !== suite || q.checkpoint !== checkpoint || q.status !== "ok") continue
+      const point: HistoryPoint = points.get(q.query) ?? {
+        run: r.header.id,
+        date: r.header.started.slice(0, 10),
+        commit: r.header.commit,
+      }
+      point[engineOf(q)] = q.times[0]
+      points.set(q.query, point)
+    }
+    for (const [query, point] of points) (out[query] ??= []).push(point)
+  }
+  return out
+}
+
+/** A run's provenance, for its info tooltip: when, where, which code and which versions of everything. */
+export type RunInfo = { date: string; machine: string; commit: string; versions: [string, string][]; imported: boolean }
+
+export const runInfo = (run: Run): RunInfo => ({
+  date: run.header.started.slice(0, 10),
+  machine: run.header.machine,
+  commit: run.header.commit,
+  versions: Object.entries(run.header.versions),
+  imported: Boolean(run.header.imported),
+})
 
 /** Queries that failed or timed out, as "engine: query (status)". */
 export function failures(run: Run): { engine: string; query: string; checkpoint: string; status: string }[] {
@@ -333,8 +359,8 @@ export function latestByTarget(runs: Run[], workload: string): Run[] {
   for (const r of runs)
     if (r.header.workload === workload) latest.set(`${r.header.target}|${r.header.variant ?? ""}`, r)
   const order = Object.keys(TARGETS)
-  const rank = (r: Run) => (r.header.variant ? 100 : 0) + order.indexOf(r.header.target)
-  return [...latest.values()].sort((a, b) => rank(a) - rank(b))
+  const position = (r: Run) => (r.header.variant ? 100 : 0) + order.indexOf(r.header.target)
+  return [...latest.values()].sort((a, b) => position(a) - position(b))
 }
 
 export type HistoryPoint = { run: string; date: string; commit: string } & Record<string, number | string>
@@ -373,24 +399,6 @@ export function s3TablesDelay(run: Run): [number, number] | null {
   return s.length ? [Math.min(...s) / 3600, Math.max(...s) / 3600] : null
 }
 
-export type Rank = {
-  key: string
-  label: string
-  system: string
-  value: number
-  timelake: boolean
-  /** Of the queries ranked, how many answers didn't match the reference. */
-  wrong?: number
-}
-export type Ranking = {
-  title: string
-  note: string
-  unit: "seconds" | "milliseconds" | "rows/s"
-  /** Rows come best first; for rates, higher is better. */
-  higherIsBetter?: boolean
-  rows: Rank[]
-}
-
 /**
  * The top-level results of a run: query time after maintenance and right after ingest (geometric mean of first runs
  * over every query all readers completed), then median commit time. Fastest first.
@@ -410,15 +418,14 @@ export function rankings(run: Run): Ranking[] {
       title: `Queries, ${label.toLowerCase()}`,
       note: `first run, geometric mean of ${common.length} queries`,
       unit: "seconds",
+      queries: common.length,
       rows: engines
-        .map((e) => ({
-          key: e,
-          label: engineLabel(e),
-          system: e.split("+", 1)[0] ?? e,
-          value: gm(common.flatMap((q) => by.get(`${e}|${q}`)?.times[0] ?? [])),
-          timelake: e === "timelake+timelake",
-          wrong: common.filter((q) => by.get(`${e}|${q}`)?.correct === false).length,
-        }))
+        .map((e) =>
+          rank(
+            e,
+            common.flatMap((q) => by.get(`${e}|${q}`) ?? []),
+          ),
+        )
         .sort((a, b) => a.value - b.value),
     })
   }

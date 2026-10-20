@@ -53,6 +53,8 @@ bun run sync-results
 | `app/api/sql`, `app/api/series` | Route handlers used by the SQL console and the series chart |
 | `lib/lake/` | Explorer data layer: `types.ts` (the `LakeBackend` interface), `wasm.ts` (hosted, `@timelake/client`), `cli.ts` (local, the CLI), `index.ts` (picks the backend, checks series queries), `error-response.ts` (errors → API responses) |
 | `lib/benchmarks.ts` | Loads the benchmark runs for `/benchmarks` (geometric means as in `bench/timebench/report.py`) |
+| `lib/bench-systems.ts` | System names, colors and the ranking type, shared by the server code and the browser |
+| `components/ranking-card.tsx`, `bench-sections.tsx`, `run-info.tsx` | Benchmark pages: rankings as dot bars (wrong answers apart), a section per suite and checkpoint with each query's results and history, and a run's details behind ⓘ |
 | `lib/benchmark-catalog.ts` | The benchmarks on `/benchmarks`: status, why, and each methodology page's text ([spec 44](../spec/0044-timebench.md)) |
 | `lib/specs.ts` | The specs, milestones and background pages, from `specs.json`, `milestones.json`, `background.json` and `spec-pages.ts`, which `scripts/spec_index.py` (repository root) generates |
 | `lib/remark-spec.mjs` | Renders `spec/` Markdown on the site: links between pages stay on the site, the generated headers are left out |
