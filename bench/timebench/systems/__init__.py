@@ -162,6 +162,12 @@ class System(ABC):
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
         """Creates an empty table; time-series tables are partitioned by time where the system supports it."""
 
+    def tune(self, statements: list[str]) -> None:
+        """Runs a tuned run's statements after the tables are created (``Workload.tuning_statements``)."""
+        if statements:
+            msg = f"{self.name} can't run tuning statements"
+            raise NotImplementedError(msg)
+
     @abstractmethod
     def append(self, table: str, data: pa.Table) -> None:
         """Commits one batch."""

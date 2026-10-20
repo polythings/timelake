@@ -23,12 +23,17 @@ CLI = BENCH.parent / "target" / "release" / "timelake"
 
 
 class Timelake(System):
-    """Timelake tables with inline auto-maintenance (size-tiered compaction and snapshot expiry on append)."""
+    """Timelake tables with inline auto-maintenance (size-tiered compaction and snapshot expiry on append).
+
+    Default: the contract only (time column, series key) and default settings. Tuned: also the workload's rollups
+    (``tunings/<workload>/timelake.sql``), which inline maintenance keeps fresh and the reader routes queries to.
+    """
 
     name = "timelake"
     title = "Timelake"
     readers = ("timelake", "duckdb")
     commands = frozenset({"timelake"})
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -56,6 +61,11 @@ class Timelake(System):
         else:
             table = self.lake.create_table(name, schema)
         self.tables[spec.name] = table
+
+    @override
+    def tune(self, statements: list[str]) -> None:
+        for sql in statements:
+            self.lake.sql(sql, namespace=self.namespace)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:

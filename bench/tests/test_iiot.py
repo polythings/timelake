@@ -52,6 +52,21 @@ def test_a_reader_gets_its_own_version_of_a_query(monkeypatch: pytest.MonkeyPatc
     assert query.sql_for("clickhouse") == "SELECT 2"
 
 
+def test_a_tuned_run_reads_the_tuned_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = iter([("q", "SELECT 1"), ("q [timelake tuned]", "SELECT 2")])
+    monkeypatch.setattr(workloads, "raw_queries", lambda _: rows)
+    [query] = Iiot().queries()
+    assert query.sql_for("timelake", tuning="tuned") == "SELECT 2"
+    assert query.sql_for("timelake", tuning="default") == "SELECT 1"
+    assert query.sql_for("duckdb", tuning="tuned") == "SELECT 1"
+
+
+def test_tuning_statements() -> None:
+    [rollup] = Iiot().tuning_statements("timelake")
+    assert rollup.startswith("CREATE MATERIALIZED ROLLUP readings_1h"), rollup
+    assert Iiot().tuning_statements("iceberg") == []
+
+
 @pytest.mark.parametrize("reader", sorted(set(DIALECTS) - {"polars"}))
 def test_every_iiot_query_is_translated(reader: str) -> None:
     for query in Iiot().queries():

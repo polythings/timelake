@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
-from timebench import DATA
+from timebench import DATA, TUNINGS
 from timebench.queries import apply_dialect, raw_queries
 from timebench.systems import DIALECTS
 
@@ -42,11 +42,13 @@ class Query:
     name: str
     sql: str
     variants: Mapping[str, str] = field(default_factory=dict)
-    """Reader -> its own version of the query, where its SQL lacks a construct the shared one uses."""
+    """Reader -> its own version of the query, where its SQL lacks a construct the shared one uses; ``"<reader>
+    tuned"`` -> the version a tuned run reads its precomputation with, as the system's docs write it (D23)."""
 
-    def sql_for(self, reader: str, now: int | None = None) -> str:
-        """The query in a reader's SQL; ``now`` (epoch seconds) is the data's present, for ``@AGO``."""
-        return apply_dialect(self.variants.get(reader, self.sql), DIALECTS[reader], now)
+    def sql_for(self, reader: str, now: int | None = None, tuning: str = "default") -> str:
+        """The query in a reader's SQL for a run of ``tuning``; ``now`` (epoch seconds) is the data's present."""
+        tuned = self.variants.get(f"{reader} tuned") if tuning == "tuned" else None
+        return apply_dialect(tuned or self.variants.get(reader, self.sql), DIALECTS[reader], now)
 
 
 Batch = tuple[str, "pa.Table"]
@@ -146,12 +148,23 @@ class Workload(ABC):
             variants: dict[str, dict[str, str]] = {}
             for name, sql in raw_queries(suite):
                 query, _, reader = name.partition(" ")
-                if reader:  # `-- name: foo [clickhouse]`
+                if reader:  # `-- name: foo [clickhouse]`, or `[timelake tuned]` for tuned runs only
                     variants.setdefault(query, {})[reader.strip("[]")] = sql
                 else:
                     plain[query] = sql
             out += [Query(suite, n, sql, variants.get(n, {})) for n, sql in plain.items()]
         return out
+
+    def tuning_statements(self, system: str) -> list[str]:
+        """What a tuned run of ``system`` runs after creating the tables: its precomputation (D23).
+
+        The statements of ``tunings/<workload>/<system>.sql``, such as Timelake rollups; none without the file.
+        """
+        path = TUNINGS / self.name / f"{system}.sql"
+        if not path.exists():
+            return []
+        lines = [line for line in path.read_text().splitlines() if not line.lstrip().startswith("--")]
+        return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
 
     def dashboard_queries(self) -> list[Query]:
         """The dashboard's queries (none if the workload has no dashboard suite)."""

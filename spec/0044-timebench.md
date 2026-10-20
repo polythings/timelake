@@ -96,9 +96,11 @@ defaults nobody keeps:
 | InfluxDB 3 Core | as shipped (a query reads at most 432 files) | the file limit raised, the last value and distinct value caches, read by its tuned queries |
 
 Runs record their tuning; the weekly schedule runs both every week, over more days of the instance. The site shows
-one tuning at a time with a switch per section, entries keeping their plain names. Until the tuned set is built,
-today's runs are between the two (most systems already follow their docs' layout), and InfluxDB's two entries are
-its two tunings. Work: #147 (harness), #148 (site), #149 (lake systems), #150 to #153 (TimescaleDB, ClickHouse,
+one tuning at a time with a switch per section, entries keeping their plain names. The lake systems have both
+since 2026-10-20 (a tuned run runs `bench/tunings/<workload>/<system>.sql` after creating the tables, and reads a
+query's `[<reader> tuned]` version where it has one); Timelake's tuned IIoT tables have an hourly rollup per tag. The
+database servers' runs are between the two until #150 to #153 (most already follow their docs' layout), and
+InfluxDB's two entries are its two tunings. Work: #147 (harness), #148 (site), #149 (lake systems), #150 to #153 (TimescaleDB, ClickHouse,
 QuestDB, InfluxDB).
 
 ### Methodology
@@ -202,3 +204,4 @@ We run the public benchmarks that fit a time-series lake, so results compare wit
 - 2026-10-19: was spec 32; specs regrouped one per feature, with milestones on the roadmap.
 - 2026-10-20: the weekly industrial IoT run also runs the lake systems on S3.
 - 2026-10-20: default and tuned runs of every system decided (D23); work in #147–#153.
+- 2026-10-20: default and tuned lake systems (#149): tuning statements and tuned queries in the harness.

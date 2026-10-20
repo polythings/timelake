@@ -64,6 +64,18 @@ const QUERIES: &[(&str, bool)] = &[
          WHERE time > now() - INTERVAL '400 days' GROUP BY 1, 2",
         true,
     ),
+    // Keys from another table (`IN (SELECT …)`, planned as a semi-join): the rollup's rows are kept the same way.
+    (
+        "SELECT device, time_bucket(INTERVAL '1 day', time) AS d, avg(value), count(*) FROM iot.r
+         WHERE device IN (SELECT d FROM (VALUES (1), (3)) AS v(d)) GROUP BY 1, 2",
+        true,
+    ),
+    (
+        "SELECT device, time_weighted_mean(time, value), max(value) FROM iot.r
+         WHERE time >= TIMESTAMP '2026-01-01 05:30:00' AND device IN (SELECT d FROM (VALUES (2)) AS v(d))
+         GROUP BY device",
+        true,
+    ),
     (
         "SELECT t.device, time_bucket(INTERVAL '1 hour', t.time) AS h, max(t.value) FROM iot.r t
          GROUP BY 1, 2 HAVING max(t.value) > 15000",

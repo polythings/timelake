@@ -21,7 +21,7 @@ import type { HistoryPoint, Section, SectionHistory } from "@/lib/benchmarks"
 import { cn } from "@/lib/utils"
 
 /** Each suite's queries as the query files describe them (bench/queries; timebench queries --site). */
-const DESCRIBED = QUERIES as Record<string, { name: string; description: string; sql: string }[]>
+const DESCRIBED = QUERIES as Record<string, { name: string; description: string; sql: string; tuned?: string }[]>
 
 /** Where the results move beside the list (Tailwind's lg). */
 const WIDE = "(min-width: 64rem)"
@@ -40,6 +40,8 @@ type Entry = {
   title: string
   description?: string
   sql?: string
+  /** Timelake's version of the query in a tuned run, where it has one (D23). */
+  tuned?: string
   ranking: Ranking
   failed: string[]
   points: HistoryPoint[]
@@ -72,6 +74,7 @@ export function SectionResults({ section, history }: { section: Section; history
       title: q.query,
       description: described.get(q.query)?.description,
       sql: described.get(q.query)?.sql,
+      tuned: described.get(q.query)?.tuned,
       ranking: q.ranking,
       failed: q.failed,
       points: history.queries[q.query] ?? [],
@@ -231,19 +234,8 @@ function Details({ entry, metric }: { entry: Entry; metric: Metric }) {
       {entry.failed.length > 0 && (
         <p className="text-xs text-muted-foreground">Failed or timed out: {entry.failed.join(", ")}.</p>
       )}
-      {entry.sql && (
-        <Collapsible>
-          <CollapsibleTrigger className="group flex min-h-8 items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ChevronDown className="size-3 transition-transform group-data-[panel-open]:rotate-180" />
-            SQL, as the Timelake reader runs it
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-2">
-            <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed">
-              {entry.sql}
-            </pre>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
+      {entry.sql && <SqlBlock label="SQL every system runs" sql={entry.sql} />}
+      {entry.tuned && <SqlBlock label="Timelake's SQL in a tuned run" sql={entry.tuned} />}
       <div className="flex flex-col gap-2 border-t pt-4">
         <h4 className="text-sm">Time over runs</h4>
         <p className="text-xs text-muted-foreground">
@@ -257,5 +249,20 @@ function Details({ entry, metric }: { entry: Entry; metric: Metric }) {
         )}
       </div>
     </div>
+  )
+}
+
+/** A query's SQL, folded away under its label. */
+function SqlBlock({ label, sql }: { label: string; sql: string }) {
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="group flex min-h-8 items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+        <ChevronDown className="size-3 transition-transform group-data-[panel-open]:rotate-180" />
+        {label}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-2">
+        <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed">{sql}</pre>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }

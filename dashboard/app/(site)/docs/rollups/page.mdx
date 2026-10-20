@@ -60,7 +60,7 @@ Or query the raw table. The reader answers from the rollup when:
 - every aggregate it asks for is one the rollup stores, or, for wider buckets or fewer columns, one it can be merged
   from: `count`, `sum`, `min`, `max`, `first_value` and `last_value` from themselves, and `avg` from `sum` or `avg`
   together with the matching `count`, and
-- its filters compare the time column with constants (`now()` included) or filter the grouping columns.
+- its filters compare the time column with constants (`now()` included) or filter the grouping columns, including by another table: `tag IN (SELECT tag FROM tags WHERE line = 'L0002')` keeps the rollup's rows of those tags as it keeps the readings.
 
 For a wider bucket or fewer columns, the rollup's rows are aggregated again: counts and sums are added, minimums and
 maximums taken, first and last values taken from the first and last bucket, and averages weighted by their counts.

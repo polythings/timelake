@@ -52,16 +52,19 @@ uv run timebench history --workload tsbs-iot                  # one line per run
 - **Tunings** (`--tuning`, a profile's `tunings`; D23 in spec 44): every system runs `tuned` (its docs'
   recommendations for the workload, precomputation included) and `default` (as installed). A system lists the tunings
   it has built (`tunings`); a run of another tuning leaves it out. A default system's tables live apart
-  (`<system>-default`), and a default run's file ends in `-default`.
+  (`<system>-default`), and a default run's file ends in `-default`. A tuned run first runs the statements in
+  `tunings/<workload>/<system>.sql` after creating the tables (Timelake's rollups), and reads a query's
+  `-- name: <query> [<reader> tuned]` version where it has one: the SQL the system's docs write for its
+  precomputation, checked against the reference like every answer. The reference runs in both tunings.
 - **Systems** (`timebench/systems/`), each written and read the way its docs suggest:
 
-  | System | Writes | Maintenance | Readers |
-  |---|---|---|---|
-  | `timelake` | `Table.append` per commit, inline compaction | `Table.maintain()` | `timelake` (the CLI), `duckdb` |
-  | `iceberg` | PyIceberg `append`, `day(time)` partitions | binpack rewrite (S3 Tables' default) | `duckdb` |
-  | `s3tables` | the same, through S3 Tables' REST endpoint (AWS only) | its managed compaction (waits up to 6 h) | `duckdb` |
-  | `lance` | `write_dataset(mode="append")` | `compact_files()`, `cleanup_old_versions()` | `duckdb`, `datafusion` |
-  | `parquet` | a Parquet file per commit under `day=…/` | one sorted file per day | `duckdb`, `datafusion` |
+  | System | Writes | Maintenance | Tuned (default leaves it out) | Readers |
+  |---|---|---|---|---|
+  | `timelake` | `Table.append` per commit, inline compaction | `Table.maintain()` | the workload's rollups, tuned queries | `timelake` (the CLI), `duckdb` |
+  | `iceberg` | PyIceberg `append`, `day(time)` partitions | binpack rewrite (S3 Tables' default) | sort order on (series key, time), compaction sorts | `duckdb` |
+  | `s3tables` | the same, through S3 Tables' REST endpoint (AWS only) | its managed compaction (waits up to 6 h) | sort order, compaction strategy `sort` | `duckdb` |
+  | `lance` | `write_dataset(mode="append")` | none | `compact_files()`, `cleanup_old_versions()`, B-tree on the series key, zone map on time | `duckdb`, `datafusion` |
+  | `parquet` | a Parquet file per commit under `day=…/` | none | one sorted file per day | `duckdb`, `datafusion` |
   | `timescaledb` | `COPY` per commit into hypertables (via a staging table and `ON CONFLICT DO NOTHING` where rows repeat) | convert chunks to the columnstore | `postgres` |
   | `clickhouse` | Arrow inserts into `MergeTree` (`ReplacingMergeTree` where rows repeat) | `OPTIMIZE TABLE … FINAL` | `clickhouse` (with `FINAL`) |
   | `questdb` | QWP (`questdb.connect().dataframe`) into WAL tables, `DEDUP UPSERT KEYS` where rows repeat | none (waits for the WAL) | `questdb` (PGWire) |

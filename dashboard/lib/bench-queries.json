@@ -169,7 +169,8 @@
     {
       "name": "latest-area",
       "description": "Dashboard: the latest value and quality of every tag in an area (1,000 tags).",
-      "sql": "SELECT r.tag, r.time, r.value, r.quality\nFROM readings r\nJOIN (\n    SELECT r2.tag AS tag, max(r2.time) AS last\n    FROM readings r2 JOIN tags t ON r2.tag = t.tag\n    WHERE t.area = 'A000' AND r2.time >= now() - INTERVAL '2 hours'\n    GROUP BY r2.tag\n) m ON r.tag = m.tag AND r.time = m.last\nWHERE r.time >= now() - INTERVAL '2 hours'"
+      "sql": "SELECT r.tag, r.time, r.value, r.quality\nFROM readings r\nJOIN (\n    SELECT r2.tag AS tag, max(r2.time) AS last\n    FROM readings r2 JOIN tags t ON r2.tag = t.tag\n    WHERE t.area = 'A000' AND r2.time >= now() - INTERVAL '2 hours'\n    GROUP BY r2.tag\n) m ON r.tag = m.tag AND r.time = m.last\nWHERE r.time >= now() - INTERVAL '2 hours'",
+      "tuned": "SELECT l.tag, l.time, l.value, l.quality\nFROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY tag ORDER BY time DESC) AS rn FROM readings) l\nJOIN tags t ON l.tag = t.tag\nWHERE l.rn = 1 AND t.area = 'A000' AND l.time >= now() - INTERVAL '2 hours'"
     },
     {
       "name": "recent-machines",
@@ -189,37 +190,44 @@
     {
       "name": "shift-report",
       "description": "Report: per machine of a line and analog signal, the hourly mean and peak over the last 8 hours (one shift).",
-      "sql": "SELECT t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time) AS hour, avg(r.value) AS mean, max(r.value) AS peak\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0003' AND t.kind = 'analog' AND r.time >= now() - INTERVAL '8 hours'\nGROUP BY t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time)"
+      "sql": "SELECT t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time) AS hour, avg(r.value) AS mean, max(r.value) AS peak\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0003' AND t.kind = 'analog' AND r.time >= now() - INTERVAL '8 hours'\nGROUP BY t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time)",
+      "tuned": "SELECT t.machine, t.signal, h.hour, h.mean, h.peak\nFROM (\n    SELECT tag, date_bin(INTERVAL '1 hour', time) AS hour, avg(value) AS mean, max(value) AS peak\n    FROM readings\n    WHERE time >= now() - INTERVAL '8 hours' AND tag IN (SELECT tag FROM tags WHERE line = 'L0003' AND kind = 'analog')\n    GROUP BY tag, date_bin(INTERVAL '1 hour', time)\n) h JOIN tags t ON h.tag = t.tag"
     },
     {
       "name": "daily-stats",
       "description": "Report: per tag of a line and day, the sample count and mean over 30 days.",
-      "sql": "SELECT r.tag, date_bin(INTERVAL '24 hours', r.time) AS day, count(*) AS samples, avg(r.value) AS mean\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0002' AND r.time >= now() - INTERVAL '30 days'\nGROUP BY r.tag, date_bin(INTERVAL '24 hours', r.time)"
+      "sql": "SELECT r.tag, date_bin(INTERVAL '24 hours', r.time) AS day, count(*) AS samples, avg(r.value) AS mean\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0002' AND r.time >= now() - INTERVAL '30 days'\nGROUP BY r.tag, date_bin(INTERVAL '24 hours', r.time)",
+      "tuned": "SELECT tag, date_bin(INTERVAL '24 hours', time) AS day, count(*) AS samples, avg(value) AS mean\nFROM readings\nWHERE time >= now() - INTERVAL '30 days' AND tag IN (SELECT tag FROM tags WHERE line = 'L0002')\nGROUP BY tag, date_bin(INTERVAL '24 hours', time)"
     },
     {
       "name": "time-above-limit",
       "description": "Process: per pressure tag in the area, seconds above its alarm limit in the last 24 hours.",
-      "sql": "SELECT tag, sum(CASE WHEN value > hi THEN next_t - t ELSE 0 END) AS seconds_above\nFROM (\n    SELECT r.tag AS tag, r.value AS value, t.hi_limit AS hi, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'pressure' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag"
+      "sql": "SELECT tag, sum(CASE WHEN value > hi THEN next_t - t ELSE 0 END) AS seconds_above\nFROM (\n    SELECT r.tag AS tag, r.value AS value, t.hi_limit AS hi, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'pressure' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag",
+      "tuned": "SELECT r.tag, integral(r.time, r.value > t.hi_limit) AS seconds_above\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.area = 'A000' AND t.signal = 'pressure' AND r.time >= now() - INTERVAL '24 hours'\nGROUP BY r.tag"
     },
     {
       "name": "time-weighted-avg",
       "description": "Process: per temperature tag of a line, the time-weighted mean over the last 24 hours (samples weighted by how long they held).",
-      "sql": "SELECT tag, sum(value * (next_t - t)) / sum(next_t - t) AS twa\nFROM (\n    SELECT r.tag AS tag, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0004' AND t.signal = 'temperature' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag"
+      "sql": "SELECT tag, sum(value * (next_t - t)) / sum(next_t - t) AS twa\nFROM (\n    SELECT r.tag AS tag, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0004' AND t.signal = 'temperature' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag",
+      "tuned": "SELECT tag, time_weighted_mean(time, value) AS twa\nFROM readings\nWHERE time >= now() - INTERVAL '24 hours' AND tag IN (SELECT tag FROM tags WHERE line = 'L0004' AND signal = 'temperature')\nGROUP BY tag"
     },
     {
       "name": "uptime",
       "description": "OEE: per machine of a line, the share of the last 7 days it was running (an on-change state tag).",
-      "sql": "SELECT machine, sum(CASE WHEN value = 1 THEN next_t - t ELSE 0 END) / sum(next_t - t) AS running_share\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0000' AND t.signal = 'state' AND r.time >= now() - INTERVAL '7 days'\n) AS s\nWHERE next_t >= t\nGROUP BY machine"
+      "sql": "SELECT machine, sum(CASE WHEN value = 1 THEN next_t - t ELSE 0 END) / sum(next_t - t) AS running_share\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0000' AND t.signal = 'state' AND r.time >= now() - INTERVAL '7 days'\n) AS s\nWHERE next_t >= t\nGROUP BY machine",
+      "tuned": "SELECT t.machine, time_weighted_mean(r.time, r.value = 1) AS running_share\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0000' AND t.signal = 'state' AND r.time >= now() - INTERVAL '7 days'\nGROUP BY t.machine"
     },
     {
       "name": "energy",
       "description": "Energy: per machine in the area, kWh used in the last 24 hours, from cumulative counters that may reset.",
-      "sql": "SELECT machine, sum(CASE WHEN value >= prev THEN value - prev ELSE value END) AS kwh\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lag(r.value) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev,\n           lag(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'energy' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE prev_t > 0\nGROUP BY machine"
+      "sql": "SELECT machine, sum(CASE WHEN value >= prev THEN value - prev ELSE value END) AS kwh\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lag(r.value) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev,\n           lag(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'energy' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE prev_t > 0\nGROUP BY machine",
+      "tuned": "SELECT t.machine, sum(c.kwh) AS kwh\nFROM (\n    SELECT tag, counter_diff(time, value) AS kwh\n    FROM readings\n    WHERE time >= now() - INTERVAL '24 hours' AND tag IN (SELECT tag FROM tags WHERE area = 'A000' AND signal = 'energy')\n    GROUP BY tag\n) c JOIN tags t ON c.tag = t.tag\nGROUP BY t.machine"
     },
     {
       "name": "gaps",
       "description": "Data quality: per 1-second pressure tag, gaps over 5 minutes in the last 24 hours (sensor or gateway down).",
-      "sql": "SELECT tag, count(*) AS gaps, sum(next_t - t) AS gap_seconds\nFROM (\n    SELECT tag, date_part('epoch', time) AS t, lead(date_part('epoch', time)) OVER (PARTITION BY tag ORDER BY time) AS next_t\n    FROM readings\n    WHERE tag LIKE '%.pressure' AND time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t - t > 300\nGROUP BY tag"
+      "sql": "SELECT tag, count(*) AS gaps, sum(next_t - t) AS gap_seconds\nFROM (\n    SELECT tag, date_part('epoch', time) AS t, lead(date_part('epoch', time)) OVER (PARTITION BY tag ORDER BY time) AS next_t\n    FROM readings\n    WHERE tag LIKE '%.pressure' AND time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t - t > 300\nGROUP BY tag",
+      "tuned": "SELECT tag, gap_count(time, INTERVAL '5 minutes') AS gaps, gap_seconds(time, INTERVAL '5 minutes') AS gap_seconds\nFROM readings\nWHERE tag LIKE '%.pressure' AND time >= now() - INTERVAL '24 hours'\nGROUP BY tag\nHAVING gap_count(time, INTERVAL '5 minutes') > 0"
     }
   ]
 }

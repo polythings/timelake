@@ -10,6 +10,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Added
 
+- Rollup routing follows filters on grouping columns that come from another table, such as `tag IN (SELECT tag FROM
+  tags WHERE line = 'L0002')`: the rollup's rows are kept the same way. IIoT daily statistics for one line's tags from an
+  hourly rollup: 551 → 37 ms.
 - The design moved from one file, `SPEC.md`, to numbered specs in `spec/` (in the spirit of Rust's RFCs and Python's
   PEPs): one spec per feature with the same template, its status (done, in progress, planned, dropped), the releases
   that changed it, and its history, and an index for people and agents. Milestones made of specs (`spec/milestones/`,

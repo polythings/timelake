@@ -54,6 +54,8 @@ export type SystemInfo = {
   maintenance: string
   /** When its maintenance happens: while it ingests, as a separate step after, or not at all. */
   when: string
+  /** What its tuned configuration adds to its default one (D23), where it has both. */
+  tuned?: string
   readers: string[]
 }
 
@@ -63,6 +65,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "Table.append per commit, with inline maintenance (compaction, dedup, retention).",
     maintenance: "timelake maintain: each partition rewritten into one sorted file, rollups refreshed.",
     when: "While it ingests: each append compacts what it can. The step after ingest only finishes what's left.",
+    tuned: "The workload's rollups, and its queries in Timelake's own functions where the docs write them that way.",
     readers: ["timelake", "duckdb"],
   },
   iceberg: {
@@ -70,6 +73,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "PyIceberg append per commit, tables partitioned by day.",
     maintenance: "A bin-pack rewrite of small files, S3 Tables' default compaction.",
     when: "A separate job after ingest; until it runs, readers see every small file.",
+    tuned: "A sort order on the series key and time, and compaction that sorts each day by it.",
     readers: ["duckdb"],
   },
   s3tables: {
@@ -77,6 +81,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "PyIceberg append per commit, through S3 Tables' Iceberg REST endpoint.",
     maintenance: "S3 Tables' own managed compaction; the run waits for it, up to 6 hours.",
     when: "Managed by AWS, hours after ingest.",
+    tuned: "The tables' sort order on the series key and time, and its compaction set to sort by it.",
     readers: ["duckdb"],
   },
   lance: {
@@ -84,6 +89,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "write_dataset in append mode per commit.",
     maintenance: "compact_files, then cleanup_old_versions.",
     when: "A separate job after ingest.",
+    tuned: "Its maintenance, then a B-tree index on the series key and a zone map on time. Default: no maintenance.",
     readers: ["duckdb", "datafusion"],
   },
   parquet: {
@@ -91,6 +97,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "A Parquet file per commit in a folder per day.",
     maintenance: "Each day rewritten into one sorted file.",
     when: "A separate job after ingest.",
+    tuned: "Its maintenance. Default: the files as written, no maintenance.",
     readers: ["duckdb", "datafusion"],
   },
   timescaledb: {
@@ -119,6 +126,7 @@ export const SYSTEM_INFO: Record<string, SystemInfo> = {
     writes: "Line protocol over HTTP, four requests at a time.",
     maintenance: "None: Core has no compaction.",
     when: "None.",
+    tuned: "The query file limit raised, as its docs allow. Default: as shipped, a query reads at most 432 files.",
     readers: ["influxdb3"],
   },
   "influxdb3-defaults": {

@@ -28,13 +28,15 @@ DAY_US = 86_400_000_000
 class ParquetFiles(System):
     """A new zstd Parquet file per commit, under ``<table>/day=<date>/`` (Hive-style) for time-series tables.
 
-    Maintenance rewrites each day into one file sorted by series and time; readers list the directory, so a
-    reader running during the rewrite could see both copies (the race a table format exists to prevent).
+    Default: no maintenance, the files as the sink wrote them. Tuned: maintenance rewrites each day into one file
+    sorted by series and time; readers list the directory, so a reader running during the rewrite could see both
+    copies (the race a table format exists to prevent).
     """
 
     name = "parquet"
     title = "Parquet files"
     readers = ("duckdb", "datafusion")
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -78,6 +80,8 @@ class ParquetFiles(System):
 
     @override
     def maintain(self) -> None:
+        if not self.tuned:
+            return
         fs = self.fs
         for table, spec in self.load_specs().items():
             if not spec["time_column"]:

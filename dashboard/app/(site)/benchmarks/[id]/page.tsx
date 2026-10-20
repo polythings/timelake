@@ -246,6 +246,12 @@ function EntriesSection({ latest }: { latest: Run[] }) {
                       <dd>{info.maintenance}</dd>
                       <dt className="text-muted-foreground">When</dt>
                       <dd>{info.when}</dd>
+                      {info.tuned && (
+                        <>
+                          <dt className="text-muted-foreground">Tuned</dt>
+                          <dd>{info.tuned}</dd>
+                        </>
+                      )}
                     </>
                   )}
                   <dt className="text-muted-foreground">Read by</dt>

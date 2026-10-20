@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, override
 import pyarrow.parquet as pq
 
 from timebench.meta import version
-from timebench.systems import Runner, System, duckdb_connection, duckdb_runner
+from timebench.systems import TUNINGS, Runner, System, duckdb_connection, duckdb_runner
 from timebench.targets import Target
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ class Reference(System):
     name = "reference"
     title = "Reference"
     readers = ("duckdb",)
+    tunings = TUNINGS  # the answers every tuning is checked against
     server = True  # local files, whatever the target
     s3_storage_prices = False
 

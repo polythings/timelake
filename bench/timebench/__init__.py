@@ -14,6 +14,8 @@ DATA = BENCH / "data"
 LAKES = Path(os.environ.get("BENCH_LAKES", DATA / "lakes"))
 """The tables and state of each system in a run (local targets), by target, dataset and system."""
 QUERIES = BENCH / "queries"
+TUNINGS = BENCH / "tunings"
+"""Each workload's statements for a tuned run of a system: ``tunings/<workload>/<system>.sql`` (D23)."""
 RESULTS = BENCH / "results"
 RUNS = RESULTS / "runs"
 """One file per ``timebench`` run: the benchmark history."""

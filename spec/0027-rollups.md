@@ -3,7 +3,7 @@ number: 27
 title: Materialized rollups
 area: Reading
 status: done
-updated: 2026-10-19
+updated: 2026-10-20
 versions: [0.5.0, 0.7.0, unreleased]
 related: [12, 28, 30, 31]
 issues: [15, 108, 136]
@@ -11,7 +11,7 @@ issues: [15, 108, 136]
 
 # 27. Materialized rollups
 
-**Done** · updated 2026-10-19 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
+**Done** · updated 2026-10-20 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
 · related: [spec 12](0012-late-data-and-dedup.md), [spec 28](0028-function-library.md), [spec 30](0030-signal-aggregates.md), [spec 31](0031-m4.md)
 
 ## Summary
@@ -96,6 +96,9 @@ one recomputes the same buckets.
 **Routing.** The Timelake reader answers `SELECT … GROUP BY time_bucket(w, time), keys…` on a raw table from a
 rollup when the grouping is the rollup's (same width, same key columns), every aggregate is one the rollup stores,
 and the filters are on the time column (comparisons with constants, `now()` included) or on the grouping columns.
+Grouping columns may be filtered by another table (`tag IN (SELECT tag FROM tags WHERE line = 'L0002')`, which
+DataFusion plans as a semi-join): the rollup's rows go through the same semi-join (built 2026-10-20). IIoT small,
+daily statistics for the tags of one line from an hourly rollup: 551 → 37 ms.
 The answer is exact, not a stale rollup:
 - Buckets that are inside the query's time range, unchanged since the refresh, and within both tables' retention come
   from the rollup.
@@ -159,3 +162,4 @@ against 1.9 s, gaps over 30 days 0.24 s against 1.2 s. The counts come from both
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 21; specs regrouped one per feature, with milestones on the roadmap.
 - 2026-10-19: time ranges without a bucket, the widest rollup first, readings per row for states, gap states.
+- 2026-10-20: grouping columns filtered by another table (`IN (SELECT …)`) route too.

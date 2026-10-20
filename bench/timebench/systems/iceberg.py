@@ -25,13 +25,16 @@ if TYPE_CHECKING:
 class Iceberg(System):
     """PyIceberg appends into a SQLite-catalog warehouse, time-series tables partitioned by ``day(time)``.
 
-    Maintenance is binpack compaction (S3 Tables' default: same rows, bigger files, no re-sort), simulated by
-    rewriting each day partition of each time-series table, one at a time so a day is the most held in memory.
+    Maintenance rewrites each day partition of each time-series table, one at a time so a day is the most held in
+    memory. Default: binpack compaction (S3 Tables' default: same rows, bigger files, no re-sort) of days with more
+    than one file. Tuned: the tables declare a sort order on (series key, time), and compaction sorts every day by it,
+    as Iceberg's docs recommend for filters on those columns.
     """
 
     name = "iceberg"
     title = "Iceberg (PyIceberg)"
     readers = ("duckdb",)
+    tunings = ("tuned", "default")
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -53,7 +56,7 @@ class Iceberg(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        from pyiceberg.transforms import DayTransform
+        from pyiceberg.transforms import DayTransform, IdentityTransform
 
         self.catalog.create_namespace_if_not_exists(self.namespace)
         name = f"{self.namespace}.{spec.name}"
@@ -61,6 +64,10 @@ class Iceberg(System):
         if spec.time_column:
             with table.update_spec() as update:
                 update.add_field(spec.time_column, DayTransform(), f"{spec.time_column}_day")
+            if self.tuned:
+                with table.update_sort_order() as order:
+                    for column in [*spec.series_key, spec.time_column]:
+                        order.asc(column, IdentityTransform())
             table = self.catalog.load_table(name)
             self.time_series.append(spec.name)
         self.tables[spec.name] = table
@@ -76,13 +83,16 @@ class Iceberg(System):
             time_column = table.schema().find_column_name(table.spec().fields[0].source_id)
             partitions = table.inspect.partitions()
             days = zip(partitions["partition"].to_pylist(), partitions["file_count"].to_pylist(), strict=True)
+            # The table's sort order, as columns: empty for a default table, which binpacks instead.
+            keys = [(table.schema().find_column_name(f.source_id), "ascending") for f in table.sort_order().fields]
             for day, files in days:
-                if files < 2:
+                if files < 2 and not keys:
                     continue
                 start = dt.datetime.combine(next(iter(day.values())), dt.time(), dt.UTC)
                 end = start + dt.timedelta(days=1)
                 rows = f"{time_column} >= '{start.isoformat()}' AND {time_column} < '{end.isoformat()}'"
-                table.overwrite(table.scan(row_filter=rows).to_arrow(), overwrite_filter=rows)
+                data = table.scan(row_filter=rows).to_arrow()
+                table.overwrite(data.sort_by(keys) if keys else data, overwrite_filter=rows)
 
     def loaded_time_series(self) -> list[str]:
         """The partitioned tables of an earlier process (``maintain`` without ``create``)."""
@@ -119,7 +129,8 @@ class S3Tables(Iceberg):
     """Real S3 Tables: the same appends committed through its Iceberg REST endpoint, and its own managed compaction.
 
     AWS targets only, with ``BENCH_TABLE_BUCKET_ARN`` set. Maintenance waits (up to ``BENCH_S3TABLES_WAIT_S``, 6 h by
-    default) until S3 Tables has compacted every time-series table after ingest.
+    default) until S3 Tables has compacted every time-series table after ingest. Default: its compaction as set up
+    (binpack). Tuned: the tables' sort order, and compaction set to sort by it.
     """
 
     name = "s3tables"
@@ -153,6 +164,18 @@ class S3Tables(Iceberg):
             # Data and metadata files go through the counting proxy, which passes them to the table's bucket.
             **PROXY.pyiceberg_properties(),
         )
+
+    @override
+    def create(self, spec: TableSpec, schema: pa.Schema) -> None:
+        super().create(spec, schema)
+        if self.tuned and spec.time_column:
+            self.client.put_table_maintenance_configuration(
+                tableBucketARN=self.arn,
+                namespace=self.namespace,
+                name=spec.name,
+                type="icebergCompaction",
+                value={"status": "enabled", "settings": {"icebergCompaction": {"strategy": "sort"}}},
+            )
 
     @override
     def reset(self) -> None:

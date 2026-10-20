@@ -154,12 +154,24 @@ def cmd_history(args: argparse.Namespace) -> None:
     print(history(runs(args.workload, args.label), args.checkpoint))
 
 
+def site_queries(suite: str) -> list[dict[str, str]]:
+    """A suite's queries as the website lists them, each with Timelake's tuned version where it has one (D23)."""
+    described = list(described_queries(suite))
+    tuned = {n.removesuffix(" [timelake tuned]"): sql for n, _, sql in described if n.endswith(" [timelake tuned]")}
+    out = []
+    for name, description, sql in described:
+        if " [" in name:
+            continue  # another reader's or tuning's version, kept with its query
+        entry = {"name": name, "description": description, "sql": site_sql(sql)}
+        if name in tuned:
+            entry["tuned"] = site_sql(tuned[name])
+        out.append(entry)
+    return out
+
+
 def cmd_queries(args: argparse.Namespace) -> None:
     """Writes the website's query descriptions and SQL (or with ``--check`` fails if the file is out of date)."""
-    site = {
-        suite: [{"name": n, "description": d, "sql": site_sql(sql)} for n, d, sql in described_queries(suite)]
-        for suite in SITE_SUITES
-    }
+    site = {suite: site_queries(suite) for suite in SITE_SUITES}
     missing = [f"{s}/{q['name']}" for s, qs in site.items() for q in qs if not q["description"]]
     if missing:
         sys.exit(f"queries without a description (a comment line after -- name:): {', '.join(missing)}")

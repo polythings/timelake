@@ -197,7 +197,9 @@ def run_dashboards(spec: RunSpec, path: Path, name: str, now: int | None) -> Non
     last = spec.last_checkpoint()
     if spec.concurrency and spec.workload.dashboard_queries() and last and name != REFERENCE:
         reader = systems()[name].readers[0]
-        queries = [{"name": q.name, "sql": q.sql_for(reader, now)} for q in spec.workload.dashboard_queries()]
+        queries = [
+            {"name": q.name, "sql": q.sql_for(reader, now, spec.tuning)} for q in spec.workload.dashboard_queries()
+        ]
         for clients in spec.concurrency:
             c = dashboards(spec.system(name), queries, last, clients, spec.concurrency_seconds)
             append_jsonl(path, c)
@@ -400,6 +402,8 @@ def ingest(
         system.reset()
         for t in workload.tables:
             system.create(t, workload.schema(t.name))
+        if system.tuned:
+            system.tune(workload.tuning_statements(system.name))
         for table, data in workload.initial():
             system.append(table, data)
         setup = time.perf_counter() - start
@@ -579,7 +583,7 @@ def query_record(system: str, reader: str, query: Query, at: At) -> QueryRecord:
 def measure(spec: RunSpec, system: System, reader: str, query: Query, at: At) -> QueryRecord:
     """Runs one query in a fresh process: its record, with ``status`` ok, error or timeout."""
     out = query_record(system.name, reader, query, at)
-    sql = query.sql_for(reader, at.now)
+    sql = query.sql_for(reader, at.now, system.tuning)
     place = system.place
     if reader in system.commands:
         cmd = type(system).reader_command(reader, place, place.load_state(), spec.runs)

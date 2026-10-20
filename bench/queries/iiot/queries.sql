@@ -12,6 +12,9 @@
 --   * Rows that arrive twice are not removed in the SQL: deduplicating them is the system's job. Answers are checked
 --     against the reference system (systems/reference.py).
 --   * A reader-specific version of a query is `-- name: <query> [<reader>]`, used only where its SQL lacks a construct.
+--   * `-- name: <query> [timelake tuned]` is the version a tuned Timelake run reads (D23): its own functions
+--     (time_weighted_mean, integral, counter_diff, gap_count) and filters the rollup router can follow, as the docs
+--     write them. Answers are checked like every other.
 
 -- name: latest-area
 -- Dashboard: the latest value and quality of every tag in an area (1,000 tags).
@@ -121,3 +124,67 @@ FROM (
 ) AS s
 WHERE next_t - t > 300
 GROUP BY tag;
+
+-- name: latest-area [timelake tuned]
+-- The last-value index answers the latest row per tag.
+SELECT l.tag, l.time, l.value, l.quality
+FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY tag ORDER BY time DESC) AS rn FROM readings) l
+JOIN tags t ON l.tag = t.tag
+WHERE l.rn = 1 AND t.area = 'A000' AND l.time >= @AGO(2 hours);
+
+-- name: shift-report [timelake tuned]
+-- Per tag, so the hourly rollup answers it, then the asset model's names.
+SELECT t.machine, t.signal, h.hour, h.mean, h.peak
+FROM (
+    SELECT tag, @B1H(time) AS hour, avg(value) AS mean, max(value) AS peak
+    FROM readings
+    WHERE time >= @AGO(8 hours) AND tag IN (SELECT tag FROM tags WHERE line = 'L0003' AND kind = 'analog')
+    GROUP BY tag, @B1H(time)
+) h JOIN tags t ON h.tag = t.tag;
+
+-- name: daily-stats [timelake tuned]
+-- Per tag of the line, filtered by the asset model, so the hourly rollup answers it.
+SELECT tag, @B1D(time) AS day, count(*) AS samples, avg(value) AS mean
+FROM readings
+WHERE time >= @AGO(30 days) AND tag IN (SELECT tag FROM tags WHERE line = 'L0002')
+GROUP BY tag, @B1D(time);
+
+-- name: time-above-limit [timelake tuned]
+-- integral over the condition: seconds it held.
+SELECT r.tag, integral(r.time, r.value > t.hi_limit) AS seconds_above
+FROM readings r JOIN tags t ON r.tag = t.tag
+WHERE t.area = 'A000' AND t.signal = 'pressure' AND r.time >= @AGO(24 hours)
+GROUP BY r.tag;
+
+-- name: time-weighted-avg [timelake tuned]
+-- time_weighted_mean, which the rollup's stored state answers.
+SELECT tag, time_weighted_mean(time, value) AS twa
+FROM readings
+WHERE time >= @AGO(24 hours) AND tag IN (SELECT tag FROM tags WHERE line = 'L0004' AND signal = 'temperature')
+GROUP BY tag;
+
+-- name: uptime [timelake tuned]
+-- time_weighted_mean over the condition: the share of time it held.
+SELECT t.machine, time_weighted_mean(r.time, r.value = 1) AS running_share
+FROM readings r JOIN tags t ON r.tag = t.tag
+WHERE t.line = 'L0000' AND t.signal = 'state' AND r.time >= @AGO(7 days)
+GROUP BY t.machine;
+
+-- name: energy [timelake tuned]
+-- counter_diff per tag, from the rollup's stored state.
+SELECT t.machine, sum(c.kwh) AS kwh
+FROM (
+    SELECT tag, counter_diff(time, value) AS kwh
+    FROM readings
+    WHERE time >= @AGO(24 hours) AND tag IN (SELECT tag FROM tags WHERE area = 'A000' AND signal = 'energy')
+    GROUP BY tag
+) c JOIN tags t ON c.tag = t.tag
+GROUP BY t.machine;
+
+-- name: gaps [timelake tuned]
+-- gap_count and gap_seconds, from the rollup's stored gaps.
+SELECT tag, gap_count(time, INTERVAL '5 minutes') AS gaps, gap_seconds(time, INTERVAL '5 minutes') AS gap_seconds
+FROM readings
+WHERE tag LIKE '%.pressure' AND time >= @AGO(24 hours)
+GROUP BY tag
+HAVING gap_count(time, INTERVAL '5 minutes') > 0;

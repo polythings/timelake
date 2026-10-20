@@ -3,6 +3,31 @@
 Measurements for the steps of the performance plan ([the milestone "Fast first queries on object storage"](../../spec/milestones/fast-first-queries.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## D23: tuned Timelake on industrial IoT (2026-10-20, #149)
+
+A tuned run (spec 44, D23) creates an hourly rollup per tag (`bench/tunings/iiot/timelake.sql`: min, max, sum,
+counts, the time-weighted state and the 5-minute gaps) and reads Timelake's own version of eight queries: signal
+aggregates instead of `lead()` windows, the last-value index's query shape, and per-tag groups filtered by the asset
+model, which the rollup router now follows (`tag IN (SELECT tag FROM tags WHERE …)`, planned as a semi-join, applied
+to the rollup's rows as to the readings). IIoT small, local, both arms back to back with the reference checking every
+answer (all right), best repeat:
+
+| Query | Default | Tuned, right after ingest | Default | Tuned, after maintenance |
+|---|---:|---:|---:|---:|
+| latest-area | 39 ms | 1 ms | 57 ms | 1 ms |
+| daily-stats | 460 ms | 60 ms | 434 ms | 14 ms |
+| gaps | 237 ms | 107 ms | 198 ms | 18 ms |
+| time-above-limit | 411 ms | 327 ms | 309 ms | 147 ms |
+| shift-report | 28 ms | 32 ms | 37 ms | 20 ms |
+| energy | 80 ms | 44 ms | 59 ms | 52 ms |
+| all 11, geometric mean | 40 ms | 21 ms | 43 ms | 16 ms |
+
+Keeping the rollup fresh costs little: ingest 450 → 456 s, commit p50 132 ms in both, storage 758 → 812 MB. Right
+after ingest the buckets changed since the last inline refresh come from the readings, so the gains are smaller there.
+Concurrent dashboards (latest-area, recent-machines, trend-30d) went from 61 to 187 queries a second at 16 clients,
+mostly from the last-value index. `time-weighted-avg` was slower from the rollup (14 → 19 ms): a day of 10-second
+temperatures is 360 readings an hour, well above the 32 per row where states pay off, so this is within noise.
+
 ## P8: newest-first for the newest buckets (2026-10-19)
 
 `GROUP BY time_bucket(…) ORDER BY bucket DESC LIMIT k` (TSBS DevOps `groupby-orderby-limit`, the five newest

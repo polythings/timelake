@@ -21,8 +21,8 @@ use datafusion::functions::datetime::date_bin;
 use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
-    Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, LogicalPlan, LogicalPlanBuilder, Operator, Projection,
-    TableScan, Union,
+    Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, JoinType, LogicalPlan, LogicalPlanBuilder, Operator,
+    Projection, TableScan, Union,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{cast, coalesce, ident, lit};
@@ -202,6 +202,10 @@ struct Query<'a> {
     to: i64,
     /// Filters on grouping columns, which apply to the rollup's rows as they do to the raw rows.
     key_filters: Vec<&'a Expr>,
+    /// Semi-joins on grouping columns (`key IN (SELECT …)`, as DataFusion plans it): the right side, and each
+    /// pair of equal expressions, the left one of a grouping column (a cast of it, say). They keep the rollup's rows
+    /// as they keep the raw rows.
+    key_joins: Vec<(&'a LogicalPlan, &'a [(Expr, Expr)])>,
 }
 
 impl RollupRewrite {
@@ -287,7 +291,7 @@ impl RollupRewrite {
     }
 }
 
-/// `plan` (a scan under filters, aliases and projections of columns, as [`read_query`] takes it)
+/// `plan` (a scan under filters, semi-joins, aliases and projections of columns, as [`read_query`] takes it)
 /// with column `name` of the scanned table in its output, where it was projected away.
 fn with_column(plan: LogicalPlan, name: &str) -> DfResult<LogicalPlan> {
     if plan.schema().has_column_with_unqualified_name(name) {
@@ -295,7 +299,10 @@ fn with_column(plan: LogicalPlan, name: &str) -> DfResult<LogicalPlan> {
     }
     plan.transform_up(|node| match node {
         LogicalPlan::TableScan(mut scan) => {
-            let index = scan.source.schema().index_of(name)?;
+            // Only the scanned table has it, not the right side of a semi-join.
+            let Ok(index) = scan.source.schema().index_of(name) else {
+                return Ok(Transformed::no(LogicalPlan::TableScan(scan)));
+            };
             if let Some(projection) = scan.projection.as_mut().filter(|p| !p.contains(&index)) {
                 projection.push(index);
                 let projection = Some(projection.clone());
@@ -519,12 +526,17 @@ impl Candidate {
 /// The query's shape, if it is a bucketed aggregate of a Timelake table not routed yet.
 fn read_query(a: &Aggregate) -> Option<Query<'_>> {
     let mut filters: Vec<&Expr> = vec![];
+    let mut joins = vec![];
     let mut input = a.input.as_ref();
     let scan = loop {
         match input {
             LogicalPlan::Filter(f) => {
                 filters.extend(split_conjunction(&f.predicate));
                 input = &f.input;
+            }
+            LogicalPlan::Join(j) if j.join_type == JoinType::LeftSemi && j.filter.is_none() => {
+                joins.push((j.right.as_ref(), j.on.as_slice()));
+                input = &j.left;
             }
             LogicalPlan::SubqueryAlias(s) => input = &s.input,
             LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => input = &p.input,
@@ -556,6 +568,13 @@ fn read_query(a: &Aggregate) -> Option<Query<'_>> {
         }
     }
     let aggregates = a.aggr_expr.iter().map(|e| aggregate_of(e, &time)).collect::<Option<Vec<_>>>()?;
+    let on_key = |e: &Expr| {
+        let columns = e.column_refs();
+        columns.len() == 1 && columns.iter().all(|c| keys.contains(c.name.as_str()))
+    };
+    if !joins.iter().all(|(_, on)| on.iter().all(|(l, _)| on_key(l))) {
+        return None;
+    }
     let (mut from, mut to) = (i64::MIN, i64::MAX);
     let mut key_filters = vec![];
     for f in filters {
@@ -569,7 +588,7 @@ fn read_query(a: &Aggregate) -> Option<Query<'_>> {
         let (lo, hi) = time_bounds(f, &time)?;
         (from, to) = (from.max(lo), to.min(hi));
     }
-    Some(Query { table, time, width, keys, aggregates, from, to, key_filters })
+    Some(Query { table, time, width, keys, aggregates, from, to, key_filters, key_joins: joins })
 }
 
 /// The inclusive bounds (µs) a comparison of the time column with a constant puts on it.
@@ -665,30 +684,7 @@ fn rewrite(
     )?);
 
     // Rollup side: its rows in those buckets, as the aggregate's columns.
-    let rollup = &candidate.rollup;
-    let reference = TableReference::partial(rollup.name().namespace(), rollup.name().name());
-    let source = provider_as_source(Arc::new(TimelakeProvider::data(rollup.clone())));
-    let bucket_tz = match rollup.schema().field_with_name(&candidate.def.bucket)?.data_type() {
-        DataType::Timestamp(_, tz) => tz.clone(),
-        _ => tz.clone(),
-    };
-    let bucket = ident(&candidate.def.bucket);
-    let inside = from_rollup
-        .iter()
-        .map(|&(lo, hi)| {
-            let from = (lo > open_from).then(|| bucket.clone().gt_eq(at(lo, &bucket_tz)));
-            let to = (hi < open_to).then(|| bucket.clone().lt(at(hi, &bucket_tz)));
-            match (from, to) {
-                (Some(f), Some(t)) => f.and(t),
-                (f, t) => f.or(t).unwrap_or_else(|| datafusion::prelude::lit(true)),
-            }
-        })
-        .reduce(Expr::or)
-        .expect("ranges");
-    let mut builder = LogicalPlanBuilder::scan(reference, source, None)?.filter(inside)?;
-    for f in &q.key_filters {
-        builder = builder.filter(unqualified((*f).clone())?)?;
-    }
+    let mut builder = rollup_rows(q, candidate, from_rollup, tz.as_ref())?;
     let n_group = a.group_expr.len();
     // The rollup side's column for each of the aggregate's outputs.
     let outputs: Vec<String> = match answer {
@@ -736,6 +732,55 @@ fn rewrite(
         })
         .collect();
     Ok(LogicalPlan::Projection(Projection::try_new_with_schema(names, Arc::new(union), a.schema.clone())?))
+}
+
+/// The rollup's rows in the buckets `from_rollup`, kept by the query's filters and semi-joins on grouping columns.
+/// `tz` is the raw time column's time zone, for a bucket column without one.
+fn rollup_rows(
+    q: &Query<'_>,
+    candidate: &Candidate,
+    from_rollup: &[(i64, i64)],
+    tz: Option<&Arc<str>>,
+) -> DfResult<LogicalPlanBuilder> {
+    let at =
+        |t: i64, tz: &Option<Arc<str>>| Expr::Literal(ScalarValue::TimestampMicrosecond(Some(t), tz.clone()), None);
+    let (open_from, open_to) = (FAR.saturating_neg(), FAR);
+    let rollup = &candidate.rollup;
+    let reference = TableReference::partial(rollup.name().namespace(), rollup.name().name());
+    let source = provider_as_source(Arc::new(TimelakeProvider::data(rollup.clone())));
+    let bucket_tz = match rollup.schema().field_with_name(&candidate.def.bucket)?.data_type() {
+        DataType::Timestamp(_, tz) => tz.clone(),
+        _ => tz.cloned(),
+    };
+    let bucket = ident(&candidate.def.bucket);
+    let inside = from_rollup
+        .iter()
+        .map(|&(lo, hi)| {
+            let from = (lo > open_from).then(|| bucket.clone().gt_eq(at(lo, &bucket_tz)));
+            let to = (hi < open_to).then(|| bucket.clone().lt(at(hi, &bucket_tz)));
+            match (from, to) {
+                (Some(f), Some(t)) => f.and(t),
+                (f, t) => f.or(t).unwrap_or_else(|| datafusion::prelude::lit(true)),
+            }
+        })
+        .reduce(Expr::or)
+        .expect("ranges");
+    let mut builder = LogicalPlanBuilder::scan(reference.clone(), source, None)?.filter(inside)?;
+    for f in &q.key_filters {
+        builder = builder.filter(unqualified((*f).clone())?)?;
+    }
+    for (right, on) in &q.key_joins {
+        // The left expressions over the rollup's columns, qualified so they can't be the right side's.
+        let on = on.iter().map(|(l, r)| {
+            let l = l.clone().transform(|e| match e {
+                Expr::Column(c) => Ok(Transformed::yes(Expr::Column(Column::new(Some(reference.clone()), c.name)))),
+                other => Ok(Transformed::no(other)),
+            })?;
+            Ok(l.data.eq(r.clone()))
+        });
+        builder = builder.join_on((*right).clone(), JoinType::LeftSemi, on.collect::<DfResult<Vec<_>>>()?)?;
+    }
+    Ok(builder)
 }
 
 /// `plan` with its Timelake scan marked as routed, so the rule leaves it alone from now on.

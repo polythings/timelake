@@ -107,7 +107,7 @@ class Prober:
         try:
             proc = subprocess.run(
                 command(job),
-                input=query.sql_for(self.reader, now),
+                input=query.sql_for(self.reader, now, place.tuning),
                 capture_output=True,
                 text=True,
                 timeout=PROBE_TIMEOUT_S,
