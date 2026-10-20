@@ -95,6 +95,8 @@ impl Session {
             .with_optimizer_rule(Arc::new(super::series_order::SeriesOrder))
             .with_optimizer_rule(Arc::new(RollupRewrite { routes: routes.clone() }))
             .with_optimizer_rule(Arc::new(super::shared_state::SharedState))
+            .with_optimizer_rule(Arc::new(super::asof::AsofRule))
+            .with_query_planner(Arc::new(Planner))
             .build();
         let ctx = SessionContext::new_with_state(state);
         ctx.register_object_store(lake.storage().url(), lake.storage().object_store());
@@ -103,6 +105,7 @@ impl Session {
         // time_bucket(width, ts [, origin]) is the name time-series users know for date_bin.
         let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
         ctx.register_udf(time_bucket);
+        ctx.register_udf(super::asof::marker_udf());
         ctx.register_udaf(super::m4::m4_udaf());
         ctx.register_udaf(super::ohlc::udaf());
         ctx.register_udaf(super::lttb::udaf());
@@ -195,6 +198,8 @@ impl Session {
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
             futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None))).await;
         }
+        let mut statement = statement;
+        super::asof::rewrite_statement(&mut statement);
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)
     }
@@ -405,5 +410,23 @@ mod tests {
         let statements = s.parse("SELECT 'a;b'; -- c;d\nSELECT 2;;").unwrap();
         assert_eq!(statements.len(), 2);
         assert!(s.parse("SELECT 'unterminated").is_err());
+    }
+}
+
+/// DataFusion's physical planner, with Timelake's own nodes (the ASOF join).
+#[derive(Debug)]
+struct Planner;
+
+#[async_trait::async_trait]
+impl datafusion::execution::context::QueryPlanner for Planner {
+    async fn create_physical_plan(
+        &self,
+        logical_plan: &datafusion::logical_expr::LogicalPlan,
+        session_state: &datafusion::execution::SessionState,
+    ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
+        DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(super::asof::AsofPlanner)])
+            .create_physical_plan(logical_plan, session_state)
+            .await
     }
 }

@@ -15,6 +15,7 @@
 //! - `time_bucket(interval, ts [, origin])`, an alias of `date_bin`.
 //! - Namespaces as SQL schemas: `SELECT … FROM iot.readings`.
 
+mod asof;
 mod catalog;
 mod changes;
 mod dedup;
