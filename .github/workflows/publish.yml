@@ -47,8 +47,13 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME doesn't match the version in Cargo.toml ($version)"
             exit 1
           fi
-          grep -q "^version = \"$version\"" crates/timelake-py/pyproject.toml
-          grep -q "\"version\": \"$version\"" packages/timelake-client/package.json
+          # Every file scripts/release.py sets the version in.
+          for file in crates/timelake-wasm/Cargo.toml crates/timelake-py/pyproject.toml; do
+            grep -q "^version = \"$version\"" "$file" || { echo "::error::$file isn't at $version"; exit 1; }
+          done
+          for file in packages/timelake-client/package.json dashboard/package.json; do
+            grep -q "\"version\": \"$version\"" "$file" || { echo "::error::$file isn't at $version"; exit 1; }
+          done
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   ci:
@@ -203,18 +208,29 @@ jobs:
       - id: published
         name: Already on crates.io?
         run: |
-          # timelake-cli is published last, so if it has this version, so do the others.
-          status=$(curl -s -o /dev/null -w '%{http_code}' -A 'timelake release workflow (github.com/polythings/timelake)' \
-            "https://crates.io/api/v1/crates/timelake-cli/$VERSION")
-          echo "published=$([ "$status" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Each crate on its own: a run that failed partway published some of them.
+          missing=""
+          for crate in timelake-format timelake timelake-cli; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' -A 'timelake release workflow (github.com/polythings/timelake)' \
+              "https://crates.io/api/v1/crates/$crate/$VERSION")
+            case $status in
+              200) echo "$crate $VERSION is on crates.io already" ;;
+              404) missing="$missing $crate" ;;
+              *) echo "::error::crates.io answered $status for $crate $VERSION"; exit 1 ;;
+            esac
+          done
+          echo "missing=${missing# }" >> "$GITHUB_OUTPUT"
       - if: env.DRY_RUN == 'true'
         run: cargo publish --dry-run --locked -p timelake-format -p timelake -p timelake-cli
-      - if: env.DRY_RUN == 'false' && steps.published.outputs.published == 'false'
+      - if: env.DRY_RUN == 'false' && steps.published.outputs.missing != ''
         id: auth
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
-      - if: env.DRY_RUN == 'false' && steps.published.outputs.published == 'false'
-        run: cargo publish --locked -p timelake-format -p timelake -p timelake-cli
+      - if: env.DRY_RUN == 'false' && steps.published.outputs.missing != ''
+        run: |
+          read -ra crates <<< "$MISSING"
+          cargo publish --locked "${crates[@]/#/--package=}"
         env:
+          MISSING: ${{ steps.published.outputs.missing }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   npm:

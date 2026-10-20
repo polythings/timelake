@@ -134,7 +134,9 @@ def main() -> None:
     parser.add_argument(
         "--push", action="store_true", help="push the commit, wait for CI on it, then push the tag (starts the release)"
     )
-    parser.add_argument("--skip-semver-checks", action="store_true", help="only when the tool can't run")
+    parser.add_argument(
+        "--skip-semver-checks", action="store_true", help="skip cargo semver-checks, only when the tool can't run"
+    )
     args = parser.parse_args()
     new = parse(args.version)
     tag = f"v{args.version}"
@@ -144,8 +146,9 @@ def main() -> None:
     if run("git", "branch", "--show-current").strip() != "main":
         raise SystemExit("release from main")
     previous = previous_tag()
-    if previous and not args.skip_semver_checks:
-        kind = release_type(parse(previous.removeprefix("v")), new)
+    # Always: the new version must come after the previous tag's, whether or not the API is checked.
+    kind = release_type(parse(previous.removeprefix("v")), new) if previous else None
+    if kind and not args.skip_semver_checks:
         for package in LIBRARIES:
             run(
                 "cargo",
