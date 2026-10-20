@@ -194,12 +194,16 @@ To release, from a clean `main`:
 ```bash
 cargo install cargo-semver-checks --locked     # once
 uv run python scripts/release.py 0.4.0         # checks, bumps, changelog section, commit, tag v0.4.0
-uv run python scripts/release.py 0.4.0 --push  # the same, then pushes and creates the GitHub release
+uv run python scripts/release.py 0.4.0 --push  # the same, then pushes main, waits for CI, and pushes the tag
 ```
 
 The script runs `cargo semver-checks` on the library crates against the previous tag, so a patch release can't
 break the API, then sets the version in every package, turns `## Unreleased` into the release's section, rebuilds
-the WASM bundle, runs the checks, commits and tags.
+the WASM bundle, runs the checks, commits and tags. With `--push`, it pushes `main` first and waits for CI to pass on
+that commit; only then does it push the tag. If CI fails, the tag stays local: fix `main` and tag the fixed commit.
+`publish.yml` checks the same before it publishes anything, so a tag on a commit without a passing CI run publishes
+nothing. CI runs every commit on `main` to the end (only a pull request's older runs are cancelled), so every release
+commit has a run.
 
 Pushing the tag starts two workflows:
 

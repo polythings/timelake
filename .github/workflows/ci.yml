@@ -10,9 +10,12 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push replaces its older run. Every commit to main gets its own run, never cancelled: a release
+# tag is only published once CI passed on its commit (publish.yml), and a concurrency group would also cancel pending
+# runs.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
