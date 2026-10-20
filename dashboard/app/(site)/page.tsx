@@ -23,7 +23,7 @@ import { MoreLink, SectionHead } from "@/components/section-head"
 import { StackDiagram } from "@/components/stack-diagram"
 import { Button } from "@/components/ui/button"
 import { type ArtKind, UseCaseArt } from "@/components/use-case-art"
-import { latestByTarget, loadRuns } from "@/lib/benchmarks"
+import { latestByTarget, loadRuns, tuningOf } from "@/lib/benchmarks"
 import { REPO_URL, SITE_NAME, SITE_URL } from "@/lib/site"
 
 export const metadata: Metadata = { alternates: { canonical: "/" } }
@@ -190,7 +190,7 @@ export default function Home() {
 /** The latest weekly run of TSBS IoT on S3: what was measured, and the results. */
 async function Measurements() {
   const run = latestByTarget(await loadRuns(), "tsbs-iot").find(
-    (r) => r.header.target === "aws-s3" && !r.header.variant,
+    (r) => r.header.target === "aws-s3" && !r.header.variant && tuningOf(r) === "tuned",
   )
   if (!run) return null
   return (

@@ -2,7 +2,7 @@ import { Activity, ArrowRight, Cloud, Gauge, Layers, PiggyBank, ServerOff, type 
 import Link from "next/link"
 
 import { type ArtKind, UseCaseArt } from "@/components/use-case-art"
-import { latestByTarget, loadRuns, rankings } from "@/lib/benchmarks"
+import { latestByTarget, loadRuns, rankings, tuningOf } from "@/lib/benchmarks"
 
 type Card = {
   icon: LucideIcon
@@ -15,7 +15,7 @@ type Card = {
 /** Timelake's query times in the newest weekly S3 run, against the other systems in it. */
 async function speed(): Promise<string> {
   const run = latestByTarget(await loadRuns(), "tsbs-iot").find(
-    (r) => r.header.target === "aws-s3" && !r.header.variant,
+    (r) => r.header.target === "aws-s3" && !r.header.variant && tuningOf(r) === "tuned",
   )
   const ranked = run ? rankings(run) : []
   const rows = (prefix: string) => ranked.find((r) => r.title.startsWith(prefix))?.rows ?? []

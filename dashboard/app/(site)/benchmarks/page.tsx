@@ -19,7 +19,17 @@ import { RunInfoButton } from "@/components/run-info"
 import { MoreLink, SectionHead } from "@/components/section-head"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BENCHMARKS, type Benchmark } from "@/lib/benchmark-catalog"
-import { SYSTEMS, latestByTarget, loadRuns, rankings, runInfo, runKey, runLabel, type Run } from "@/lib/benchmarks"
+import {
+  SYSTEMS,
+  latestByTarget,
+  loadRuns,
+  rankings,
+  runInfo,
+  runKey,
+  runLabel,
+  tuningOf,
+  type Run,
+} from "@/lib/benchmarks"
 
 export const metadata: Metadata = { title: "Benchmarks" }
 
@@ -80,7 +90,12 @@ export default function BenchmarksPage() {
 async function Results() {
   const runs = await loadRuns()
   return BENCHMARKS.filter((b) => b.status === "running" && b.workload).map((b) => (
-    <BenchmarkResults key={b.id} benchmark={b} latest={latestByTarget(runs, b.workload ?? "")} />
+    <BenchmarkResults
+      key={b.id}
+      benchmark={b}
+      // The tuned runs here; a benchmark's page switches between tunings.
+      latest={latestByTarget(runs, b.workload ?? "").filter((r) => tuningOf(r) === "tuned")}
+    />
   ))
 }
 

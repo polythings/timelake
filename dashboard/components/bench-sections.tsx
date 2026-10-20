@@ -83,8 +83,10 @@ export function SectionResults({
                         </>
                       ) : at >= 0 ? (
                         `${place(at + 1)} of ${right.length}`
-                      ) : (
+                      ) : q.failed.includes("Timelake") ? (
                         "failed"
+                      ) : (
+                        "not in this run"
                       )}
                     </span>
                     <span className="text-right font-mono text-xs tabular-nums">

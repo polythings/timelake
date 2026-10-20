@@ -21,7 +21,16 @@ import { StripChart } from "@/components/lab/strip-chart"
 import { type Snapshot, TimeTravel } from "@/components/lab/time-travel"
 import { Race, type Racer } from "@/components/race"
 import { Button } from "@/components/ui/button"
-import { SYSTEMS, SYSTEM_COLORS, engineLabel, latestByTarget, loadRuns, rankings, targetLabel } from "@/lib/benchmarks"
+import {
+  SYSTEMS,
+  SYSTEM_COLORS,
+  engineLabel,
+  latestByTarget,
+  loadRuns,
+  rankings,
+  targetLabel,
+  tuningOf,
+} from "@/lib/benchmarks"
 import { REPO_URL } from "@/lib/site"
 
 /** Visual ideas for the home page, side by side: not linked, not indexed, and 404 outside local development. */
@@ -206,7 +215,9 @@ export default function Lab() {
 
 /** The newest weekly run of TSBS IoT on AWS S3. */
 async function latestS3() {
-  return latestByTarget(await loadRuns(), "tsbs-iot").find((r) => r.header.target === "aws-s3" && !r.header.variant)
+  return latestByTarget(await loadRuns(), "tsbs-iot").find(
+    (r) => r.header.target === "aws-s3" && !r.header.variant && tuningOf(r) === "tuned",
+  )
 }
 
 /** The same run as still pictures: objects in the bucket, every query, and requests and bytes per query. */

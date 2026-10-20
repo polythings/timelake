@@ -33,6 +33,8 @@ import {
   s3TablesDelay,
   sections,
   targetLabel,
+  TUNING_LABELS,
+  tuningOf,
   type Run,
   type Section,
   type Workload,
@@ -271,38 +273,69 @@ function MaintenancePanel({ run }: { run: Run }) {
 type Variant = { run: Run; node: React.ReactNode }
 
 /**
- * A section of results with its own choice of storage: a tab per kind of storage that has the section's data (AWS S3
- * first), each showing that run's results, its date, and its details behind ⓘ.
+ * A section of results with its own choice of tuning (where both have run) and storage: a tab per kind of storage that
+ * has the section's data (AWS S3 first), each showing that run's results, its date, and its details behind ⓘ.
  */
 function ResultSection({ title, note, variants }: { title: string; note?: string; variants: Variant[] }) {
-  const [first] = variants
-  if (!first) return null
+  if (variants.length === 0) return null
+  const tunings = [...new Set(variants.map((v) => tuningOf(v.run)))]
   return (
     <section className="flex flex-col gap-4">
       <SectionHead label={title}>{note}</SectionHead>
-      <Tabs defaultValue={runKey(first.run)} className="gap-4">
-        <TabsList variant="line" className="flex-wrap">
-          {variants.map((v) => (
-            <TabsTrigger
-              key={runKey(v.run)}
-              value={runKey(v.run)}
-              className="font-mono text-xs tracking-[0.06em] uppercase"
-            >
-              {runLabel(v.run)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        {variants.map((v) => (
-          <TabsContent key={runKey(v.run)} value={runKey(v.run)} className="flex flex-col gap-4">
-            <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-              Run of {v.run.header.started.slice(0, 10)}
-              <RunInfoButton info={runInfo(v.run)} label={runLabel(v.run)} />
+      {tunings.length > 1 ? (
+        <Tabs defaultValue={tunings[0]} className="gap-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <TabsList>
+              {tunings.map((t) => (
+                <TabsTrigger key={t} value={t}>
+                  {TUNING_LABELS[t] ?? t}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <p className="text-xs text-muted-foreground">
+              Default: each system as installed. Tuned: as its docs recommend, precomputation included.
             </p>
-            {v.node}
-          </TabsContent>
-        ))}
-      </Tabs>
+          </div>
+          {tunings.map((t) => (
+            <TabsContent key={t} value={t}>
+              <StorageTabs variants={variants.filter((v) => tuningOf(v.run) === t)} />
+            </TabsContent>
+          ))}
+        </Tabs>
+      ) : (
+        <StorageTabs variants={variants} />
+      )}
     </section>
+  )
+}
+
+/** A tab per kind of storage, each with its run's date, details behind ⓘ, and results. */
+function StorageTabs({ variants }: { variants: Variant[] }) {
+  const [first] = variants
+  if (!first) return null
+  return (
+    <Tabs defaultValue={runKey(first.run)} className="gap-4">
+      <TabsList variant="line" className="flex-wrap">
+        {variants.map((v) => (
+          <TabsTrigger
+            key={runKey(v.run)}
+            value={runKey(v.run)}
+            className="font-mono text-xs tracking-[0.06em] uppercase"
+          >
+            {runLabel(v.run)}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {variants.map((v) => (
+        <TabsContent key={runKey(v.run)} value={runKey(v.run)} className="flex flex-col gap-4">
+          <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+            Run of {v.run.header.started.slice(0, 10)}
+            <RunInfoButton info={runInfo(v.run)} label={runLabel(v.run)} />
+          </p>
+          {v.node}
+        </TabsContent>
+      ))}
+    </Tabs>
   )
 }
 
@@ -363,7 +396,7 @@ function OverTime({ runs, latest, workload }: { runs: Run[]; latest: Run[]; work
       </SectionHead>
       <div className="grid gap-4 lg:grid-cols-2">
         {latest
-          .filter((r) => !r.header.variant)
+          .filter((r) => !r.header.variant && tuningOf(r) === "tuned")
           .map((r) => {
             const h = history(runs, workload.id, r.header.target, "maintained")
             return (
@@ -389,7 +422,10 @@ function OverTime({ runs, latest, workload }: { runs: Run[]; latest: Run[]; work
           {all.map((r) => (
             <li key={r.header.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
               <span className="font-mono text-xs tabular-nums">{r.header.started.slice(0, 10)}</span>
-              <span className="min-w-32">{runLabel(r)}</span>
+              <span className="min-w-32">
+                {runLabel(r)}
+                {tuningOf(r) === "tuned" ? "" : ` · ${TUNING_LABELS[tuningOf(r)]?.toLowerCase() ?? tuningOf(r)}`}
+              </span>
               <span className="min-w-0 flex-1 text-xs text-muted-foreground">
                 {Object.keys(r.header.readers)
                   .map((s) => SYSTEMS[s] ?? s)

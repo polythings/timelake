@@ -27,6 +27,8 @@ export type RunHeader = {
   label: string
   /** A kind of run kept apart from the others of its workload and target, e.g. "bulk". */
   variant?: string
+  /** `tuned` or `default` (D23); absent in runs before 2026-10-20, which count as tuned. */
+  tuning?: string
   started: string
   readers: Record<string, string[]>
   versions: Record<string, string>
@@ -304,7 +306,8 @@ export function queryHistory(runs: Run[], run: Run, suite: string, checkpoint: s
     (r) =>
       r.header.workload === run.header.workload &&
       r.header.target === run.header.target &&
-      r.header.variant === run.header.variant,
+      r.header.variant === run.header.variant &&
+      tuningOf(r) === tuningOf(run),
   )
   const out: Record<string, HistoryPoint[]> = {}
   for (const r of same) {
@@ -342,24 +345,29 @@ export function failures(run: Run): { engine: string; query: string; checkpoint:
     .map((q) => ({ engine: engineLabel(engineOf(q)), query: q.query, checkpoint: q.checkpoint, status: q.status }))
 }
 
-/** The newest run of a workload on each target, newest target first. */
+/** How the site names run variants. */
 const VARIANTS: Record<string, string> = { bulk: "bulk load" }
 
 /** A run's storage and variant, e.g. "AWS S3" or "Local disk · bulk load". */
+/** A run's tuning (D23): every system as installed (`default`) or as its docs recommend (`tuned`). */
+export const tuningOf = (run: Run) => run.header.tuning ?? "tuned"
+
+export const TUNING_LABELS: Record<string, string> = { tuned: "Tuned", default: "Default" }
+
 export const runLabel = (run: Run) =>
   targetLabel(run.header.target) +
   (run.header.variant ? ` · ${VARIANTS[run.header.variant] ?? run.header.variant}` : "")
 
 /** Tells runs of a workload apart: target and variant. */
-export const runKey = (run: Run) => `${run.header.target}|${run.header.variant ?? ""}`
+export const runKey = (run: Run) => `${run.header.target}|${run.header.variant ?? ""}|${tuningOf(run)}`
 
-/** The newest run of a workload on each target (and variant), the default variant first, then by target. */
+/** The newest run of a workload on each target, variant and tuning: tuned first, the default variant first, then by target. */
 export function latestByTarget(runs: Run[], workload: string): Run[] {
   const latest = new Map<string, Run>()
-  for (const r of runs)
-    if (r.header.workload === workload) latest.set(`${r.header.target}|${r.header.variant ?? ""}`, r)
+  for (const r of runs) if (r.header.workload === workload) latest.set(runKey(r), r)
   const order = Object.keys(TARGETS)
-  const position = (r: Run) => (r.header.variant ? 100 : 0) + order.indexOf(r.header.target)
+  const position = (r: Run) =>
+    (tuningOf(r) === "tuned" ? 0 : 1000) + (r.header.variant ? 100 : 0) + order.indexOf(r.header.target)
   return [...latest.values()].sort((a, b) => position(a) - position(b))
 }
 
@@ -374,11 +382,13 @@ export function history(
   workload: string,
   target: string,
   checkpoint: string,
+  tuning = "tuned",
 ): { points: HistoryPoint[]; engines: string[] } {
   const points: HistoryPoint[] = []
   const engines = new Set<string>()
   for (const r of runs) {
-    if (r.header.workload !== workload || r.header.target !== target || r.header.variant) continue
+    if (r.header.workload !== workload || r.header.target !== target || r.header.variant || tuningOf(r) !== tuning)
+      continue
     const point: HistoryPoint = { run: r.header.id, date: r.header.started.slice(0, 10), commit: r.header.commit }
     for (const [system, readers] of Object.entries(r.header.readers)) {
       const engine = `${system}+${readers[0]}`
