@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 from typing import TYPE_CHECKING, Any, override
 
 from timebench.meta import version
-from timebench.s3 import PROXY, SETUP_PROXY
+from timebench.s3 import PROXY
 from timebench.systems import Runner, System, arrow_result, duckdb_connection, duckdb_runner
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from timebench.results import IngestRecord
     from timebench.targets import Place
     from timebench.workloads import TableSpec
 
@@ -53,36 +51,22 @@ class Lance(System):
         lance.write_dataset(data, self.uri(table), mode=mode, storage_options=self.options)
         self.created.add(table)
 
-    @property
-    def direct(self) -> bool:
-        """Whether maintenance goes around the counting proxy (``BENCH_LANCE_DIRECT``).
-
-        Lance's multipart uploads fail through tools/s3proxy on RustFS, so this compacts directly against it; its
-        requests then aren't counted, and the maintenance record says so (``uncounted``).
-        """
-        return self.options is not None and bool(os.environ.get("BENCH_LANCE_DIRECT"))
-
     @override
     def maintain(self) -> None:
         import lance
 
         if not self.tuned:
             return
-        options = SETUP_PROXY.lance_options() if self.direct else self.options
         state = self.place.load_state()
         for table in state["tables"]:
-            lance.dataset(self.uri(table), storage_options=options).optimize.compact_files()
-            ds = lance.dataset(self.uri(table), storage_options=options)
+            lance.dataset(self.uri(table), storage_options=self.options).optimize.compact_files()
+            ds = lance.dataset(self.uri(table), storage_options=self.options)
             ds.cleanup_old_versions(older_than=dt.timedelta(0))
             spec = state.get("specs", {}).get(table, {})
             for column in spec.get("series_key", []):
                 ds.create_scalar_index(column, "BTREE")
             if spec.get("time_column"):
                 ds.create_scalar_index(spec["time_column"], "ZONEMAP")
-
-    @override
-    def maintain_extras(self) -> IngestRecord:
-        return {"uncounted": True} if self.direct and self.tuned else {}
 
     @override
     def state(self) -> dict[str, Any]:

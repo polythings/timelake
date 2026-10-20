@@ -105,8 +105,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   queries.
 - Benchmarks: ClickHouse's answer to TSBS IoT `avg-daily-driving-session` is right; the query relied on `lead` giving
   NULL at a series' edge, which ClickHouse doesn't. QuestDB commits reuse one client instead of connecting each time.
-  S3 Tables maintenance that never compacted is an error, not ok, and Lance maintenance with `BENCH_LANCE_DIRECT` is
-  marked as not counted.
+  S3 Tables maintenance that never compacted is an error, not ok. Lance's maintenance on the local S3 target goes
+  through the counting proxy like every other system's (`BENCH_LANCE_DIRECT`, which sent it around the proxy, is gone).
 
 ### Changed
 

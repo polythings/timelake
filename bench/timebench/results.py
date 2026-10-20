@@ -214,9 +214,6 @@ class IngestRecord(TypedDict, total=False):
     """S3 requests during the phase (through the counting proxy)."""
     kinds: dict[str, int]
     """Those requests by kind, where the proxy reports them (AWS mode)."""
-    uncounted: bool
-    """The phase's S3 traffic went around the counting proxy (Lance's maintenance with ``BENCH_LANCE_DIRECT``), so it
-    has no request counts or cost."""
     status: str
     """``ok`` or ``error``; a failed system is recorded and the run goes on without it."""
     error: str
