@@ -150,6 +150,9 @@ class QuestDB(System):
             return
         # The client's columnar path takes each column as one buffer: a batch made of several chunks (IIoT's
         # arrivals) has its string columns in pieces, which it rejects (#154). It returns once the frame is committed.
+        # pandas, not the Arrow table itself: the client takes both and stores the same rows, but on 1M rows
+        # (questdb 5.0.0, pandas 3) the conversion takes 6 ms and the pandas path commits in 0.28 s, the Arrow one in
+        # 0.44 s (#161).
         frame = data.combine_chunks().to_pandas()
         self.db.dataframe(frame, table_name=table, symbols=list(spec.series_key), at=spec.time_column)
 
