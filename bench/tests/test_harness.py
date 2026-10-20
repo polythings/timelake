@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import subprocess
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, ClassVar, override
 
@@ -19,9 +21,9 @@ from timebench.cost import PRICES, phase_cost, query_cost, requests_cost, storag
 from timebench.live import Commit, Prober, lag
 from timebench.queries import apply_dialect
 from timebench.report import Run, markdown
-from timebench.results import QueryRecord, read_jsonl
+from timebench.results import QueryRecord, append_jsonl, read_jsonl
 from timebench.s3 import PROBE_PROXY, PROXY
-from timebench.systems import DIALECTS
+from timebench.systems import DIALECTS, System
 from timebench.systems.iceberg import Iceberg
 from timebench.systems.timescaledb import csv_chunks, pg_type
 from timebench.targets import Place, Target
@@ -29,7 +31,7 @@ from timebench.workloads import Batch, Query, TableSpec, Workload
 from timebench.workloads.tsbs import stream_windows, windows
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
 
 START = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
@@ -49,8 +51,9 @@ class Tiny(Workload):
     dashboard_suite = "tiny"
     live_table = "readings"
     span_days = 2
+    hours = 48
     arrival_pause = 0.0
-    """Seconds between arrivals, so probes have time to run."""
+    """Seconds reading each arrival takes, so probes have time to run."""
 
     @override
     def prepare(self) -> None:
@@ -66,7 +69,7 @@ class Tiny(Workload):
 
     @override
     def stream(self) -> Iterator[list[Batch]]:
-        for hour in range(48):
+        for hour in range(self.hours):
             time.sleep(self.arrival_pause)
             times = [START + dt.timedelta(hours=hour, minutes=m) for m in range(60)]
             yield [
@@ -164,6 +167,40 @@ def test_a_timed_out_query_is_skipped_at_later_checkpoints(skip: bool, monkeypat
 
 
 @pytest.mark.usefixtures("bench_dirs")
+def test_a_reuse_run_starts_each_server_and_skips_after_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Querying the tables an earlier run left needs the same servers, and a timeout carries across checkpoints."""
+    measured: list[tuple[str, str]] = []
+    served: list[str] = []
+
+    def measure(_spec: harness.RunSpec, _system: object, reader: str, query: Query, at: harness.At) -> QueryRecord:
+        measured.append((at.checkpoint, query.name))
+        r = harness.query_record("parquet", reader, query, at)
+        r.update(status="timeout" if query.name == "count" else "ok", times=[0.1], rows=1)
+        return r
+
+    @contextlib.contextmanager
+    def server(system: System, _path: Path) -> Generator[bool]:
+        served.append(system.name)
+        yield True
+
+    monkeypatch.setattr(harness, "measure", measure)
+    monkeypatch.setattr(harness, "server", server)
+    spec = harness.RunSpec(
+        workload=Tiny(),
+        target=Target("local"),
+        systems=["parquet"],
+        readers=["duckdb"],
+        checkpoints=("ingested", "maintained"),
+        reuse=True,
+    )
+    records = read_jsonl(harness.run(spec))
+    assert served == ["parquet"]
+    assert ("maintained", "count") not in measured
+    count = next(r for r in records if r.get("query") == "count" and r["checkpoint"] == "maintained")
+    assert count["status"] == "skipped"
+
+
+@pytest.mark.usefixtures("bench_dirs")
 def test_iceberg_maintenance_rewrites_each_day_into_one_file() -> None:
     start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
     data = pa.table(
@@ -182,6 +219,37 @@ def test_iceberg_maintenance_rewrites_each_day_into_one_file() -> None:
     table = iceberg.catalog.load_table("bench.x")
     assert table.inspect.partitions()["file_count"].to_pylist() == [1, 1, 1]
     assert sorted(table.scan().to_arrow()["v"].to_pylist()) == list(range(60))
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_parquet_files_go_to_the_day_of_their_time_in_any_unit() -> None:
+    from timebench.systems.parquet import ParquetFiles
+
+    place = Place(Target("local"), "days", "parquet")
+    place.clear()
+    parquet = ParquetFiles(place, "bench")
+    parquet.create(TableSpec("x", "time", ()), pa.schema([("time", pa.timestamp("ns", tz="UTC"))]))
+    times = [START + dt.timedelta(hours=h) for h in (23, 25)]
+    parquet.append("x", pa.table({"time": pa.array(times, pa.timestamp("ns", tz="UTC"))}))
+    assert sorted(d.name for d in (place.local_dir / "lake" / "x").iterdir()) == ["day=2026-01-01", "day=2026-01-02"]
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_questdb_maintenance_closes_the_idle_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    from timebench.systems.questdb import QuestDB
+
+    class Connection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    questdb = QuestDB(Place(Target("local"), "tiny", "questdb"), "tiny")
+    monkeypatch.setattr(questdb, "execute", lambda *_: [(0,)])
+    idle = Connection()
+    monkeypatch.setattr(questdb, "_conn", idle)  # the connection ingest left open
+    questdb.maintain()
+    assert idle.closed
 
 
 def test_mismatches_name_the_readers_that_disagree() -> None:
@@ -277,6 +345,19 @@ def test_costs_at_list_prices() -> None:
     assert storage_month(1024**3, "aws-s3") == pytest.approx(0.023)
 
 
+def test_the_report_prices_only_what_the_run_priced(tmp_path: Path) -> None:
+    """A database server's disk or S3 Tables isn't billed at S3 Standard's storage price."""
+    path = tmp_path / "run.jsonl"
+    header = {"kind": "run", "id": "r", "workload": "tiny", "scale": "one", "target": "aws-s3", "params": {}}
+    append_jsonl(path, {**header, "commit": "0" * 40, "machine": "m", "started": "2026-10-20T00:00:00+00:00"})
+    append_jsonl(path, {"kind": "ingest", "system": "questdb", "status": "ok", "bytes": 10 * 1024**3})
+    append_jsonl(path, {"kind": "ingest", "system": "parquet", "status": "ok", "bytes": 1024**3})
+    append_jsonl(path, {"kind": "maintain", "system": "parquet", "status": "ok", "storage_usd_month": 0.023})
+    report = markdown(Run(path))
+    assert "| parquet |  |  | $0.0230 |" in report
+    assert "| questdb |" not in report.split("## Cost")[1]
+
+
 @pytest.mark.parametrize("ordered", [True, False])
 def test_streamed_windows_match_the_in_memory_split(tmp_path: Path, *, ordered: bool) -> None:
     """Windows read batch by batch from a time-ordered file are the ones ``windows`` makes; out of order, the same."""
@@ -288,7 +369,27 @@ def test_streamed_windows_match_the_in_memory_split(tmp_path: Path, *, ordered: 
     path = tmp_path / "t.parquet"
     pq.write_table(table, path, row_group_size=4)  # windows span row groups
     expected = windows(table, 5)
-    assert [t.to_pylist() for t in stream_windows(str(path), 5)] == [t.to_pylist() for t in expected]
+    assert [(w, t.to_pylist()) for w, t in stream_windows(str(path), 5)] == [(w, t.to_pylist()) for w, t in expected]
+
+
+def test_tsbs_arrivals_hold_each_window_of_every_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A table without rows in a window doesn't shift the other tables' windows into the wrong arrival."""
+    from timebench import workloads
+    from timebench.workloads.tsbs import TsbsIot
+
+    monkeypatch.setattr(workloads, "DATA", tmp_path)
+    iot = TsbsIot("small")
+    iot.data_dir.mkdir(parents=True)
+    for table, minutes in (("readings", [0, 5, 15]), ("diagnostics", [1, 10, 16])):
+        times = pa.array([START + dt.timedelta(minutes=m) for m in minutes], pa.timestamp("us", tz="UTC"))
+        pq.write_table(pa.table({"time": times, "tags_id": [1, 2, 3]}), iot.path(table))
+    arrivals = [[(name, data["tags_id"].to_pylist()) for name, data in arrival] for arrival in iot.stream()]
+    assert arrivals == [
+        [("readings", [1]), ("diagnostics", [1])],
+        [("readings", [2])],
+        [("diagnostics", [2])],
+        [("readings", [3]), ("diagnostics", [3])],
+    ]
 
 
 @pytest.mark.usefixtures("bench_dirs")
@@ -306,6 +407,35 @@ def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.Mon
     done, _ = harness.ingest(spec, system, lambda _: None)
     assert done["status"] == "ok", done
     assert done["seconds"] < 2
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_ingest_seconds_leave_out_reading_the_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading and splitting the generated files is the harness's work, not the system's."""
+    workload = Tiny()
+    workload.arrival_pause = 0.05  # 2.4 s over 48 arrivals
+    initial = workload.initial
+
+    def slow_initial() -> Iterator[Batch]:
+        time.sleep(1)
+        yield from initial()
+
+    monkeypatch.setattr(workload, "initial", slow_initial)
+    spec = harness.RunSpec(workload=workload, target=Target("local"), systems=["parquet"], checkpoints=())
+    done, _ = harness.ingest(spec, spec.system("parquet"), lambda _: None)
+    assert done["status"] == "ok", done
+    assert done["seconds"] < 1.5
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_paced_arrivals_read_their_data_while_they_wait() -> None:
+    """With ``--pace``, arrivals are ``pace`` seconds apart; reading the next one fits in that wait."""
+    workload = Tiny()
+    workload.hours, workload.arrival_pause = 6, 0.1
+    spec = harness.RunSpec(workload=workload, target=Target("local"), systems=["parquet"], checkpoints=(), pace=0.2)
+    done, _ = harness.ingest(spec, spec.system("parquet"), lambda _: None)
+    assert done["status"] == "ok", done
+    assert 0.95 <= done["seconds"] < 1.4  # 5 gaps of 0.2 s between the 6 arrivals, and their commits
 
 
 class FakeProxy:
@@ -339,6 +469,62 @@ def test_ingest_requests_leave_out_the_checkpoint_queries(monkeypatch: pytest.Mo
     assert done["status"] == "ok", done
     assert done["requests"] == 1 + 48  # the devices, then each arrival
     assert done["kinds"] == {"GET": 49}
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_maintenance_requests_leave_out_reading_the_state_and_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Listing the tables or loading their metadata afterwards is the harness's bookkeeping, not maintenance."""
+    proxy = FakeProxy()
+    monkeypatch.setattr(harness, "PROXY", proxy)
+    monkeypatch.setattr(harness, "counted", lambda _: True)
+    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
+    system = spec.system("parquet")
+    harness.ingest(spec, system, lambda _: None)
+    for method, requests in (("maintain", 1), ("state", 100), ("stats", 10_000)):
+        original = getattr(system, method)
+
+        def bumped(original: Callable[[], object] = original, requests: int = requests) -> object:
+            proxy.requests += requests
+            return original()
+
+        monkeypatch.setattr(system, method, bumped)
+    done = harness.maintain(system)
+    assert done["status"] == "ok", done
+    assert done["requests"] == 1
+
+
+@pytest.mark.usefixtures("bench_dirs")
+def test_ingest_requests_leave_out_saving_the_state_for_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = FakeProxy()
+    monkeypatch.setattr(harness, "PROXY", proxy)
+    monkeypatch.setattr(harness, "counted", lambda _: True)
+
+    class NoProbes:
+        def __init__(self, *_: object) -> None:
+            self.thread = threading.Thread()
+
+        def start(self) -> None:
+            pass
+
+        def committed(self, _newest: int) -> None:
+            pass
+
+        def finish(self) -> None:
+            return None
+
+    monkeypatch.setattr(harness, "Prober", NoProbes)
+    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], live_interval=1)
+    system = spec.system("parquet")
+    state = system.state
+
+    def counted_state() -> dict[str, object]:
+        proxy.requests += 100
+        return state()
+
+    monkeypatch.setattr(system, "state", counted_state)
+    done, _ = harness.ingest(spec, system, lambda _: None)
+    assert done["status"] == "ok", done
+    assert done.get("requests", 0) == 0
 
 
 def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -387,7 +573,8 @@ job = json.loads(sys.argv[1])
 time.sleep(0.4 * job["offset"])  # opening the reader: slower for some clients
 print("ready", flush=True)
 start_at = float(sys.stdin.readline())
-print(json.dumps({"setup_s": 0, "latencies": [["q", start_at]], "errors": []}))
+# A query that finished after the measured seconds: a latency, but not part of the throughput.
+print(json.dumps({"setup_s": 0, "latencies": [["q", start_at], ["q", 0.1]], "errors": [], "finished": 1}))
 """
 
 
@@ -405,8 +592,36 @@ def test_concurrent_clients_start_together_once_all_are_open(monkeypatch: pytest
         1,
     )
     assert record["errors"] == 0, record.get("error")
-    assert record["p50_s"] == record["p95_s"]  # each fake client reports the start it was given: the same one
-    assert record["p50_s"] >= started + 0.8  # after the slowest client had opened its reader
+    assert record["p95_s"] == record["p99_s"]  # each fake client reports the start it was given: the same one
+    assert record["p95_s"] >= started + 0.8  # after the slowest client had opened its reader
+    assert (record["queries"], record["qps"]) == (3, 3.0)
+
+
+def test_a_client_counts_only_the_queries_that_finished_in_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """qps is queries per second over the measured seconds: one still running at the end isn't in them."""
+    import io
+
+    from timebench import worker
+
+    class Fake:
+        @classmethod
+        def open_reader(cls, *_: object) -> object:
+            return lambda _sql: time.sleep(0.2)
+
+    monkeypatch.setattr(worker, "systems", lambda: {"fake": Fake})
+    monkeypatch.setattr(Place, "load_state", lambda _: {})
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"{time.time()}\n"))
+    job = {
+        "target": "local",
+        "dataset": "d",
+        "system": "fake",
+        "reader": "r",
+        "seconds": 0.3,
+        "queries": [{"name": "q", "sql": "x"}],
+    }
+    out = worker.client(job)
+    assert len(out["latencies"]) == 2  # started at 0 and 0.2 s
+    assert out["finished"] == 1
 
 
 def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(monkeypatch: pytest.MonkeyPatch) -> None:

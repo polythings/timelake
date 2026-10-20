@@ -60,6 +60,8 @@ def column_sum(column: pa.ChunkedArray) -> float | None:
         numbers, scale = pc.cast(column.cast(pa.timestamp(t.unit)), pa.int64()), 1 / per_second
     elif pa.types.is_date32(t):
         numbers, scale = pc.cast(column, pa.int32()), 86_400
+    elif pa.types.is_date64(t):
+        numbers, scale = pc.cast(column, pa.int64()), 1e-3
     elif pa.types.is_boolean(t):
         numbers, scale = pc.cast(column, pa.int8()), 1
     elif pa.types.is_integer(t) or pa.types.is_floating(t) or pa.types.is_decimal(t):

@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, override
 
 import numpy as np
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 
@@ -21,8 +20,6 @@ from timebench.systems import Runner, System, arrow_result, duckdb_connection, d
 if TYPE_CHECKING:
     from timebench.targets import Place
     from timebench.workloads import TableSpec
-
-DAY_US = 86_400_000_000
 
 
 class ParquetFiles(System):
@@ -63,10 +60,10 @@ class ParquetFiles(System):
         if not spec.time_column:
             self.write(f"{self.dir(table)}/{uuid.uuid4().hex}.parquet", data)
             return
-        days = pc.cast(data[spec.time_column], pa.int64()).to_numpy() // DAY_US
+        days = data[spec.time_column].to_numpy().astype("datetime64[D]")  # from the column's own unit
         for day in np.unique(days):
             part = data.filter(pa.array(days == day))
-            self.write(f"{self.dir(table)}/day={day_name(int(day))}/{uuid.uuid4().hex}.parquet", part)
+            self.write(f"{self.dir(table)}/day={day}/{uuid.uuid4().hex}.parquet", part)
 
     def write(self, path: str, data: pa.Table) -> None:
         """Writes one file, atomically: readers listing the directory never see it half-written."""
@@ -137,8 +134,3 @@ class ParquetFiles(System):
             days = [("day", "string")] if state["specs"][t]["time_column"] else []
             ctx.register_parquet(t, f"{location}/", table_partition_cols=days)
         return lambda sql: arrow_result(ctx.sql(sql).to_arrow_table())
-
-
-def day_name(day: int) -> str:
-    """``2026-01-03`` for a day number since the epoch."""
-    return str(np.datetime64(day, "D"))

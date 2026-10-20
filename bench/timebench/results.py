@@ -158,7 +158,7 @@ class ConcurrencyRecord(TypedDict, total=False):
     clients: int
     seconds: float
     queries: int
-    """Queries completed by all clients."""
+    """Queries all clients finished within ``seconds`` (``qps`` is these per second)."""
     qps: float
     p50_s: float
     p95_s: float

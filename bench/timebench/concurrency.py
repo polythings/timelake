@@ -2,8 +2,8 @@
 
 Each client is its own process, like a dashboard backend; it opens the system's own reader once and loops over the
 queries (starting at a different one per client) for a fixed time. The clients start querying together, once every
-one has opened its reader, so they overlap for the whole time. Reported: queries per second over all clients, latency
-percentiles, and errors.
+one has opened its reader, so they overlap for the whole time. Reported: queries per second over all clients (the
+queries that finished within the time), latency percentiles (of every query), and errors.
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ def dashboards(
     ready = opened(procs, SETUP_GRACE_S)
     start_at = time.time() + START_DELAY_S
     latencies: list[float] = []
+    finished = 0  # queries that finished within the seconds
     errors: list[str] = []
     for proc, is_ready in zip(procs, ready, strict=True):
         if not is_ready:
@@ -86,6 +87,7 @@ def dashboards(
             continue
         out = json.loads(stdout.strip().splitlines()[-1])
         latencies += [t for _, t in out["latencies"]]
+        finished += out["finished"]
         errors += out["errors"]
     record: ConcurrencyRecord = {
         "kind": "concurrency",
@@ -94,8 +96,8 @@ def dashboards(
         "checkpoint": checkpoint,
         "clients": clients,
         "seconds": seconds,
-        "queries": len(latencies),
-        "qps": round(len(latencies) / seconds, 2),
+        "queries": finished,
+        "qps": round(finished / seconds, 2),
         "errors": len(errors),
     }
     if latencies:

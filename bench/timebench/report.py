@@ -7,8 +7,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any, cast
 
 from timebench import RUNS
-from timebench.cost import phase_cost, query_cost, storage_month
-from timebench.results import IngestRecord, QueryRecord, best_time, first_time, geomean, read_jsonl
+from timebench.results import QueryRecord, best_time, first_time, geomean, read_jsonl
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -194,18 +193,19 @@ def cost_section(run: Run) -> list[str]:
     def money(x: float | None, digits: int = 2) -> str:
         return "" if x is None else f"${x:.{digits}f}"
 
+    # Only what the run priced (``harness.priced``): servers' disks and S3 Tables have no price here.
     rows = []
     for r in run.ingest:
-        ingest = r.get("usd", phase_cost(cast("IngestRecord", r), target))
+        ingest = r.get("usd")
         maintained = next((m for m in run.maintain if m["system"] == r["system"]), r)
-        stored = maintained.get("storage_usd_month", storage_month(maintained.get("bytes", 0), target))
+        stored = maintained.get("storage_usd_month")
         if ingest is None and stored is None:
             continue
         per_month = None if ingest is None else ingest * month
         rows.append(f"| {r['system']} | {money(ingest)} | {money(per_month)} | {money(stored, 4)} |")
     by_engine: dict[str, list[float]] = defaultdict(list)
     for q in run.queries:
-        c = q.get("usd", query_cost(q, target))
+        c = q.get("usd")
         if q["status"] == "ok" and q["checkpoint"] == "maintained" and c is not None:
             by_engine[f"{q['system']}+{q['reader']}"].append(c)
     if not rows and not by_engine:

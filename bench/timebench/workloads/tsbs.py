@@ -5,6 +5,7 @@ IoT is a truck fleet's readings and diagnostics; DevOps (cpu-only) is servers' C
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import shutil
 import subprocess
@@ -28,7 +29,11 @@ START, END = "2026-01-01T00:00:00Z", "2026-01-04T00:00:00Z"
 GENERATOR = BENCH / ".bin" / "tsbs_generate_data"
 
 
-def windows(table: pa.Table, minutes: int) -> list[pa.Table]:
+Window = tuple[int, pa.Table]
+"""A time window's number (since the epoch, in windows) and its rows."""
+
+
+def windows(table: pa.Table, minutes: int) -> list[Window]:
     """Splits a table by time window, in time order; rows within a window keep their order."""
     us = pc.cast(table["time"], pa.int64()).to_numpy()
     w = us // (minutes * 60_000_000)
@@ -36,7 +41,7 @@ def windows(table: pa.Table, minutes: int) -> list[pa.Table]:
     table, w = table.take(order), w[order]
     cuts = np.flatnonzero(np.diff(w)) + 1
     bounds = [0, *cuts.tolist(), len(w)]
-    return [table.slice(a, b - a) for a, b in itertools.pairwise(bounds)]
+    return [(int(w[a]), table.slice(a, b - a)) for a, b in itertools.pairwise(bounds)]
 
 
 def window_ids(path: str, minutes: int) -> np.ndarray:
@@ -45,7 +50,7 @@ def window_ids(path: str, minutes: int) -> np.ndarray:
     return us // (minutes * 60_000_000)
 
 
-def stream_windows(path: str, minutes: int) -> Iterator[pa.Table]:
+def stream_windows(path: str, minutes: int) -> Iterator[Window]:
     """A table's time windows in order, as ``windows`` splits them.
 
     When the file is already in window order (TSBS DevOps), only one window is held in memory at a time; otherwise
@@ -65,12 +70,23 @@ def stream_windows(path: str, minutes: int) -> Iterator[pa.Table]:
         for a, b in itertools.pairwise(cuts):
             window = int(batch_ids[a])
             if current is not None and window != current:
-                yield pa.concat_tables(pending)
+                yield current, pa.concat_tables(pending)
                 pending = []
             current = window
             pending.append(part.slice(a, b - a))
-    if pending:
-        yield pa.concat_tables(pending)
+    if current is not None:
+        yield current, pa.concat_tables(pending)
+
+
+def by_window(tables: dict[str, Iterator[Window]]) -> Iterator[list[Batch]]:
+    """One arrival per time window: the rows of every table that has some in it, in window order."""
+
+    def named(name: str, windows_: Iterator[Window]) -> Iterator[tuple[int, Batch]]:
+        return ((w, (name, data)) for w, data in windows_)
+
+    merged = heapq.merge(*(named(n, ws) for n, ws in tables.items()), key=lambda x: x[0])  # stable: table order
+    for _, arrival in itertools.groupby(merged, key=lambda x: x[0]):
+        yield [batch for _, batch in arrival]
 
 
 class TsbsWorkload(Workload):
@@ -143,12 +159,8 @@ class TsbsWorkload(Workload):
     @override
     def stream(self) -> Iterator[list[Batch]]:
         names = [t.name for t in self.tables if t.time_column]
-        per_table = [stream_windows(self.path(n), self.window_minutes) for n in names]
-        arrivals = zip(*per_table, strict=False)
-        if self.max_windows:
-            arrivals = itertools.islice(arrivals, self.max_windows)
-        for batches in arrivals:
-            yield list(zip(names, batches, strict=True))
+        arrivals = by_window({n: stream_windows(self.path(n), self.window_minutes) for n in names})
+        yield from itertools.islice(arrivals, self.max_windows or None)
 
 
 class TsbsIot(TsbsWorkload):

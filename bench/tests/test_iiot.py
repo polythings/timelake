@@ -96,11 +96,12 @@ def test_arrow_and_row_results_sum_the_same() -> None:
             "tag": ["a"] * 5000,
             "time": pa.array(times, pa.timestamp("ns", tz="UTC")),  # the sum in nanoseconds overflows 64 bits
             "day": pa.array([t.date() for t in times], pa.date32()),
+            "day64": pa.array([t.date() for t in times], pa.date64()),
             "n": pa.array(range(5000), pa.int64()),
             "ok": [True, False] * 2500,
         }
     )
-    rows = [(r["tag"], r["time"], r["day"], decimal.Decimal(r["n"]), r["ok"]) for r in table.to_pylist()]
+    rows = [(r["tag"], r["time"], r["day"], r["day64"], decimal.Decimal(r["n"]), r["ok"]) for r in table.to_pylist()]
     from_arrow, from_rows = arrow_result(table), rows_result(rows)
     assert from_arrow.rows == from_rows.rows == 5000
     assert from_arrow.sums == pytest.approx(from_rows.sums)

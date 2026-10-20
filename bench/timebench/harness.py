@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import itertools
 import json
 import math
 import os
@@ -147,17 +148,11 @@ def run(spec: RunSpec) -> Path:
 
     results: list[QueryRecord] = []
     now = spec.workload.stages()[-1].now  # the data's present once everything arrived
-    if spec.reuse:
-        for checkpoint in spec.checkpoints or (*spec.workload.checkpoints(), "maintained"):
-            results += query_pass(spec, path, list(spec.systems), At(checkpoint, now))
-        for s in spec.systems:
-            run_dashboards(spec, path, s, now)
-    else:
-        # One system at a time, start to finish, so a database server has the machine to itself (``server``).
-        for s in spec.systems:
-            with server(spec.system(s), path) as up:
-                if up:
-                    results += run_system(spec, path, s, now, results)
+    # One system at a time, start to finish, so a database server has the machine to itself (``server``).
+    for s in spec.systems:
+        with server(spec.system(s), path) as up:
+            if up:
+                results += (reuse_system if spec.reuse else run_system)(spec, path, s, now, results)
 
     finished = dt.datetime.now(dt.timezone.utc)
     end: EndRecord = {
@@ -185,6 +180,17 @@ def run_system(spec: RunSpec, path: Path, name: str, now: int | None, earlier: l
         if not record(path, maintain(spec.system(name))):
             return results
         results += query_pass(spec, path, [name], At("maintained", now), [*earlier, *results])
+    run_dashboards(spec, path, name, now)
+    return results
+
+
+def reuse_system(
+    spec: RunSpec, path: Path, name: str, now: int | None, earlier: list[QueryRecord]
+) -> list[QueryRecord]:
+    """One system's queries on the tables an earlier run left, at each checkpoint, then concurrent dashboards."""
+    results: list[QueryRecord] = []
+    for checkpoint in spec.checkpoints or (*spec.workload.checkpoints(), "maintained"):
+        results += query_pass(spec, path, [name], At(checkpoint, now), [*earlier, *results])
     run_dashboards(spec, path, name, now)
     return results
 
@@ -384,28 +390,31 @@ def ingest(
 ) -> tuple[IngestRecord, LiveRecord | None]:
     """Creates the tables, loads the initial rows, then commits every arrival of the stream, stage by stage.
 
-    After each stage, ``checkpoint`` runs its queries (not counted as ingest time or requests). With
-    ``live_interval`` set, fresh readers probe the tables during the live stage, through the proxy's uncounted
-    listener (``live.py``).
+    After each stage, ``checkpoint`` runs its queries (not counted as ingest time or requests). Reading the workload's
+    data isn't timed either. With ``live_interval`` set, fresh readers probe the tables during the live stage, through
+    the proxy's uncounted listener (``live.py``).
     """
     out: IngestRecord = {"kind": "ingest", "system": system.name}
     workload = spec.workload
-    writer = Writer(spec, system)
-    spent: list[IngestRecord] = []
+    requests = Requests(system)
+    writer = Writer(spec, system, requests)
     stages: dict[str, StageRecord] = {}
     try:
         system.reset()  # not timed: its cost depends on what the last run left
-        with requests_into(spent, system):
+        schemas = {t.name: workload.schema(t.name) for t in workload.tables}
+        statements = workload.tuning_statements(system.name) if system.tuned else []
+        initial = list(workload.initial())
+        with requests.counting():
             start = time.perf_counter()
             for t in workload.tables:
-                system.create(t, workload.schema(t.name))
+                system.create(t, schemas[t.name])
             if system.tuned:
-                system.tune(workload.tuning_statements(system.name))
-            for table, data in workload.initial():
+                system.tune(statements)
+            for table, data in initial:
                 system.append(table, data)
             setup = time.perf_counter() - start
         for stage in workload.stages():
-            with requests_into(spent, system):
+            with requests.counting():
                 done = writer.stage(stage)
             system.place.save_state({**system.state(), "phase": stage.checkpoint or stage.name, "ingested_at": now()})
             stats = system.stats()
@@ -437,35 +446,51 @@ def ingest(
     probes = writer.finish_probes()
     if probes:
         out["probed"] = True
-    return priced({**out, **sum_requests(spent)}, system), probes
+    return priced({**out, **requests.total()}, system), probes
 
 
 class Writer:
     """Commits a system's stages: every arrival's batches, timed, and probes while the live stage arrives."""
 
-    def __init__(self, spec: RunSpec, system: System) -> None:
+    def __init__(self, spec: RunSpec, system: System, requests: Requests) -> None:
         self.spec = spec
         self.system = system
+        self.requests = requests
         self.latencies: list[float] = []
         """Seconds per commit."""
         self.prober: Prober | None = None
         self.probes: LiveRecord | None = None
 
     def stage(self, stage: Stage) -> StageRecord:
-        """Commits a stage's arrivals (paced and probed if it's live), then waits until readers can see them all."""
+        """Commits a stage's arrivals (paced and probed if it's live), then waits until readers can see them all.
+
+        Its seconds leave out reading the arrivals from the workload's files, except where that overlapped the wait
+        for the next arrival's time.
+        """
         start = time.perf_counter()
         rows, commits = 0, len(self.latencies)
-        for i, arrival in enumerate(stage.arrivals):
+        pace = self.spec.pace if stage.live else 0.0
+        due = start  # when the next arrival may be committed
+        reading = 0.0  # seconds spent reading arrivals beyond the waits they overlapped
+        arrivals = iter(stage.arrivals)
+        for i in itertools.count():
+            before = time.perf_counter()
+            arrival = next(arrivals, None)
+            ready = time.perf_counter()
+            if arrival is None:
+                reading += ready - before
+                break
+            reading += max(ready, due) - max(before, due)
+            time.sleep(max(0.0, due - ready))
             arrived = time.perf_counter()
             rows += self.commit(arrival)
+            due = arrived + pace
             if i == 0 and stage.live:
                 self.start_probes()
             if i % 100 == 0:
                 print(f"  {self.system.name}: {stage.name} arrival {i}, {time.perf_counter() - start:.1f}s", flush=True)
-            if self.spec.pace and stage.live:
-                time.sleep(max(0.0, arrived + self.spec.pace - time.perf_counter()))
         settle = self.system.settle()  # rows a reader can't see yet haven't finished arriving
-        seconds = time.perf_counter() - start
+        seconds = time.perf_counter() - start - reading
         if self.prober and self.probes is None:
             self.probes = self.prober.finish()  # before the checkpoint's queries, which would compete with them
         done: StageRecord = {"rows": rows, "commits": len(self.latencies) - commits, "seconds": round(seconds, 2)}
@@ -492,7 +517,8 @@ class Writer:
         spec, system = self.spec, self.system
         if self.prober or not (spec.live_interval and spec.workload.live_table) or system.name == REFERENCE:
             return
-        system.place.save_state({**system.state(), "phase": "ingesting"})  # readers can find the tables now
+        with self.requests.paused():  # the harness's bookkeeping, not the system's ingest
+            system.place.save_state({**system.state(), "phase": "ingesting"})  # readers can find the tables now
         self.prober = Prober(spec.workload, system, spec.live_interval)
         self.prober.start()
 
@@ -514,10 +540,11 @@ def newest_second(data: pa.Table, time_column: str | None) -> int:
 def maintain(system: System) -> IngestRecord:
     """Runs the system's maintenance on what ingest left."""
     out: IngestRecord = {"kind": "maintain", "system": system.name}
-    before = PROXY.stats() if counted(system) else None
-    start = time.perf_counter()
+    requests = Requests(system)
     try:
-        system.maintain()
+        start = time.perf_counter()
+        with requests.counting():
+            system.maintain()
         seconds = time.perf_counter() - start
         state = {**system.place.load_state(), **system.state(), "phase": "maintained"}
         system.place.save_state(state)
@@ -526,7 +553,7 @@ def maintain(system: System) -> IngestRecord:
         out.update(system.maintain_extras())
     except Exception as e:  # noqa: BLE001 (as in ingest)
         out.update(status="error", error=f"{type(e).__name__}: {e}"[:300])
-    return priced({**out, **proxy_delta(before)}, system)
+    return priced({**out, **requests.total()}, system)
 
 
 def storage(system: System) -> IngestRecord:
@@ -555,14 +582,46 @@ def priced(r: IngestRecord, system: System) -> IngestRecord:
     return r
 
 
-@contextlib.contextmanager
-def requests_into(spent: list[IngestRecord], system: System) -> Generator[None]:
-    """Adds the S3 requests made inside the block to ``spent`` (nothing if the system's traffic isn't counted)."""
-    before = PROXY.stats() if counted(system) else None
-    try:
-        yield
-    finally:
-        spent.append(proxy_delta(before))
+class Requests:
+    """The S3 requests of one phase through the counting proxy, where the system's traffic is counted."""
+
+    def __init__(self, system: System) -> None:
+        self.counted = counted(system)
+        self.spent: list[IngestRecord] = []
+        self._since: ProxyStats | None = None
+        """The counters when the open stretch of counting started (None when not counting)."""
+
+    @contextlib.contextmanager
+    def counting(self) -> Generator[None]:
+        """Counts the requests made inside the block."""
+        self._open()
+        try:
+            yield
+        finally:
+            self._close()
+
+    @contextlib.contextmanager
+    def paused(self) -> Generator[None]:
+        """Leaves the requests made inside the block out, within ``counting``."""
+        was_counting = self._since is not None
+        self._close()
+        try:
+            yield
+        finally:
+            if was_counting:
+                self._open()
+
+    def total(self) -> IngestRecord:
+        """The requests counted so far, with their kinds (nothing if the traffic isn't counted)."""
+        return sum_requests(self.spent)
+
+    def _open(self) -> None:
+        self._since = PROXY.stats() if self.counted else None
+
+    def _close(self) -> None:
+        if self._since is not None:
+            self.spent.append(proxy_delta(self._since))
+            self._since = None
 
 
 def sum_requests(spent: list[IngestRecord]) -> IngestRecord:

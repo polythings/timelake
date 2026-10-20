@@ -15,6 +15,7 @@ unless `--queries-only` reruns the queries on a warehouse an earlier run wrote (
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import statistics
@@ -25,7 +26,7 @@ import pyarrow.parquet as pq
 
 import timelake
 from timebench import DATA, TSBS_TIME_SERIES
-from timebench.workloads.tsbs import windows
+from timebench.workloads.tsbs import by_window, windows
 
 QUERIES = {
     "one-truck-latest": "SELECT time, latitude, longitude FROM readings WHERE tags_id = 1 ORDER BY time DESC LIMIT 1",
@@ -56,8 +57,9 @@ def ingest(url: str, options: dict[str, str], properties: dict[str, str], n_wind
         for n in TSBS_TIME_SERIES
     }
     latencies: list[float] = []
-    for batches in zip(*(windows(source[n], 5)[:n_windows] for n in TSBS_TIME_SERIES), strict=True):
-        for name, batch in zip(TSBS_TIME_SERIES, batches, strict=True):
+    arrivals = by_window({n: iter(windows(source[n], 5)) for n in TSBS_TIME_SERIES})
+    for arrival in itertools.islice(arrivals, n_windows):
+        for name, batch in arrival:
             started = time.perf_counter()
             tables[name].append(batch)
             latencies.append(time.perf_counter() - started)

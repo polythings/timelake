@@ -77,8 +77,8 @@ def client(job: dict[str, Any]) -> dict[str, Any]:
     client of the run gets (``concurrency.py``), so they all query over the same seconds.
 
     A query that fails is counted once and left out from then on (a dashboard panel showing an error isn't retried in
-    a loop), so a failure that comes back at once doesn't spin the client. Prints each query's name and seconds, and
-    the errors.
+    a loop), so a failure that comes back at once doesn't spin the client. Prints each query's name and seconds, the
+    errors, and how many queries finished within the seconds (``finished``: the last one may run past them).
     """
     place = Place(Target(job["target"]), job["dataset"], job["system"], job.get("tuning", "tuned"))
     setup_start = time.perf_counter()
@@ -87,6 +87,7 @@ def client(job: dict[str, Any]) -> dict[str, Any]:
     queries: list[tuple[str, str]] = [(q["name"], q["sql"]) for q in job["queries"]]
     latencies: list[tuple[str, float]] = []
     errors: list[str] = []
+    finished = 0
     print("ready", flush=True)
     start_at = float(sys.stdin.readline())
     time.sleep(max(0.0, start_at - time.time()))
@@ -104,7 +105,8 @@ def client(job: dict[str, Any]) -> dict[str, Any]:
             continue
         i += 1
         latencies.append((name, time.perf_counter() - start))
-    return {"setup_s": setup_s, "latencies": latencies, "errors": errors}
+        finished += time.monotonic() <= deadline
+    return {"setup_s": setup_s, "latencies": latencies, "errors": errors, "finished": finished}
 
 
 def main() -> None:

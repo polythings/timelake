@@ -174,7 +174,9 @@ class QuestDB(System):
 
     @override
     def maintain(self) -> None:
-        self._conn = None  # the server closes connections left idle since ingest
+        if self._conn is not None:  # the server closes connections left idle since ingest: start a new one
+            self._conn.close()
+            self._conn = None
         self.close_db()
         self.settle()  # nothing to compact: deduplicated on write, partitions written in order
 
