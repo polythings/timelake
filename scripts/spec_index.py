@@ -10,8 +10,9 @@ uv run python scripts/spec_index.py --check   # fail if one is out of date (a pr
 import json
 import re
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TypedDict
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "spec"
@@ -33,7 +34,49 @@ VERSION = re.compile(r"\d+\.\d+\.\d+|unreleased")
 NOT_PAGES = {"README.md", "TEMPLATE.md"}
 
 Fields = dict[str, Any]
-Page = dict[str, Any]
+"""A file's front matter, as parsed: strings and lists of strings."""
+
+
+class Spec(TypedDict):
+    """A spec, as the indexes and the website list it."""
+
+    number: int
+    slug: str
+    title: str
+    area: str
+    status: str
+    updated: str
+    versions: list[str]
+    summary: str
+    related: list[int]
+    issues: list[int]
+    milestones: list[str]
+    """Slugs of the milestones it is part of."""
+
+
+class Milestone(TypedDict):
+    """A milestone of the roadmap."""
+
+    number: int
+    slug: str
+    title: str
+    status: str
+    versions: str | list[str]
+    """Its releases: a list, or an open range such as ``0.5.0–``."""
+    updated: str
+    description: str
+    summary: str
+    specs: list[int]
+    issues: list[int]
+
+
+class Background(TypedDict):
+    """A background page: spec/*.md that isn't a spec."""
+
+    slug: str
+    title: str
+    updated: str
+    summary: str
 
 
 def fail(message: str) -> NoReturn:
@@ -71,9 +114,9 @@ def section(path: Path, body: str, name: str) -> str:
     return " ".join(match.group(1).split())
 
 
-def specs() -> list[Page]:
+def specs() -> list[Spec]:
     """Every spec, by number."""
-    found = []
+    found: list[Spec] = []
     for path in SPEC.glob("[0-9][0-9][0-9][0-9]-*.md"):
         fields, body = split(path)
         need(path, fields, ("number", "title", "area", "status", "updated"))
@@ -102,10 +145,10 @@ def specs() -> list[Page]:
     return sorted(found, key=lambda s: s["number"])
 
 
-def milestones(specs_: list[Page]) -> list[Page]:
+def milestones(specs_: list[Spec]) -> list[Milestone]:
     """Every milestone, by number, each spec also listing the milestones it is part of."""
     numbers = {s["number"]: s for s in specs_}
-    found: list[Page] = []
+    found: list[Milestone] = []
     for path in MILESTONES.glob("*.md"):
         if path.name in NOT_PAGES:
             continue
@@ -139,9 +182,9 @@ def milestones(specs_: list[Page]) -> list[Page]:
     return found
 
 
-def background() -> list[Page]:
+def background() -> list[Background]:
     """The background pages: spec/*.md that aren't specs."""
-    found = []
+    found: list[Background] = []
     for path in sorted(SPEC.glob("[a-z]*.md")):
         if path.name in NOT_PAGES:
             continue
@@ -159,7 +202,7 @@ def versions_text(versions: list[str] | str) -> str:
     return ", ".join(versions)
 
 
-def spec_header(spec: Page, by_slug: dict[str, Page], by_number: dict[int, Page]) -> str:
+def spec_header(spec: Spec, by_slug: dict[str, Milestone], by_number: dict[int, Spec]) -> str:
     """A spec's title and status line, as the file shows them on GitHub."""
     parts = [f"**{STATUS[spec['status']]}**", f"updated {spec['updated']}"]
     if spec["versions"]:
@@ -171,7 +214,7 @@ def spec_header(spec: Page, by_slug: dict[str, Page], by_number: dict[int, Page]
     return f"# {spec['number']}. {spec['title']}\n\n{line}\n\n"
 
 
-def milestone_header(m: Page) -> str:
+def milestone_header(m: Milestone) -> str:
     """A milestone's title and status line."""
     parts = [f"**{MILESTONE_STATUS[m['status']]}**"]
     if m["versions"]:
@@ -180,7 +223,7 @@ def milestone_header(m: Page) -> str:
     return f"# {m['title']}\n\n{' · '.join(parts)}\n\n"
 
 
-def spec_table(listed: list[Page], prefix: str, columns: tuple[str, ...]) -> list[str]:
+def spec_table(listed: list[Spec], prefix: str, columns: tuple[str, ...]) -> list[str]:
     """A Markdown table of specs, linked through `prefix`, with the given columns."""
     head = {"number": "#", "title": "Spec", "status": "Status", "versions": "Versions", "updated": "Updated"}
     rule = "|".join("---:" if c == "number" else "---" for c in columns)
@@ -213,7 +256,7 @@ def between(text: str, start: str, end: str, content: str, name: str) -> str:
     return f"{before}{start}\n{content}{end}{after}"
 
 
-def index(specs_: list[Page], background_: list[Page]) -> str:
+def index(specs_: list[Spec], background_: list[Background]) -> str:
     """spec/README.md's index: counts by status, a table per area, and the background pages."""
     out = []
     counts = ", ".join(f"{n} {STATUS[s].lower()}" for s in STATUS if (n := sum(x["status"] == s for x in specs_)))
@@ -228,7 +271,7 @@ def index(specs_: list[Page], background_: list[Page]) -> str:
     return "\n" + "\n".join(out) + "\n\n"
 
 
-def roadmap(specs_: list[Page], milestones_: list[Page]) -> str:
+def roadmap(specs_: list[Spec], milestones_: list[Milestone]) -> str:
     """spec/milestones/README.md: the milestones by status, each with its specs."""
     by_number = {s["number"]: s for s in specs_}
     out = []
@@ -248,7 +291,7 @@ def roadmap(specs_: list[Page], milestones_: list[Page]) -> str:
     return "\n" + "\n".join(out)
 
 
-def json_list(entries: list[Page]) -> str:
+def json_list(entries: Sequence[Mapping[str, object]]) -> str:
     """A list of flat objects, formatted as oxfmt would format it."""
     blocks = []
     for entry in entries:
@@ -262,7 +305,7 @@ def ts_key(name: str) -> str:
     return name if name.isidentifier() else f'"{name}"'
 
 
-def pages_ts(specs_: list[Page], milestones_: list[Page], background_: list[Page]) -> str:
+def pages_ts(specs_: list[Spec], milestones_: list[Milestone], background_: list[Background]) -> str:
     """The website's imports of each page's Markdown, rendered at build time."""
 
     def record(name: str, paths: list[tuple[str, str]]) -> str:
