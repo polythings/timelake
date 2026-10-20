@@ -10,6 +10,17 @@ set -Eeuo pipefail  # -E: functions inherit the ERR trap
 cd "$(dirname "$0")"
 source env.sh
 
+# online <instance>: waits until SSM can reach the instance, for 10 minutes at most
+online() {
+  for _ in $(seq 60); do
+    [ "$(aws ssm describe-instance-information --filters Key=InstanceIds,Values="$1" \
+      --query 'InstanceInformationList[0].PingStatus' --output text)" = Online ] && return
+    sleep 10
+  done
+  echo "$1 isn't online in SSM after 10 minutes" >&2
+  return 1
+}
+
 start() {
   local ref=${1:-$(git rev-parse HEAD)} profile=${2:-weekly} id
   id=$(output InstanceId)
@@ -17,8 +28,7 @@ start() {
   trap 'aws ec2 stop-instances --instance-ids "$id" > /dev/null; echo "start failed; stopping $id"' ERR
   aws ec2 start-instances --instance-ids "$id" > /dev/null
   aws ec2 wait instance-running --instance-ids "$id"
-  until [ "$(aws ssm describe-instance-information --filters Key=InstanceIds,Values="$id" \
-    --query 'InstanceInformationList[0].PingStatus' --output text)" = Online ]; do sleep 10; done
+  online "$id"
   echo "$id is up; running $ref"
   # Stopping wiped the NVMe SSD: mount it again. Then check out the commit (remote.sh runs from it); earlier runs' files
   # are in the bucket already, and may be in the repository by now.

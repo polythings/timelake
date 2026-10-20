@@ -31,7 +31,8 @@ start() {
   docker rm -f "$c" > /dev/null 2>&1 || true
   mkdir -p "$DIR/$name"
   chmod 0777 "$DIR/$name"  # images that run as their own user (InfluxDB) write here too
-  docker run -d --name "$c" --restart unless-stopped "${opts[@]}" "$image" "${cmd[@]}" > /dev/null
+  # ${a[@]+"${a[@]}"}: an empty array under set -u, which bash before 4.4 (macOS's 3.2) calls unbound
+  docker run -d --name "$c" --restart unless-stopped ${opts[@]+"${opts[@]}"} "$image" ${cmd[@]+"${cmd[@]}"} > /dev/null
   echo "$name: started ($image)"
 }
 
@@ -65,7 +66,7 @@ up() {
       local port=58181 limit=(--query-file-limit $INFLUXDB_FILE_LIMIT)
       [ "$1" = influxdb3-defaults ] && port=58182 limit=()
       start "$1" $INFLUXDB -p $port:8181 -v "$DIR/$1:/var/lib/influxdb3" -- influxdb3 serve --node-id bench \
-        --object-store file --data-dir /var/lib/influxdb3/data --without-auth "${limit[@]}"
+        --object-store file --data-dir /var/lib/influxdb3/data --without-auth ${limit[@]+"${limit[@]}"}
       wait_for "$1" curl -sf http://localhost:$port/health
       ;;
     *) echo "unknown server $1 (${ALL[*]})" >&2; return 1 ;;

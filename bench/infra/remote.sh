@@ -40,14 +40,19 @@ proxy() {
   sleep 1
   nohup .bin/s3proxy -aws-bucket "$1" -listen :59100 -listen-uncounted :59102 -admin :59101 -ttfb 0ms >> "$LOGS/s3proxy.log" 2>&1 &
   nohup .bin/s3proxy -aws-bucket "$1" -listen :59000 -admin :59001 -ttfb 0ms >> "$LOGS/s3proxy-setup.log" 2>&1 &
-  until curl -sf localhost:59101/stats > /dev/null && curl -sf localhost:59001/stats > /dev/null; do sleep 0.2; done
+  for _ in $(seq 150); do
+    curl -sf localhost:59101/stats > /dev/null && curl -sf localhost:59001/stats > /dev/null && return
+    sleep 0.2
+  done
+  echo "the S3 proxies didn't start within 30 s: see $LOGS/s3proxy.log and $LOGS/s3proxy-setup.log" >&2
+  return 1
 }
 
 target() {
   case $1 in
     local) storage=local ;;
-    s3) storage=s3; export BENCH_S3_NAME=s3; proxy "$BENCH_DATA_BUCKET" ;;
-    s3x) storage=s3; export BENCH_S3_NAME=s3x; proxy "$BENCH_EXPRESS_BUCKET" ;;
+    s3) storage=s3; proxy "$BENCH_DATA_BUCKET" ;;
+    s3x) storage=s3; proxy "$BENCH_EXPRESS_BUCKET" ;;
     *) echo "unknown target $1"; exit 2 ;;
   esac
 }
@@ -128,17 +133,20 @@ servers() {
   eval "$(infra/servers.sh env)"
 }
 
-# A profile's local entries, then (once those files are in the bucket) its S3 entries.
+# A profile's local entries, then (once those files are in the bucket) its S3 and S3 Express entries.
 run_profile() {
   sudo shutdown -h +1440  # a safety net; the instance stops itself when the run is done (below)
   build_timebench
   servers
   uv run timebench profile "$1" --target local
   sync_out  # each target's run files reach the bucket as soon as they are done
-  if grep -q '^target = "aws-s3"' "profiles/$1.toml"; then
-    target s3
-    uv run timebench profile "$1" --target aws-s3
-  fi
+  for t in s3 s3x; do
+    if grep -q "^target = \"aws-$t\"" "profiles/$1.toml"; then
+      target "$t"
+      uv run timebench profile "$1" --target "aws-$t"
+      sync_out
+    fi
+  done
   infra/servers.sh down
 }
 
