@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime as dt
 import json
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, override
 
 import pyarrow as pa
@@ -16,23 +18,26 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 import pytest
 
-from timebench import harness, targets
+from timebench import harness
+from timebench.config import BenchConfig
 from timebench.cost import PRICES, phase_cost, query_cost, requests_cost, storage_month
 from timebench.live import Commit, Prober, lag
 from timebench.queries import apply_dialect
 from timebench.report import Run, markdown
 from timebench.results import QueryRecord, append_jsonl, read_jsonl
-from timebench.s3 import PROBE_PROXY, PROXY
+from timebench.s3 import PROBE_PROXY, PROXY, ProxyStats, S3Endpoint
 from timebench.systems import DIALECTS, System
 from timebench.systems.iceberg import Iceberg
 from timebench.systems.timescaledb import csv_chunks, pg_type
-from timebench.targets import Place, Target
+from timebench.targets import Place, Target, Tuning
 from timebench.workloads import Batch, Query, TableSpec, Workload
 from timebench.workloads.tsbs import stream_windows, windows
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
+
+    from timebench.worker import Job
 
 START = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
 SCHEMA = pa.schema([("time", pa.timestamp("us", tz="UTC")), ("device", pa.int32()), ("value", pa.float64())])
@@ -100,19 +105,37 @@ class Tiny(Workload):
 
 
 @pytest.fixture
-def bench_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Run files and tables under a temporary directory."""
-    monkeypatch.setattr(targets, "LAKES", tmp_path / "lakes")
-    monkeypatch.setenv("BENCH_LAKES", str(tmp_path / "lakes"))  # for the query processes
+def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> BenchConfig:
+    """Run files and tables under a temporary directory; the query processes get the same settings."""
     monkeypatch.setattr(harness, "RUNS", tmp_path / "runs")
-    return tmp_path
+    return BenchConfig(lakes=tmp_path / "lakes")
 
 
-@pytest.mark.usefixtures("bench_dirs")
+@dataclass(frozen=True)
+class FakeProxy(S3Endpoint):
+    """Counters like the proxy's /stats, bumped by hand."""
+
+    sent: list[int] = field(default_factory=list)
+
+    def bump(self, requests: int) -> None:
+        """Counts requests."""
+        self.sent.append(requests)
+
+    @override
+    def stats(self) -> ProxyStats:
+        n = sum(self.sent)
+        return {"requests": n, "bytes": 0, "kinds": {"GET": n}}
+
+
 @pytest.mark.parametrize("system", ["timelake", "iceberg", "lance", "parquet"])
-def test_a_run_ingests_maintains_and_queries(system: str) -> None:
+def test_a_run_ingests_maintains_and_queries(system: str, config: BenchConfig) -> None:
     spec = harness.RunSpec(
-        workload=Tiny(), target=Target("local"), systems=[system], readers=["duckdb", "datafusion"], runs=1
+        config=config,
+        workload=Tiny(),
+        target=Target("local"),
+        systems=[system],
+        readers=["duckdb", "datafusion"],
+        runs=1,
     )
     records = read_jsonl(harness.run(spec))
     kinds = [r["kind"] for r in records]
@@ -137,9 +160,10 @@ def test_a_run_ingests_maintains_and_queries(system: str) -> None:
     assert "## Queries, maintained" in report
 
 
-@pytest.mark.usefixtures("bench_dirs")
 @pytest.mark.parametrize("skip", [True, False])
-def test_a_timed_out_query_is_skipped_at_later_checkpoints(skip: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_timed_out_query_is_skipped_at_later_checkpoints(
+    skip: bool, monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     measured: list[tuple[str, str]] = []
 
     def measure(_spec: harness.RunSpec, _system: object, reader: str, query: Query, at: harness.At) -> QueryRecord:
@@ -150,7 +174,12 @@ def test_a_timed_out_query_is_skipped_at_later_checkpoints(skip: bool, monkeypat
 
     monkeypatch.setattr(harness, "measure", measure)
     spec = harness.RunSpec(
-        workload=Tiny(), target=Target("local"), systems=["parquet"], readers=["duckdb"], skip_after_timeout=skip
+        config=config,
+        workload=Tiny(),
+        target=Target("local"),
+        systems=["parquet"],
+        readers=["duckdb"],
+        skip_after_timeout=skip,
     )
     path = harness.RUNS / "run.jsonl"
     earlier = harness.query_pass(spec, path, ["parquet"], harness.At("ingested", None))
@@ -166,8 +195,9 @@ def test_a_timed_out_query_is_skipped_at_later_checkpoints(skip: bool, monkeypat
     assert all(r["status"] == "ok" for r in later if r["query"] != "count")
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_a_reuse_run_starts_each_server_and_skips_after_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_reuse_run_starts_each_server_and_skips_after_a_timeout(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     """Querying the tables an earlier run left needs the same servers, and a timeout carries across checkpoints."""
     measured: list[tuple[str, str]] = []
     served: list[str] = []
@@ -179,13 +209,14 @@ def test_a_reuse_run_starts_each_server_and_skips_after_a_timeout(monkeypatch: p
         return r
 
     @contextlib.contextmanager
-    def server(system: System, _path: Path) -> Generator[bool]:
+    def server(_spec: harness.RunSpec, system: System, _path: Path) -> Generator[bool]:
         served.append(system.name)
         yield True
 
     monkeypatch.setattr(harness, "measure", measure)
     monkeypatch.setattr(harness, "server", server)
     spec = harness.RunSpec(
+        config=config,
         workload=Tiny(),
         target=Target("local"),
         systems=["parquet"],
@@ -200,8 +231,7 @@ def test_a_reuse_run_starts_each_server_and_skips_after_a_timeout(monkeypatch: p
     assert count["status"] == "skipped"
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_iceberg_maintenance_rewrites_each_day_into_one_file() -> None:
+def test_iceberg_maintenance_rewrites_each_day_into_one_file(config: BenchConfig) -> None:
     start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
     data = pa.table(
         {
@@ -209,7 +239,7 @@ def test_iceberg_maintenance_rewrites_each_day_into_one_file() -> None:
             "v": range(60),
         }
     )
-    place = Place(Target("local"), "days", "iceberg")
+    place = Place(Target("local"), "days", "iceberg", config=config)
     place.clear()
     iceberg = Iceberg(place, "bench")
     iceberg.create(TableSpec("x", "time", ()), data.schema)
@@ -221,11 +251,10 @@ def test_iceberg_maintenance_rewrites_each_day_into_one_file() -> None:
     assert sorted(table.scan().to_arrow()["v"].to_pylist()) == list(range(60))
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_parquet_files_go_to_the_day_of_their_time_in_any_unit() -> None:
+def test_parquet_files_go_to_the_day_of_their_time_in_any_unit(config: BenchConfig) -> None:
     from timebench.systems.parquet import ParquetFiles
 
-    place = Place(Target("local"), "days", "parquet")
+    place = Place(Target("local"), "days", "parquet", config=config)
     place.clear()
     parquet = ParquetFiles(place, "bench")
     parquet.create(TableSpec("x", "time", ()), pa.schema([("time", pa.timestamp("ns", tz="UTC"))]))
@@ -234,8 +263,7 @@ def test_parquet_files_go_to_the_day_of_their_time_in_any_unit() -> None:
     assert sorted(d.name for d in (place.local_dir / "lake" / "x").iterdir()) == ["day=2026-01-01", "day=2026-01-02"]
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_questdb_maintenance_closes_the_idle_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_questdb_maintenance_closes_the_idle_connection(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     from timebench.systems.questdb import QuestDB
 
     class Connection:
@@ -244,7 +272,7 @@ def test_questdb_maintenance_closes_the_idle_connection(monkeypatch: pytest.Monk
         def close(self) -> None:
             self.closed = True
 
-    questdb = QuestDB(Place(Target("local"), "tiny", "questdb"), "tiny")
+    questdb = QuestDB(Place(Target("local"), "tiny", "questdb", config=config), "tiny")
     monkeypatch.setattr(questdb, "execute", lambda *_: [(0,)])
     idle = Connection()
     monkeypatch.setattr(questdb, "_conn", idle)  # the connection ingest left open
@@ -290,11 +318,11 @@ def test_csv_for_copy_round_trips() -> None:
     assert pacsv.read_csv(pa.py_buffer(csv), read_options=read, convert_options=convert).cast(table.schema) == table
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_probes_during_ingest_and_concurrent_dashboards() -> None:
+def test_probes_during_ingest_and_concurrent_dashboards(config: BenchConfig) -> None:
     workload = Tiny()
     workload.arrival_pause = 0.1  # about 5 s of ingest
     spec = harness.RunSpec(
+        config=config,
         workload=workload,
         target=Target("local"),
         systems=["parquet"],
@@ -392,10 +420,9 @@ def test_tsbs_arrivals_hold_each_window_of_every_table(tmp_path: Path, monkeypat
     ]
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     """How long deleting the previous run's tables takes depends on what that run left, not on this system."""
-    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
     system = spec.system("parquet")
     reset = system.reset
 
@@ -409,8 +436,7 @@ def test_ingest_seconds_leave_out_resetting_the_last_run(monkeypatch: pytest.Mon
     assert done["seconds"] < 2
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_ingest_seconds_leave_out_reading_the_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_seconds_leave_out_reading_the_source(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     """Loading and splitting the generated files is the harness's work, not the system's."""
     workload = Tiny()
     workload.arrival_pause = 0.05  # 2.4 s over 48 arrivals
@@ -421,48 +447,40 @@ def test_ingest_seconds_leave_out_reading_the_source(monkeypatch: pytest.MonkeyP
         yield from initial()
 
     monkeypatch.setattr(workload, "initial", slow_initial)
-    spec = harness.RunSpec(workload=workload, target=Target("local"), systems=["parquet"], checkpoints=())
+    spec = harness.RunSpec(
+        config=config, workload=workload, target=Target("local"), systems=["parquet"], checkpoints=()
+    )
     done, _ = harness.ingest(spec, spec.system("parquet"), lambda _: None)
     assert done["status"] == "ok", done
     assert done["seconds"] < 1.5
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_paced_arrivals_read_their_data_while_they_wait() -> None:
+def test_paced_arrivals_read_their_data_while_they_wait(config: BenchConfig) -> None:
     """With ``--pace``, arrivals are ``pace`` seconds apart; reading the next one fits in that wait."""
     workload = Tiny()
     workload.hours, workload.arrival_pause = 6, 0.1
-    spec = harness.RunSpec(workload=workload, target=Target("local"), systems=["parquet"], checkpoints=(), pace=0.2)
+    spec = harness.RunSpec(
+        config=config, workload=workload, target=Target("local"), systems=["parquet"], checkpoints=(), pace=0.2
+    )
     done, _ = harness.ingest(spec, spec.system("parquet"), lambda _: None)
     assert done["status"] == "ok", done
     assert 0.95 <= done["seconds"] < 1.4  # 5 gaps of 0.2 s between the 6 arrivals, and their commits
 
 
-class FakeProxy:
-    """Counters like the proxy's /stats, bumped by hand."""
-
-    def __init__(self) -> None:
-        self.requests = 0
-
-    def stats(self) -> dict[str, object]:
-        return {"requests": self.requests, "bytes": 0, "kinds": {"GET": self.requests}}
-
-
-@pytest.mark.usefixtures("bench_dirs")
-def test_ingest_requests_leave_out_the_checkpoint_queries(monkeypatch: pytest.MonkeyPatch) -> None:
-    proxy = FakeProxy()
-    monkeypatch.setattr(harness, "PROXY", proxy)
+def test_ingest_requests_leave_out_the_checkpoint_queries(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
+    proxy = FakeProxy("fake")
+    config = dataclasses.replace(config, proxy=proxy)
     monkeypatch.setattr(harness, "counted", lambda _: True)
-    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"])
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("local"), systems=["parquet"])
     system = spec.system("parquet")
     append = system.append
 
     def counted_append(table: str, data: pa.Table) -> None:
-        proxy.requests += 1
+        proxy.bump(1)
         append(table, data)
 
     def queries(_stage: object) -> None:
-        proxy.requests += 1000
+        proxy.bump(1000)
 
     monkeypatch.setattr(system, "append", counted_append)
     done, _ = harness.ingest(spec, system, queries)
@@ -471,20 +489,21 @@ def test_ingest_requests_leave_out_the_checkpoint_queries(monkeypatch: pytest.Mo
     assert done["kinds"] == {"GET": 49}
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_maintenance_requests_leave_out_reading_the_state_and_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_maintenance_requests_leave_out_reading_the_state_and_storage(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     """Listing the tables or loading their metadata afterwards is the harness's bookkeeping, not maintenance."""
-    proxy = FakeProxy()
-    monkeypatch.setattr(harness, "PROXY", proxy)
+    proxy = FakeProxy("fake")
+    config = dataclasses.replace(config, proxy=proxy)
     monkeypatch.setattr(harness, "counted", lambda _: True)
-    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("local"), systems=["parquet"], checkpoints=())
     system = spec.system("parquet")
     harness.ingest(spec, system, lambda _: None)
     for method, requests in (("maintain", 1), ("state", 100), ("stats", 10_000)):
         original = getattr(system, method)
 
         def bumped(original: Callable[[], object] = original, requests: int = requests) -> object:
-            proxy.requests += requests
+            proxy.bump(requests)
             return original()
 
         monkeypatch.setattr(system, method, bumped)
@@ -493,10 +512,11 @@ def test_maintenance_requests_leave_out_reading_the_state_and_storage(monkeypatc
     assert done["requests"] == 1
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_ingest_requests_leave_out_saving_the_state_for_probes(monkeypatch: pytest.MonkeyPatch) -> None:
-    proxy = FakeProxy()
-    monkeypatch.setattr(harness, "PROXY", proxy)
+def test_ingest_requests_leave_out_saving_the_state_for_probes(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
+    proxy = FakeProxy("fake")
+    config = dataclasses.replace(config, proxy=proxy)
     monkeypatch.setattr(harness, "counted", lambda _: True)
 
     class NoProbes:
@@ -513,12 +533,12 @@ def test_ingest_requests_leave_out_saving_the_state_for_probes(monkeypatch: pyte
             return None
 
     monkeypatch.setattr(harness, "Prober", NoProbes)
-    spec = harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"], live_interval=1)
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("local"), systems=["parquet"], live_interval=1)
     system = spec.system("parquet")
     state = system.state
 
     def counted_state() -> dict[str, object]:
-        proxy.requests += 100
+        proxy.bump(100)
         return state()
 
     monkeypatch.setattr(system, "state", counted_state)
@@ -527,7 +547,7 @@ def test_ingest_requests_leave_out_saving_the_state_for_probes(monkeypatch: pyte
     assert done.get("requests", 0) == 0
 
 
-def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     """Probes run while a system ingests; through the counting listener, their requests would count as ingest's."""
     envs: list[dict[str, str]] = []
 
@@ -535,7 +555,7 @@ def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.Mon
         envs.append(env)
         return subprocess.CompletedProcess([], 0, '{"times": [0.1], "value": 1}', "")
 
-    spec = harness.RunSpec(workload=Tiny(), target=Target("s3"), systems=["parquet"])
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("s3"), systems=["parquet"])
     prober = Prober(spec.workload, spec.system("parquet"), 1)
     with monkeypatch.context() as m:
         m.setattr(subprocess, "run", run)
@@ -543,13 +563,14 @@ def test_probe_readers_go_through_the_uncounted_listener(monkeypatch: pytest.Mon
     assert len(envs) == 1
     # What the probe's worker process connects to.
     address = subprocess.check_output(
-        [sys.executable, "-c", "from timebench.s3 import PROXY; print(PROXY.address)"], env=envs[0], text=True
+        [sys.executable, "-c", "from timebench.config import BenchConfig; print(BenchConfig.from_env().proxy.address)"],
+        env=envs[0],
+        text=True,
     )
     assert address.strip() == PROBE_PROXY.address != PROXY.address
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_s3_tables_maintenance_fails_when_compaction_never_ran() -> None:
+def test_s3_tables_maintenance_fails_when_compaction_never_ran(config: BenchConfig) -> None:
     """Otherwise the run records maintenance as ok and queries uncompacted tables as ``maintained``."""
     from timebench.systems.iceberg import S3Tables
 
@@ -557,12 +578,11 @@ def test_s3_tables_maintenance_fails_when_compaction_never_ran() -> None:
         def get_table_maintenance_job_status(self, **_: object) -> dict[str, object]:
             return {"status": {"icebergCompaction": {"status": "Not_Yet_Run"}}}
 
-    s3tables = object.__new__(S3Tables)
-    s3tables.place = Place(Target("aws-s3"), "days", "s3tables")
+    config = dataclasses.replace(config, table_bucket_arn="arn:aws:s3tables:::bucket/bench", s3tables_wait_s=0)
+    s3tables = S3Tables(Place(Target("aws-s3"), "days", "s3tables", config=config), "bench")
     s3tables.place.save_state({"ingested_at": harness.now()})
-    s3tables.namespace, s3tables.arn = "bench", "arn:aws:s3tables:::bucket/bench"
-    s3tables.client, s3tables.wait_s, s3tables.poll_seconds = NoRuns(), 0, 0
-    s3tables.time_series, s3tables.compaction = ["readings"], {}
+    s3tables.__dict__["client"] = NoRuns()  # in place of the cached boto3 client
+    s3tables.poll_seconds, s3tables.time_series = 0, ["readings"]
     with pytest.raises(TimeoutError, match="compaction"):
         s3tables.maintain()
 
@@ -578,14 +598,16 @@ print(json.dumps({"setup_s": 0, "latencies": [["q", start_at], ["q", 0.1]], "err
 """
 
 
-def test_concurrent_clients_start_together_once_all_are_open(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_concurrent_clients_start_together_once_all_are_open(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     """qps counts every client's queries over the same seconds, so the clients must run at the same time."""
     from timebench import concurrency
 
     monkeypatch.setattr(concurrency, "command", lambda job: [sys.executable, "-c", FAKE_CLIENT, json.dumps(job)])
     started = time.time()
     record = concurrency.dashboards(
-        harness.RunSpec(workload=Tiny(), target=Target("local"), systems=["parquet"]).system("parquet"),
+        harness.RunSpec(config=config, workload=Tiny(), target=Target("local"), systems=["parquet"]).system("parquet"),
         [{"name": "q", "sql": "SELECT 1"}],
         "ingested",
         3,
@@ -597,7 +619,9 @@ def test_concurrent_clients_start_together_once_all_are_open(monkeypatch: pytest
     assert (record["queries"], record["qps"]) == (3, 3.0)
 
 
-def test_a_client_counts_only_the_queries_that_finished_in_time(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_client_counts_only_the_queries_that_finished_in_time(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     """qps is queries per second over the measured seconds: one still running at the end isn't in them."""
     import io
 
@@ -611,20 +635,23 @@ def test_a_client_counts_only_the_queries_that_finished_in_time(monkeypatch: pyt
     monkeypatch.setattr(worker, "systems", lambda: {"fake": Fake})
     monkeypatch.setattr(Place, "load_state", lambda _: {})
     monkeypatch.setattr(sys, "stdin", io.StringIO(f"{time.time()}\n"))
-    job = {
+    job: Job = {
         "target": "local",
         "dataset": "d",
         "system": "fake",
         "reader": "r",
+        "tuning": Tuning.TUNED,
         "seconds": 0.3,
         "queries": [{"name": "q", "sql": "x"}],
     }
-    out = worker.client(job)
+    out = worker.client(job, config)
     assert len(out["latencies"]) == 2  # started at 0 and 0.2 s
     assert out["finished"] == 1
 
 
-def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(
+    monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
     import io
 
     from timebench import worker
@@ -640,23 +667,23 @@ def test_a_client_runs_its_queries_from_the_shared_start_for_the_given_seconds(m
     monkeypatch.setattr(Place, "load_state", lambda _: {})
     start_at = time.time() + 0.5
     monkeypatch.setattr(sys, "stdin", io.StringIO(f"{start_at}\n"))
-    job = {
+    job: Job = {
         "target": "local",
         "dataset": "d",
         "system": "fake",
         "reader": "r",
+        "tuning": Tuning.TUNED,
         "seconds": 0.3,
         "queries": [{"name": "q", "sql": "x"}],
     }
-    out = worker.client(job)
+    out = worker.client(job, config)
     assert ran
     assert min(ran) >= start_at
     assert max(ran) <= start_at + 0.3
     assert len(out["latencies"]) == len(ran)
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     """A new client per commit puts a handshake in every commit's time, which the other databases don't pay."""
     import types
 
@@ -682,7 +709,7 @@ def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch) -> No
             self.close()
 
     monkeypatch.setitem(sys.modules, "questdb", types.SimpleNamespace(connect=lambda _conf: Client()))
-    questdb = QuestDB(Place(Target("local"), "tiny", "questdb"), "tiny")
+    questdb = QuestDB(Place(Target("local"), "tiny", "questdb", config=config), "tiny")
     monkeypatch.setattr(questdb, "execute", lambda *_: [(0,)])
     questdb.specs["readings"] = TableSpec("readings", "time", ("device",))
     data = Tiny().stream().__next__()[0][1]
@@ -692,23 +719,22 @@ def test_questdb_commits_reuse_one_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert clients == [{"frames": 3, "closed": True}]
 
 
-def test_an_s3_run_sets_and_records_every_proxy_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_s3_run_sets_and_records_every_proxy_setting(monkeypatch: pytest.MonkeyPatch, config: BenchConfig) -> None:
     """The proxy keeps what the last run set: a run that doesn't name a setting gets none, not the last run's."""
     settings: list[tuple[str, str]] = []
-    monkeypatch.setattr(harness, "set_proxy", lambda setting, query: settings.append((setting, query)))
-    spec = harness.RunSpec(workload=Tiny(), target=Target("s3"), systems=[], ttfb_ms=20)
+    monkeypatch.setattr(harness, "set_proxy", lambda _spec, setting, query: settings.append((setting, query)))
+    spec = harness.RunSpec(config=config, workload=Tiny(), target=Target("s3"), systems=[], ttfb_ms=20)
     harness.configure_proxy(spec)
     assert settings == [("ttfb", "ms=20"), ("mibps", "v=0")]
     header = harness.run_header(spec, dt.datetime.now(dt.UTC))
     assert (header["ttfb_ms"], header["mibps"]) == (20, 0)
 
 
-@pytest.mark.usefixtures("bench_dirs")
-def test_timelake_reader_settings_reach_the_python_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_timelake_reader_settings_reach_the_python_reader(config: BenchConfig) -> None:
     """Probes and dashboard clients read through the Python binding: an A/B arm's settings must apply there too."""
     from timebench.systems.timelake import Timelake
 
-    place = Place(Target("local"), "tiny", "timelake")
+    place = Place(Target("local"), "tiny", "timelake", config=config)
     place.clear()
     system = Timelake(place, "tiny")
     system.create(TableSpec("readings", "time", ("device",), dedup=True), SCHEMA)
@@ -718,5 +744,58 @@ def test_timelake_reader_settings_reach_the_python_reader(monkeypatch: pytest.Mo
     place.save_state(system.state())
     count = "SELECT count(*) FROM readings"
     assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 120
-    monkeypatch.setenv("TIMEBENCH_TIMELAKE_SETTINGS", "read_dedup=false")
-    assert Timelake.open_reader("timelake", place, place.load_state())(count).value == 240
+    ab = dataclasses.replace(place, config=dataclasses.replace(config, timelake_settings={"read_dedup": "false"}))
+    assert Timelake.open_reader("timelake", ab, place.load_state())(count).value == 240
+
+
+def test_a_misconfigured_system_is_a_failed_result_and_the_run_goes_on(config: BenchConfig) -> None:
+    """A missing setting fails that system's ingest; the other systems run and the run file ends."""
+    spec = harness.RunSpec(
+        config=config, workload=Tiny(), target=Target("local"), systems=["timescaledb", "parquet"], checkpoints=()
+    )
+    records = read_jsonl(harness.run(spec))
+    ingest = {r["system"]: r for r in records if r["kind"] == "ingest"}
+    assert ingest["timescaledb"]["status"] == "error"
+    assert "BENCH_TIMESCALEDB_DSN" in ingest["timescaledb"]["error"]
+    assert ingest["parquet"]["status"] == "ok"
+    assert records[0]["versions"]["timescaledb"] == "?"
+    assert records[-1]["kind"] == "end"
+
+
+def test_a_server_stops_even_when_reading_its_versions_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: BenchConfig
+) -> None:
+    calls = tmp_path / "calls"
+    script = tmp_path / "servers.sh"
+    script.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    script.chmod(0o755)
+    spec = harness.RunSpec(
+        config=dataclasses.replace(config, servers=script), workload=Tiny(), target=Target("local"), systems=["questdb"]
+    )
+    system = spec.system("questdb")
+
+    def versions() -> dict[str, str]:
+        msg = "the server answered nonsense"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(system, "versions", versions)
+    with pytest.raises(RuntimeError), harness.server(spec, system, tmp_path / "run.jsonl"):
+        pass
+    assert calls.read_text().splitlines() == ["up questdb", "down questdb"]
+
+
+def test_the_config_reaches_worker_processes_unchanged(tmp_path: Path) -> None:
+    config = BenchConfig(
+        lakes=tmp_path,
+        machine="m",
+        servers=tmp_path / "servers.sh",
+        proxy=PROBE_PROXY,
+        timescaledb_dsn="postgresql://localhost/bench",
+        aws_region="us-east-2",
+        s3tables_wait_s=60,
+        timelake_options={"timelake_cache": "off"},
+        timelake_settings={"read_dedup": "false", "a": "b=c"},
+    )
+    back = BenchConfig.from_env(config.to_env())
+    assert dataclasses.replace(back, proxy=PROBE_PROXY) == config
+    assert back.proxy.address == PROBE_PROXY.address

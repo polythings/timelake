@@ -10,9 +10,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
-from timebench import DATA, TUNINGS
+from timebench import DATA, TUNING_SQL
 from timebench.queries import apply_dialect, raw_queries
+from timebench.results import INGESTED
 from timebench.systems import DIALECTS
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -45,9 +47,9 @@ class Query:
     """Reader -> its own version of the query, where its SQL lacks a construct the shared one uses; ``"<reader>
     tuned"`` -> the version a tuned run reads its precomputation with, as the system's docs write it (D23)."""
 
-    def sql_for(self, reader: str, now: int | None = None, tuning: str = "default") -> str:
+    def sql_for(self, reader: str, tuning: Tuning, now: int | None = None) -> str:
         """The query in a reader's SQL for a run of ``tuning``; ``now`` (epoch seconds) is the data's present."""
-        tuned = self.variants.get(f"{reader} tuned") if tuning == "tuned" else None
+        tuned = self.variants.get(f"{reader} {Tuning.TUNED}") if tuning == Tuning.TUNED else None
         return apply_dialect(tuned or self.variants.get(reader, self.sql), DIALECTS[reader], now)
 
 
@@ -134,7 +136,7 @@ class Workload(ABC):
 
     def stages(self) -> list[Stage]:
         """The stream in stages, each followed by a checkpoint or not; by default one live stage, then ``ingested``."""
-        return [Stage("stream", self.stream(), "ingested")]
+        return [Stage("stream", self.stream(), INGESTED)]
 
     def checkpoints(self) -> list[str]:
         """The checkpoints of the stream's stages, in order (``maintained`` follows them)."""
@@ -160,7 +162,7 @@ class Workload(ABC):
 
         The statements of ``tunings/<workload>/<system>.sql``, such as Timelake rollups; none without the file.
         """
-        path = TUNINGS / self.name / f"{system}.sql"
+        path = TUNING_SQL / self.name / f"{system}.sql"
         if not path.exists():
             return []
         lines = [line for line in path.read_text().splitlines() if not line.lstrip().startswith("--")]

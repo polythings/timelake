@@ -1,15 +1,8 @@
 """InfluxDB 3 Core: line protocol over HTTP (``/api/v3/write_lp``), SQL over HTTP (``/api/v3/query_sql``).
 
-Any InfluxDB 3 Core server works (``bench/infra/servers.sh`` starts two). Tuned (``BENCH_INFLUXDB_URL``, default
-``http://localhost:58181``), the server runs with ``--query-file-limit`` raised: by default a query may read at most
-432 Parquet files, about 3 days of data in 10-minute files, and longer ones fail. Default
-(``BENCH_INFLUXDB_DEFAULTS_URL``, default ``http://localhost:58182``, server ``influxdb3-defaults``), as shipped.
-
-Each dataset gets a database ``bench_<dataset>`` that a run deletes and recreates. Tables are created on write: the
-series key columns are tags, the rest fields; InfluxDB keeps one row per series and time (the last written).
-Dimension tables have no time: their rows are written at the epoch, each its own series (the first column a tag).
-Writes are batched and sent by a few concurrent requests, as InfluxData's docs suggest for throughput; Core has no
-compaction, so maintenance is a no-op. A write is acknowledged once the server's WAL is flushed (every second).
+Any InfluxDB 3 Core server works (``infra/servers.sh`` starts two: ``BENCH_INFLUXDB_URL`` for tuned runs,
+``BENCH_INFLUXDB_DEFAULTS_URL`` for default ones). Each dataset gets a database ``bench_<dataset>`` that a run
+deletes and recreates. A write is acknowledged once the server's WAL is flushed (every second).
 """
 
 from __future__ import annotations
@@ -18,16 +11,16 @@ import gzip
 import http.client
 import io
 import json
-import os
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, ClassVar, override
+from typing import TYPE_CHECKING, Any, override
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from timebench.systems import Runner, System, arrow_result
+from timebench.systems import UNKNOWN, Runner, System, arrow_result, database_name, server_versions
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     from timebench.targets import Place, StorageStats
@@ -97,7 +90,13 @@ def line_protocol(table: str, data: pa.Table, spec: TableSpec) -> pa.ChunkedArra
 class InfluxDB3(System):
     """InfluxDB 3 Core.
 
-    Default: as shipped, tables created by the first write. Tuned: the query file limit raised (its server), and each
+    Tables are created on write: the series key columns are tags, the rest fields; InfluxDB keeps one row per series
+    and time (the last written). Dimension tables have no time: their rows are written at the epoch, each its own
+    series (the first column a tag). Writes are batched and sent by a few concurrent requests, as InfluxData's docs
+    suggest for throughput; Core has no compaction, so maintenance is a no-op.
+
+    Default: as shipped, tables created by the first write. Tuned: the query file limit raised (its server: by
+    default a query may read at most 432 Parquet files, about 3 days of data in 10-minute files), and each
     time-series table created up front with a last value cache keyed by its series key, which the tuned latest-value
     queries (``[influxdb3 tuned]``) read with ``last_cache()``.
     """
@@ -105,23 +104,17 @@ class InfluxDB3(System):
     name = "influxdb3"
     title = "InfluxDB 3 Core"
     readers = ("influxdb3",)
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
     server = True
-    urls: ClassVar[dict[str, tuple[str, str]]] = {
-        "tuned": ("BENCH_INFLUXDB_URL", "http://localhost:58181"),
-        "default": ("BENCH_INFLUXDB_DEFAULTS_URL", "http://localhost:58182"),
-    }
-    """Per tuning: the variable naming the server, and its default."""
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
-        self.database = "bench_" + place.dataset.replace("-", "_")
-        self.specs: dict[str, TableSpec] = {}
+        self.database = database_name(place)
 
     @property
     def url(self) -> str:
         """The server of this tuning."""
-        return server_url(self.tuning)
+        return server_url(self.place)
 
     def request(
         self, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None
@@ -146,7 +139,7 @@ class InfluxDB3(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        self.specs[spec.name] = spec  # the default's tables are created by the first write
+        super().create(spec, schema)  # the default's tables are created by the first write
         if not (self.tuned and spec.time_column):
             return
         json_headers = {"Content-Type": "application/json"}
@@ -193,12 +186,12 @@ class InfluxDB3(System):
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return server_version(server_url("tuned"))
+    def version(cls, place: Place) -> dict[str, str]:
+        def ask() -> dict[str, str]:
+            info = json.loads(request(server_url(place), "GET", "/ping"))
+            return {"influxdb3": str(info.get("version", UNKNOWN))}
 
-    @override
-    def versions(self) -> dict[str, str]:
-        return server_version(self.url)
+        return server_versions(ask, ("influxdb3",), (RuntimeError,))
 
     @override
     @classmethod
@@ -217,19 +210,10 @@ def influx_type(t: pa.DataType) -> str:
     return "utf8"
 
 
-def server_url(tuning: str) -> str:
-    """The server of a tuning: its variable, else the port ``infra/servers.sh`` gives it."""
-    env, default = InfluxDB3.urls[tuning]
-    return os.environ.get(env, default).rstrip("/")
-
-
-def server_version(url: str) -> dict[str, str]:
-    """The server's version, or ``?`` when it doesn't answer."""
-    try:
-        info = json.loads(request(url, "GET", "/ping"))
-    except (OSError, RuntimeError):
-        return {"influxdb3": "?"}
-    return {"influxdb3": str(info.get("version", "?"))}
+def server_url(place: Place) -> str:
+    """The server of a place's tuning."""
+    config = place.config
+    return config.influxdb_url if place.tuning == Tuning.TUNED else config.influxdb_defaults_url
 
 
 def request(

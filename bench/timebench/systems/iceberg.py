@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 import time
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, Protocol, override
 
-from timebench.meta import version
-from timebench.s3 import PROXY
-from timebench.systems import Runner, System, duckdb_connection, duckdb_runner
+from timebench.config import AWS_REGION_ENV, TABLE_BUCKET_ENV, ConfigError
+from timebench.s3 import S3Endpoint
+from timebench.systems import Runner, System, duckdb_iceberg_runner, package_versions, store_options
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -34,7 +34,7 @@ class Iceberg(System):
     name = "iceberg"
     title = "Iceberg (PyIceberg)"
     readers = ("duckdb",)
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -51,7 +51,7 @@ class Iceberg(System):
             "bench",
             uri=f"sqlite:///{self.place.local_dir}/catalog.db",
             warehouse=root if self.target.s3 else f"file://{root}",
-            **(PROXY.pyiceberg_properties() if self.target.s3 else {}),
+            **store_options(self.place, S3Endpoint.pyiceberg_properties),
         )
 
     @override
@@ -110,19 +110,31 @@ class Iceberg(System):
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return {"pyiceberg": version("pyiceberg") or "?", "duckdb": version("duckdb") or "?"}
+    def version(cls, place: Place) -> dict[str, str]:
+        return package_versions("pyiceberg", "duckdb")
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
         # The tables' current versions, as a reader asking the catalog sees them (they change with every commit).
         tables = cls(place, state["namespace"]).current_tables() if "namespace" in state else state["tables"]
-        con = duckdb_connection(place.target)
-        con.execute("INSTALL iceberg; LOAD iceberg")
-        for t, metadata in tables.items():
-            con.execute(f"CREATE VIEW {t} AS SELECT * FROM iceberg_scan('{metadata}')")
-        return duckdb_runner(con)
+        return duckdb_iceberg_runner(place, tables)
+
+
+class TablesApi(Protocol):
+    """The calls of boto3's ``s3tables`` client that ``S3Tables`` makes."""
+
+    def put_table_maintenance_configuration(self, **kwargs: object) -> object:
+        """Sets a table's maintenance."""
+        ...
+
+    def delete_table(self, **kwargs: object) -> object:
+        """Deletes a table."""
+        ...
+
+    def get_table_maintenance_job_status(self, **kwargs: object) -> dict[str, Any]:
+        """The state of a table's maintenance jobs."""
+        ...
 
 
 class S3Tables(Iceberg):
@@ -135,21 +147,37 @@ class S3Tables(Iceberg):
 
     name = "s3tables"
     title = "S3 Tables (PyIceberg)"
+    aws_only = True
     s3_storage_prices = False  # S3 Tables bills storage, monitoring and compaction at its own prices (not modeled)
     poll_seconds = 120
 
     def __init__(self, place: Place, namespace: str) -> None:
+        super().__init__(place, namespace)
+        self.wait_s = place.config.s3tables_wait_s
+        self.compaction: dict[str, int] = {}
+
+    @property
+    def region(self) -> str:
+        """The table bucket's region."""
+        if not self.place.config.aws_region:
+            msg = f"S3 Tables needs {AWS_REGION_ENV}"
+            raise ConfigError(msg)
+        return self.place.config.aws_region
+
+    @property
+    def arn(self) -> str:
+        """The table bucket."""
+        if not self.place.config.table_bucket_arn:
+            msg = f"S3 Tables needs {TABLE_BUCKET_ENV}"
+            raise ConfigError(msg)
+        return self.place.config.table_bucket_arn
+
+    @cached_property
+    def client(self) -> TablesApi:
+        """The S3 Tables API."""
         import boto3
 
-        if not place.target.s3:
-            msg = "S3 Tables runs on AWS targets only"
-            raise SystemExit(msg)
-        super().__init__(place, namespace)
-        self.region = os.environ["AWS_REGION"]
-        self.arn = os.environ["BENCH_TABLE_BUCKET_ARN"]
-        self.wait_s = int(os.environ.get("BENCH_S3TABLES_WAIT_S", str(6 * 3600)))
-        self.client = boto3.client("s3tables", region_name=self.region)
-        self.compaction: dict[str, int] = {}
+        return boto3.client("s3tables", region_name=self.region)
 
     @override
     @cached_property
@@ -162,7 +190,7 @@ class S3Tables(Iceberg):
             warehouse=self.arn,
             **{"rest.sigv4-enabled": "true", "rest.signing-name": "s3tables", "rest.signing-region": self.region},
             # Data and metadata files go through the counting proxy, which passes them to the table's bucket.
-            **PROXY.pyiceberg_properties(),
+            **self.place.config.proxy.pyiceberg_properties(),
         )
 
     @override
@@ -179,6 +207,9 @@ class S3Tables(Iceberg):
 
     @override
     def reset(self) -> None:
+        if not self.target.s3:
+            msg = "S3 Tables runs on AWS targets only"
+            raise ConfigError(msg)
         super().reset()
         if not self.catalog.namespace_exists(self.namespace):
             return

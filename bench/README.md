@@ -73,7 +73,8 @@ uv run timebench history --workload tsbs-iot                  # one line per run
 
   The database servers run in Docker at pinned versions: `infra/servers.sh up` starts them (data in
   `data/servers/`, ports 55432, 58123, 59900/58812, 58181, 58182), and `eval "$(infra/servers.sh env)"` sets the
-  variables the adapters read (`BENCH_TIMESCALEDB_DSN`, `BENCH_CLICKHOUSE_URL`, ...). Each dataset gets its own
+  variables the adapters read (`BENCH_TIMESCALEDB_DSN`, `BENCH_CLICKHOUSE_URL`, ...; all in `timebench/config.py`,
+  read once per process). A system missing a setting fails its ingest and the run goes on. Each dataset gets its own
   schema or database that runs drop; QuestDB holds one dataset at a time. `influxdb3` tuned runs with
   `--query-file-limit` raised (server `influxdb3`), default as shipped (server `influxdb3-defaults`: a query reads at
   most 432 files). With
@@ -82,7 +83,7 @@ uv run timebench history --workload tsbs-iot                  # one line per run
 - **Targets** (`--target`): `local` (tables under `data/lakes/`), or S3 through `tools/s3proxy` on `localhost:59100`:
   `s3` for a local RustFS, `aws-s3` / `aws-s3x` for real buckets (`infra/`). TimescaleDB ignores the target.
 - **Reusing tables** (`--reuse`): query the tables an earlier run left on the target, at the given checkpoints, and run
-  the concurrent dashboards if asked, without ingesting. `TIMEBENCH_TIMELAKE_OPTIONS=key=value,...` adds storage
+  the concurrent dashboards if asked, without ingesting (servers start as in a full run). `TIMEBENCH_TIMELAKE_OPTIONS=key=value,...` adds storage
   options to Timelake's readers, to compare settings on the same tables (`timelake_cache=off`), and
   `TIMEBENCH_TIMELAKE_SETTINGS=key=value,...` session settings of the CLI reader
   (`timelake.filter_pushdown=true`). The run file records both (`reader_settings`, `reader_options`). Such A/B runs go
@@ -110,10 +111,11 @@ uv run timebench history --workload tsbs-iot                  # one line per run
   timestamp of `live_table`). Recorded per system as a `live` record: query latency under writes, and how far behind
   the newest finished commit each probe was (`lag_s`).
 - `--concurrency 1,4,16`: after the last checkpoint, that many client processes per system, each keeping a reader open
-  and running the dashboard queries in turn for `--concurrency-seconds` (30): queries per second and p50/p95/p99, as
-  `concurrency` records. A query that fails counts as one error per client and is left out of that client's turns.
+  and running the dashboard queries in turn for `--concurrency-seconds` (30): queries per second (those that finished
+  within the seconds) and p50/p95/p99, as `concurrency` records. A query that fails counts as one error per client and is left out of that client's turns.
 - Cost: on AWS targets, every query, ingest and maintenance record carries `usd` (its requests at S3 list prices,
-  `timebench/cost.py`), and ingest and maintenance `storage_usd_month`. Machines aren't priced yet.
+  `timebench/cost.py`), and ingest and maintenance of systems on S3 `storage_usd_month` (not database servers or S3
+  Tables, whose storage isn't billed at S3's prices). Machines aren't priced yet.
 
 ### Results
 `results/runs/<started>-<workload>-<scale>-<target>.jsonl`, one per run: a `run` record (commit, uncommitted changes,

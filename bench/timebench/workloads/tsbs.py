@@ -18,6 +18,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from timebench import BENCH
+from timebench.config import ConfigError
 from timebench.workloads import Batch, TableSpec, Workload
 
 if TYPE_CHECKING:
@@ -125,7 +126,7 @@ class TsbsWorkload(Workload):
             return
         if not GENERATOR.exists():
             msg = f"{GENERATOR} is missing: see bench/README.md, Setup"
-            raise SystemExit(msg)
+            raise ConfigError(msg)
         tmp = self.data_dir.with_name(self.data_dir.name + ".tmp")
         shutil.rmtree(tmp, ignore_errors=True)
         generate = [

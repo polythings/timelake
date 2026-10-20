@@ -9,16 +9,16 @@ commit).
 
 from __future__ import annotations
 
+import dataclasses
 import json
-import os
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from timebench.s3 import PROBE_PROXY, PROXY_ENV
-from timebench.worker import command
+from timebench.s3 import PROBE_PROXY
+from timebench.worker import command, failure, job_for
 
 if TYPE_CHECKING:
     from timebench.results import LiveRecord
@@ -95,23 +95,16 @@ class Prober:
     def probe(self, query: Query) -> None:
         """Runs one query in a fresh process and records its time, or the lag for the freshness probe."""
         place = self.system.place
-        job = {
-            "system": self.system.name,
-            "reader": self.reader,
-            "target": place.target.name,
-            "dataset": place.dataset,
-            "tuning": place.tuning,
-            "runs": 0,
-            "count": False,  # the proxy's counters include the writer's requests
-        }
-        env = {**os.environ, PROXY_ENV: PROBE_PROXY.address}
+        job = job_for(self.system, self.reader)
+        job.update(runs=0, count=False)  # the proxy's counters include the writer's requests
+        env = dataclasses.replace(place.config, proxy=PROBE_PROXY).environ()
         started = time.time()
         commits = list(self.commits)
         now = max((c.newest for c in commits), default=None)  # the data's present, as far as the writer got
         try:
             proc = subprocess.run(
                 command(job),
-                input=query.sql_for(self.reader, now, place.tuning),
+                input=query.sql_for(self.reader, place.tuning, now),
                 capture_output=True,
                 text=True,
                 timeout=PROBE_TIMEOUT_S,
@@ -122,8 +115,7 @@ class Prober:
             self.errors.append(f"{query.name}: timeout")
             return
         if proc.returncode != 0:
-            last = (proc.stderr.strip().splitlines() or ["?"])[-1]
-            self.errors.append(f"{query.name}: {last}"[:200])
+            self.errors.append(f"{query.name}: {failure(proc.stderr)}"[:200])
             return
         out = json.loads(proc.stdout.strip().splitlines()[-1])
         if query is self.freshness:

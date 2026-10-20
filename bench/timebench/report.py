@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from timebench import RUNS
-from timebench.results import QueryRecord, best_time, first_time, geomean, read_jsonl
+from timebench.results import (
+    MAINTAINED,
+    ConcurrencyRecord,
+    EndRecord,
+    IngestRecord,
+    LiveRecord,
+    QueryRecord,
+    RunRecord,
+    best_time,
+    first_time,
+    geomean,
+    read_jsonl,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 
@@ -19,13 +32,13 @@ class Run:
     def __init__(self, path: Path) -> None:
         records = read_jsonl(path)
         self.path = path
-        self.header: dict[str, Any] = records[0]
-        self.end: dict[str, Any] | None = next((r for r in records if r.get("kind") == "end"), None)
-        self.ingest = [r for r in records if r.get("kind") == "ingest"]
-        self.maintain = [r for r in records if r.get("kind") == "maintain"]
+        self.header = cast("RunRecord", records[0])
+        self.end = next((cast("EndRecord", r) for r in records if r.get("kind") == "end"), None)
+        self.ingest = [cast("IngestRecord", r) for r in records if r.get("kind") == "ingest"]
+        self.maintain = [cast("IngestRecord", r) for r in records if r.get("kind") == "maintain"]
         self.queries = [cast("QueryRecord", r) for r in records if r.get("kind") == "query"]
-        self.live = [r for r in records if r.get("kind") == "live"]
-        self.concurrency = [r for r in records if r.get("kind") == "concurrency"]
+        self.live = [cast("LiveRecord", r) for r in records if r.get("kind") == "live"]
+        self.concurrency = [cast("ConcurrencyRecord", r) for r in records if r.get("kind") == "concurrency"]
 
     @property
     def id(self) -> str:
@@ -81,15 +94,7 @@ def markdown(run: Run) -> str:
         f"# {h['workload']} ({h['scale']}) on {h['target']}",
         "",
         f"Run `{run.id}`: commit `{h['commit'][:10]}`{' (with local changes)' if h.get('dirty') else ''}, "
-        f"{h['machine']}, started {h['started']}"
-        + (
-            f", {run.end['seconds'] / 60:.0f} min"
-            if run.end and "seconds" in run.end
-            else ""
-            if run.end
-            else " (incomplete)"
-        )
-        + ".",
+        f"{h['machine']}, started {h['started']}{duration(run)}.",
         "",
         "| Phase | System | Seconds | Commits | Commit p50 | Commit p95 | Objects | Bytes | Requests | Status |",
         "|---|---|--:|--:|--:|--:|--:|--:|--:|---|",
@@ -120,7 +125,14 @@ def markdown(run: Run) -> str:
     return "\n".join(lines) + "\n"
 
 
-def history(found: list[Run], checkpoint: str = "maintained") -> str:
+def duration(run: Run) -> str:
+    """How long the run took, for the line after ``started``; ``(incomplete)`` without an end record."""
+    if run.end is None:
+        return " (incomplete)"
+    return f", {run.end['seconds'] / 60:.0f} min" if "seconds" in run.end else ""
+
+
+def history(found: list[Run], checkpoint: str = MAINTAINED) -> str:
     """One line per run: first-run geometric mean per engine at a checkpoint."""
     engines = list(dict.fromkeys(e for r in found for e in r.engines()))
     lines = [
@@ -134,7 +146,7 @@ def history(found: list[Run], checkpoint: str = "maintained") -> str:
     return "\n".join(lines) + "\n"
 
 
-def cell(record: dict[str, Any], key: str) -> str:
+def cell(record: Mapping[str, object], key: str) -> str:
     """A table cell: the value, or nothing when it's missing or null."""
     value = record.get(key)
     return "" if value is None else str(value)
@@ -187,7 +199,8 @@ def concurrency_section(run: Run) -> list[str]:
 def cost_section(run: Run) -> list[str]:
     """Dollars at the target's list prices: ingest and storage per system, and queries per engine."""
     target = run.header["target"]
-    span = run.header.get("params", {}).get("span_days") or 3
+    span_days = run.header.get("params", {}).get("span_days")
+    span = span_days if isinstance(span_days, (int, float)) and span_days else 3
     month = 30 / span
 
     def money(x: float | None, digits: int = 2) -> str:
@@ -206,7 +219,7 @@ def cost_section(run: Run) -> list[str]:
     by_engine: dict[str, list[float]] = defaultdict(list)
     for q in run.queries:
         c = q.get("usd")
-        if q["status"] == "ok" and q["checkpoint"] == "maintained" and c is not None:
+        if q["status"] == "ok" and q["checkpoint"] == MAINTAINED and c is not None:
             by_engine[f"{q['system']}+{q['reader']}"].append(c)
     if not rows and not by_engine:
         return []

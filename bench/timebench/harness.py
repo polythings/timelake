@@ -1,10 +1,9 @@
 """One benchmark run: a workload streamed into each system, then its queries on every reader, at each checkpoint.
 
-The workload arrives in stages (by default one); a stage may end at a checkpoint, where every query runs (e.g. after
-1 and 7 days of history, then ``ingested``). Then each system runs its maintenance, and the queries run again
-(``maintained``). Optionally, fresh readers probe each system while it ingests live (``live.py``), and N dashboard
-clients query it at once after the last checkpoint (``concurrency.py``). When the run includes the ``reference``
-system, first, every answer is checked against its answer. The run writes ``results/runs/<run id>.jsonl`` as it goes.
+The workload arrives in stages; a stage may end at a checkpoint, where every query runs. Then each system runs its
+maintenance and the queries run again (``maintained``). Optionally, fresh readers probe each system while it ingests
+(``live.py``), and dashboard clients query it at once after the last checkpoint (``concurrency.py``). The run writes
+``results/runs/<run id>.jsonl`` as it goes.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ import datetime as dt
 import itertools
 import json
 import math
-import os
 import statistics
 import subprocess
 import time
@@ -29,6 +27,7 @@ from timebench.concurrency import dashboards
 from timebench.cost import phase_cost, query_cost, storage_month
 from timebench.live import Prober
 from timebench.results import (
+    MAINTAINED,
     ConcurrencyRecord,
     EndRecord,
     IngestRecord,
@@ -40,11 +39,10 @@ from timebench.results import (
     best_time,
     first_time,
 )
-from timebench.s3 import PROXY, ProxyStats
 from timebench.systems import System, systems
-from timebench.systems import timelake as timelake_system
-from timebench.targets import Place
-from timebench.worker import command, request_kinds
+from timebench.systems.reference import Reference
+from timebench.targets import Place, Tuning
+from timebench.worker import command, failure, job_for, request_kinds
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -52,12 +50,12 @@ if TYPE_CHECKING:
 
     import pyarrow as pa
 
-    from timebench.targets import Target
+    from timebench.config import BenchConfig
+    from timebench.s3 import ProxyStats
+    from timebench.targets import StorageStats, Target
     from timebench.workloads import Batch, Query, Stage, Workload
 
-SERVERS_ENV = "BENCH_SERVERS"
-"""Path of ``infra/servers.sh``: when set, each database server runs only while its system does."""
-REFERENCE = "reference"
+REFERENCE = Reference.name
 """The system whose answers the others' are checked against (``systems/reference.py``)."""
 
 
@@ -71,11 +69,12 @@ class At:
 
 @dataclass
 class RunSpec:
-    """What one run covers."""
+    """What one run covers; ``timebench run`` and profiles take their defaults from here."""
 
     workload: Workload
     target: Target
     systems: list[str]
+    config: BenchConfig = field(kw_only=True)
     readers: list[str] | None = None
     """Only these readers (all of each system's by default)."""
     checkpoints: tuple[str, ...] | None = None
@@ -106,8 +105,8 @@ class RunSpec:
     """How long each client count runs."""
     variant: str = ""
     """Names a kind of run of the same workload and target (e.g. ``bulk``), kept apart in reports and on the site."""
-    tuning: str = "tuned"
-    """Every system's configuration in this run (``systems.TUNINGS``, D23)."""
+    tuning: Tuning = Tuning.TUNED
+    """Every system's configuration in this run (D23)."""
     pace: float = 0
     """At least this many seconds between arrivals (0 = as fast as the system commits), so the replay is closer to
     real time and probes have something to see."""
@@ -117,7 +116,7 @@ class RunSpec:
         """The adapter of one system, created on first use."""
         if name not in self._systems:
             cls = systems()[name]
-            place = Place(self.target, self.workload.dataset, name, self.tuning)
+            place = Place(self.target, self.workload.dataset, name, self.tuning, config=self.config)
             self._systems[name] = cls(place, self.workload.namespace)
         return self._systems[name]
 
@@ -129,10 +128,17 @@ class RunSpec:
         """Whether the queries run at a checkpoint."""
         return self.checkpoints is None or checkpoint in self.checkpoints
 
+    def every_checkpoint(self) -> tuple[str, ...]:
+        """The workload's checkpoints, then ``maintained``."""
+        return (*self.workload.checkpoints(), MAINTAINED)
+
     def last_checkpoint(self) -> str | None:
         """The last checkpoint the queries run at, where the concurrency phase runs too."""
-        every = [*self.workload.checkpoints(), "maintained"]
-        return next((c for c in reversed(every) if self.wants(c)), None)
+        return next((c for c in reversed(self.every_checkpoint()) if self.wants(c)), None)
+
+    def managed(self, system: System) -> bool:
+        """Whether the run starts and stops the system's server (``BenchConfig.servers``)."""
+        return self.config.servers is not None and system.server
 
 
 def run(spec: RunSpec) -> Path:
@@ -150,10 +156,16 @@ def run(spec: RunSpec) -> Path:
     now = spec.workload.stages()[-1].now  # the data's present once everything arrived
     # One system at a time, start to finish, so a database server has the machine to itself (``server``).
     for s in spec.systems:
-        with server(spec.system(s), path) as up:
+        with server(spec, spec.system(s), path) as up:
             if up:
                 results += (reuse_system if spec.reuse else run_system)(spec, path, s, now, results)
 
+    append_jsonl(path, end_record(started, results))
+    return path
+
+
+def end_record(started: dt.datetime, results: list[QueryRecord]) -> EndRecord:
+    """The last record of a run: how long it took, and the answers that disagree."""
     finished = dt.datetime.now(dt.timezone.utc)
     end: EndRecord = {
         "kind": "end",
@@ -165,10 +177,9 @@ def run(spec: RunSpec) -> Path:
         f"{r['checkpoint']}/{r['query']}: {r['system']}+{r['reader']}" for r in results if r.get("correct") is False
     ]:
         end["wrong"] = wrong
-    append_jsonl(path, end)
     for m in end["mismatches"]:
         print(f"ROW COUNT MISMATCH {m}", flush=True)
-    return path
+    return end
 
 
 def run_system(spec: RunSpec, path: Path, name: str, now: int | None, earlier: list[QueryRecord]) -> list[QueryRecord]:
@@ -176,10 +187,10 @@ def run_system(spec: RunSpec, path: Path, name: str, now: int | None, earlier: l
     results: list[QueryRecord] = []
     if not ingest_and_query(spec, path, name, results, earlier):
         return results
-    if spec.wants("maintained"):
+    if spec.wants(MAINTAINED):
         if not record(path, maintain(spec.system(name))):
             return results
-        results += query_pass(spec, path, [name], At("maintained", now), [*earlier, *results])
+        results += query_pass(spec, path, [name], At(MAINTAINED, now), [*earlier, *results])
     run_dashboards(spec, path, name, now)
     return results
 
@@ -189,7 +200,7 @@ def reuse_system(
 ) -> list[QueryRecord]:
     """One system's queries on the tables an earlier run left, at each checkpoint, then concurrent dashboards."""
     results: list[QueryRecord] = []
-    for checkpoint in spec.checkpoints or (*spec.workload.checkpoints(), "maintained"):
+    for checkpoint in spec.checkpoints or spec.every_checkpoint():
         results += query_pass(spec, path, [name], At(checkpoint, now), [*earlier, *results])
     run_dashboards(spec, path, name, now)
     return results
@@ -201,7 +212,7 @@ def run_dashboards(spec: RunSpec, path: Path, name: str, now: int | None) -> Non
     if spec.concurrency and spec.workload.dashboard_queries() and last and name != REFERENCE:
         reader = systems()[name].readers[0]
         queries = [
-            {"name": q.name, "sql": q.sql_for(reader, now, spec.tuning)} for q in spec.workload.dashboard_queries()
+            {"name": q.name, "sql": q.sql_for(reader, spec.tuning, now)} for q in spec.workload.dashboard_queries()
         ]
         for clients in spec.concurrency:
             c = dashboards(spec.system(name), queries, last, clients, spec.concurrency_seconds)
@@ -210,47 +221,46 @@ def run_dashboards(spec: RunSpec, path: Path, name: str, now: int | None) -> Non
 
 
 @contextlib.contextmanager
-def server(system: System, path: Path) -> Generator[bool]:
+def server(spec: RunSpec, system: System, path: Path) -> Generator[bool]:
     """Starts a database system's server before it runs and stops it after; yields whether the system can run.
 
-    Only when ``BENCH_SERVERS`` names ``infra/servers.sh``. The server's versions are recorded once it's up.
+    Only when the run manages servers (``BENCH_SERVERS``). The server's versions are recorded once it's up.
     """
-    script = os.environ.get(SERVERS_ENV)
-    name = system.name
-    managed = bool(script) and system.server and name != REFERENCE
-    if managed:
-        up = subprocess.run([str(script), "up", system.server_name()], capture_output=True, text=True, check=False)
+    script = spec.config.servers
+    if script is None or not spec.managed(system):
+        yield True
+        return
+    up = subprocess.run([str(script), "up", system.server_name()], capture_output=True, text=True, check=False)
+    try:
         if up.returncode != 0:
-            error = (up.stderr.strip().splitlines() or ["?"])[-1]
-            record(path, {"kind": "ingest", "system": name, "status": "error", "error": f"server: {error}"[:300]})
+            error = f"server: {failure(up.stderr)}"[:300]
+            record(path, {"kind": "ingest", "system": system.name, "status": "error", "error": error})
             yield False
             return
-        append_jsonl(path, {"kind": "versions", "system": name, "versions": system.versions()})
-    try:
+        append_jsonl(path, {"kind": "versions", "system": system.name, "versions": system.versions()})
         yield True
     finally:
-        if managed:
-            subprocess.run([str(script), "down", system.server_name()], capture_output=True, check=False)
+        subprocess.run([str(script), "down", system.server_name()], capture_output=True, check=False)
 
 
 def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
     """The first record of a run: what runs, where, and on which commit."""
-    workload, target = spec.workload, spec.target
+    workload, target, config = spec.workload, spec.target, spec.config
     versions: dict[str, str] = {}
     for name in spec.systems:
-        if not (os.environ.get(SERVERS_ENV) and systems()[name].server and name != REFERENCE):  # recorded once up
+        if not spec.managed(spec.system(name)):  # a managed server's are recorded once it's up
             versions.update(spec.system(name).versions())
     header: RunRecord = {
         "kind": "run",
         "id": f"{started:%Y%m%dT%H%M%SZ}-{workload.dataset}-{target.name}"
         + (f"-{spec.variant}" if spec.variant else "")
-        + ("" if spec.tuning == "tuned" else f"-{spec.tuning}"),
+        + ("" if spec.tuning == Tuning.TUNED else f"-{spec.tuning}"),
         "workload": workload.name,
         "scale": workload.scale,
         "params": {**workload.params(), "span_days": workload.span_days},
         "target": target.name,
         "storage": target.storage,
-        "machine": meta.machine(),
+        "machine": meta.machine(config.machine),
         "commit": meta.commit(),
         "dirty": meta.dirty(),
         "label": spec.label,
@@ -269,10 +279,10 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
     if spec.variant:
         header["variant"] = spec.variant
     # What an A/B arm changed: the reader's session settings and storage options, if set.
-    if settings := timelake_system.reader_settings():
-        header["reader_settings"] = settings
-    if options := timelake_system.reader_options():
-        header["reader_options"] = options
+    if config.timelake_settings:
+        header["reader_settings"] = dict(config.timelake_settings)
+    if config.timelake_options:
+        header["reader_options"] = dict(config.timelake_options)
     if spec.concurrency:
         header.update(concurrency=list(spec.concurrency), concurrency_seconds=spec.concurrency_seconds)
     return header
@@ -382,7 +392,7 @@ def record(path: Path, r: IngestRecord) -> bool:
 
 def counted(system: System) -> bool:
     """Whether the system's S3 traffic goes through the counting proxy."""
-    return system.target.s3 and not system.server
+    return system.on_s3(system.target)
 
 
 def ingest(
@@ -395,51 +405,19 @@ def ingest(
     the proxy's uncounted listener (``live.py``).
     """
     out: IngestRecord = {"kind": "ingest", "system": system.name}
-    workload = spec.workload
     requests = Requests(system)
     writer = Writer(spec, system, requests)
-    stages: dict[str, StageRecord] = {}
     try:
         system.reset()  # not timed: its cost depends on what the last run left
-        schemas = {t.name: workload.schema(t.name) for t in workload.tables}
-        statements = workload.tuning_statements(system.name) if system.tuned else []
-        initial = list(workload.initial())
-        with requests.counting():
-            start = time.perf_counter()
-            for t in workload.tables:
-                system.create(t, schemas[t.name])
-            if system.tuned:
-                system.tune(statements)
-            for table, data in initial:
-                system.append(table, data)
-            setup = time.perf_counter() - start
-        for stage in workload.stages():
+        setup = create_tables(spec.workload, system, requests)
+        stages: dict[str, StageRecord] = {}
+        for stage in spec.workload.stages():
             with requests.counting():
                 done = writer.stage(stage)
             system.place.save_state({**system.state(), "phase": stage.checkpoint or stage.name, "ingested_at": now()})
-            stats = system.stats()
-            done.update(
-                objects=stats["objects"],
-                bytes=stats["bytes"],
-                data_files=stats["data_files"],
-                data_bytes=stats["data_bytes"],
-            )
-            stages[stage.name] = done
+            stages[stage.name] = {**done, **system.stats()}
             checkpoint(stage)
-        latencies = writer.latencies
-        out.update(
-            status="ok",
-            commits=len(latencies),
-            rows=sum(s["rows"] for s in stages.values()),
-            seconds=round(setup + sum(s["seconds"] for s in stages.values()), 2),
-            commit_seconds=round(sum(latencies), 2),
-            commit_ms_p50=round(statistics.median(latencies) * 1000, 1),
-            commit_ms_p95=round(float(np.percentile(latencies, 95)) * 1000, 1),
-            commit_ms_max=round(max(latencies) * 1000, 1),
-        )
-        if len(stages) > 1:
-            out["stages"] = stages
-        out.update(storage(system))
+        out.update(ingest_summary(setup, stages, writer.latencies))
         out.update(system.ingest_extras())
     except Exception as e:  # noqa: BLE001 (a failing system is a result; the run goes on without it)
         out.update(status="error", error=f"{type(e).__name__}: {e}"[:300], commits=len(writer.latencies))
@@ -447,6 +425,46 @@ def ingest(
     if probes:
         out["probed"] = True
     return priced({**out, **requests.total()}, system), probes
+
+
+def create_tables(workload: Workload, system: System, requests: Requests) -> float:
+    """Creates the workload's tables, tunes them and loads the initial rows; the seconds that took.
+
+    The schemas, statements and rows are read first, so only the system's work is timed and counted.
+    """
+    schemas = {t.name: workload.schema(t.name) for t in workload.tables}
+    statements = workload.tuning_statements(system.name) if system.tuned else []
+    initial = list(workload.initial())
+    with requests.counting():
+        start = time.perf_counter()
+        for t in workload.tables:
+            system.create(t, schemas[t.name])
+        system.tune(statements)
+        for table, data in initial:
+            system.append(table, data)
+        return time.perf_counter() - start
+
+
+def ingest_summary(setup: float, stages: dict[str, StageRecord], latencies: list[float]) -> IngestRecord:
+    """An ingest record's totals over its stages, and the storage after the last one."""
+    last = list(stages.values())[-1]
+    out: IngestRecord = {
+        "status": "ok",
+        "commits": len(latencies),
+        "rows": sum(s["rows"] for s in stages.values()),
+        "seconds": round(setup + sum(s["seconds"] for s in stages.values()), 2),
+        "commit_seconds": round(sum(latencies), 2),
+        "commit_ms_p50": round(statistics.median(latencies) * 1000, 1),
+        "commit_ms_p95": round(float(np.percentile(latencies, 95)) * 1000, 1),
+        "commit_ms_max": round(max(latencies) * 1000, 1),
+        "objects": last["objects"],
+        "bytes": last["bytes"],
+        "data_files": last["data_files"],
+        "data_bytes": last["data_bytes"],
+    }
+    if len(stages) > 1:
+        out["stages"] = stages
+    return out
 
 
 class Writer:
@@ -546,19 +564,18 @@ def maintain(system: System) -> IngestRecord:
         with requests.counting():
             system.maintain()
         seconds = time.perf_counter() - start
-        state = {**system.place.load_state(), **system.state(), "phase": "maintained"}
+        state = {**system.place.load_state(), **system.state(), "phase": MAINTAINED}
         system.place.save_state(state)
         out.update(status="ok", seconds=round(seconds, 2))
-        out.update(storage(system))
+        out.update(storage(system.stats()))
         out.update(system.maintain_extras())
     except Exception as e:  # noqa: BLE001 (as in ingest)
         out.update(status="error", error=f"{type(e).__name__}: {e}"[:300])
     return priced({**out, **requests.total()}, system)
 
 
-def storage(system: System) -> IngestRecord:
-    """The objects and bytes the system's tables take now."""
-    stats = system.stats()
+def storage(stats: StorageStats) -> IngestRecord:
+    """The objects and bytes a system's tables take, as an ingest or maintenance record holds them."""
     return {
         "objects": stats["objects"],
         "bytes": stats["bytes"],
@@ -568,14 +585,18 @@ def storage(system: System) -> IngestRecord:
 
 
 def priced(r: IngestRecord, system: System) -> IngestRecord:
-    """Adds the phase's request cost and the storage's monthly cost at the target's list prices, where priced."""
+    """Adds the phase's request cost and the storage's monthly cost at the target's list prices, where priced.
+
+    Storage is priced only where it is billed at the target's object-storage prices: not a database server's disk,
+    S3 Tables, or the reference's local files. Reports show only what this priced.
+    """
     target = system.target.name
     if (usd := phase_cost(r, target)) is not None:
         r["usd"] = usd
     if (
         "bytes" in r
         and system.s3_storage_prices
-        and not system.server
+        and system.on_s3(system.target)
         and (month := storage_month(r["bytes"], target)) is not None
     ):
         r["storage_usd_month"] = month
@@ -586,7 +607,7 @@ class Requests:
     """The S3 requests of one phase through the counting proxy, where the system's traffic is counted."""
 
     def __init__(self, system: System) -> None:
-        self.counted = counted(system)
+        self.proxy = system.place.config.proxy if counted(system) else None
         self.spent: list[IngestRecord] = []
         self._since: ProxyStats | None = None
         """The counters when the open stretch of counting started (None when not counting)."""
@@ -613,40 +634,28 @@ class Requests:
 
     def total(self) -> IngestRecord:
         """The requests counted so far, with their kinds (nothing if the traffic isn't counted)."""
-        return sum_requests(self.spent)
+        if not self.spent:
+            return {}
+        out: IngestRecord = {"requests": sum(r.get("requests", 0) for r in self.spent)}
+        kinds: dict[str, int] = {}
+        for r in self.spent:
+            for k, n in r.get("kinds", {}).items():
+                kinds[k] = kinds.get(k, 0) + n
+        if kinds:
+            out["kinds"] = kinds
+        return out
 
     def _open(self) -> None:
-        self._since = PROXY.stats() if self.counted else None
+        self._since = self.proxy.stats() if self.proxy else None
 
     def _close(self) -> None:
-        if self._since is not None:
-            self.spent.append(proxy_delta(self._since))
-            self._since = None
-
-
-def sum_requests(spent: list[IngestRecord]) -> IngestRecord:
-    """The requests of several ``proxy_delta`` results together."""
-    if not any("requests" in r for r in spent):
-        return {}
-    out: IngestRecord = {"requests": sum(r.get("requests", 0) for r in spent)}
-    kinds: dict[str, int] = {}
-    for r in spent:
-        for k, n in r.get("kinds", {}).items():
-            kinds[k] = kinds.get(k, 0) + n
-    if kinds:
-        out["kinds"] = kinds
-    return out
-
-
-def proxy_delta(before: ProxyStats | None) -> IngestRecord:
-    """S3 requests since ``before`` (nothing if the traffic isn't counted)."""
-    if before is None:
-        return {}
-    after = PROXY.stats()
-    out: IngestRecord = {"requests": after["requests"] - before["requests"]}
-    if kinds := request_kinds(before, after):
-        out["kinds"] = kinds
-    return out
+        if self.proxy and self._since is not None:
+            after = self.proxy.stats()
+            spent: IngestRecord = {"requests": after["requests"] - self._since["requests"]}
+            if kinds := request_kinds(self._since, after):
+                spent["kinds"] = kinds
+            self.spent.append(spent)
+        self._since = None
 
 
 def query_record(system: str, reader: str, query: Query, at: At) -> QueryRecord:
@@ -664,34 +673,30 @@ def query_record(system: str, reader: str, query: Query, at: At) -> QueryRecord:
 def measure(spec: RunSpec, system: System, reader: str, query: Query, at: At) -> QueryRecord:
     """Runs one query in a fresh process: its record, with ``status`` ok, error or timeout."""
     out = query_record(system.name, reader, query, at)
-    sql = query.sql_for(reader, at.now, system.tuning)
+    sql = query.sql_for(reader, system.tuning, at.now)
     place = system.place
     if reader in system.commands:
         cmd = type(system).reader_command(reader, place, place.load_state(), spec.runs)
     else:
-        job = {
-            "system": system.name,
-            "reader": reader,
-            "target": place.target.name,
-            "dataset": place.dataset,
-            "tuning": place.tuning,
-        }
-        cmd = command({**job, "runs": spec.runs})
-    before = PROXY.stats() if counted(system) else None
+        job = job_for(system, reader)
+        job["runs"] = spec.runs
+        cmd = command(job)
+    proxy = spec.config.proxy if counted(system) else None
+    before = proxy.stats() if proxy else None
+    timeout = spec.reference_timeout if system.name == REFERENCE else spec.timeout
     try:
         # A failing query is a result to record, not a reason to stop: no check=True.
-        timeout = spec.reference_timeout if system.name == REFERENCE else spec.timeout
-        proc = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(
+            cmd, input=sql, capture_output=True, text=True, timeout=timeout, check=False, env=spec.config.environ()
+        )
     except subprocess.TimeoutExpired:
         return {**out, "status": "timeout"}
     if proc.returncode != 0:
-        lines = proc.stderr.strip().splitlines() or ["?"]
-        error = next((line for line in reversed(lines) if "Error" in line or "Exception" in line), lines[-1])
-        return {**out, "status": "error", "error": error[:300]}
+        return {**out, "status": "error", "error": failure(proc.stderr)[:300]}
     measured: QueryRecord = json.loads(proc.stdout.strip().splitlines()[-1])
     out.update(measured, status="ok")
     # Requests by kind over all runs, for readers that don't report them per run (the Timelake CLI).
-    if before and "kinds" not in out and (total := request_kinds(before, PROXY.stats())):
+    if proxy and before and "kinds" not in out and (total := request_kinds(before, proxy.stats())):
         out["kinds_total"] = total
     if (usd := query_cost(out, spec.target.name)) is not None:
         out["usd"] = usd
@@ -740,13 +745,13 @@ def concurrency_line(r: ConcurrencyRecord) -> str:
 def configure_proxy(spec: RunSpec) -> None:
     """Sets the counting proxy's latency and throughput cap for an S3 run: every one, since it keeps the last run's."""
     if spec.target.s3:
-        set_proxy("ttfb", f"ms={spec.ttfb_ms}")
-        set_proxy("mibps", f"v={spec.mibps}")
+        set_proxy(spec, "ttfb", f"ms={spec.ttfb_ms}")
+        set_proxy(spec, "mibps", f"v={spec.mibps}")
 
 
-def set_proxy(setting: str, query: str) -> None:
+def set_proxy(spec: RunSpec, setting: str, query: str) -> None:
     """Sets the counting proxy's ``ttfb`` (``ms=20``) or ``mibps`` (``v=50``)."""
-    with urllib.request.urlopen(f"http://{PROXY.admin}/{setting}?{query}", data=b"", timeout=5):  # a POST
+    with urllib.request.urlopen(f"http://{spec.config.proxy.admin}/{setting}?{query}", data=b"", timeout=5):  # a POST
         pass
 
 

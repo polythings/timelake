@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, override
 
 from timebench import BENCH
-from timebench.meta import version
-from timebench.s3 import PROXY
-from timebench.systems import Runner, System, arrow_result, duckdb_connection, duckdb_runner
+from timebench.s3 import S3Endpoint
+from timebench.systems import (
+    Runner,
+    System,
+    arrow_result,
+    duckdb_iceberg_runner,
+    package_versions,
+    store_options,
+)
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -33,7 +39,7 @@ class Timelake(System):
     title = "Timelake"
     readers = ("timelake", "duckdb")
     commands = frozenset({"timelake"})
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
@@ -47,12 +53,13 @@ class Timelake(System):
         import timelake
 
         if self._lake is None:
-            options = PROXY.object_store_options() if self.target.s3 else None
+            options = store_options(self.place, S3Endpoint.object_store_options) or None
             self._lake = timelake.Lake(self.place.root, storage_options=options)
         return self._lake
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
+        super().create(spec, schema)
         name = f"{self.namespace}.{spec.name}"
         if spec.time_column:
             table = self.lake.create_table(
@@ -63,9 +70,8 @@ class Timelake(System):
         self.tables[spec.name] = table
 
     @override
-    def tune(self, statements: list[str]) -> None:
-        for sql in statements:
-            self.lake.sql(sql, namespace=self.namespace)
+    def run_statement(self, sql: str) -> None:
+        self.lake.sql(sql, namespace=self.namespace)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -85,8 +91,8 @@ class Timelake(System):
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return {"timelake": version("timelake") or "?", "duckdb": version("duckdb") or "?"}
+    def version(cls, place: Place) -> dict[str, str]:
+        return package_versions("timelake", "duckdb")
 
     @override
     def ingest_extras(self) -> IngestRecord:
@@ -99,42 +105,20 @@ class Timelake(System):
             # Timelake's reader in this process, for probes and long-lived clients; single queries run the CLI.
             import timelake
 
-            options = {**(PROXY.object_store_options() if place.target.s3 else {}), **reader_options()}
-            lake = timelake.Lake(state["root"], storage_options=options, settings=reader_settings())
+            config = place.config
+            options = {**store_options(place, S3Endpoint.object_store_options), **config.timelake_options}
+            lake = timelake.Lake(state["root"], storage_options=options, settings=dict(config.timelake_settings))
             return lambda sql: arrow_result(lake.sql(sql, namespace=state["namespace"]))
-        # Plain DuckDB over the Iceberg tables Timelake wrote.
-        con = duckdb_connection(place.target)
-        con.execute("INSTALL iceberg; LOAD iceberg")
-        for t, location in state["tables"].items():
-            con.execute(f"CREATE VIEW {t} AS SELECT * FROM iceberg_scan('{location}')")
-        return duckdb_runner(con)
+        return duckdb_iceberg_runner(place, state["tables"])  # plain DuckDB over the Iceberg tables Timelake wrote
 
     @override
     @classmethod
     def reader_command(cls, reader: str, place: Place, state: dict[str, Any], runs: int) -> list[str]:
-        store = PROXY.object_store_options() if place.target.s3 else {}
-        options = [x for k, v in {**store, **reader_options()}.items() for x in ("-o", f"{k}={v}")]
-        cmd = [str(CLI), "-w", state["root"], *options]
+        config = place.config
+        store = {**store_options(place, S3Endpoint.object_store_options), **config.timelake_options}
+        cmd = [str(CLI), "-w", state["root"], *(x for k, v in store.items() for x in ("-o", f"{k}={v}"))]
         cmd += ["sql", "--namespace", state["namespace"], "--bench-runs", str(runs)]
-        cmd += [x for k, v in reader_settings().items() for x in ("--set", f"{k}={v}")]
-        if place.target.s3:
-            cmd += ["--proxy-admin", str(PROXY.admin)]
+        cmd += [x for k, v in config.timelake_settings.items() for x in ("--set", f"{k}={v}")]
+        if place.s3:
+            cmd += ["--proxy-admin", str(place.s3.admin)]
         return cmd
-
-
-def reader_options() -> dict[str, str]:
-    """Extra storage options for Timelake's readers, from ``TIMEBENCH_TIMELAKE_OPTIONS`` (``key=value,...``).
-
-    For comparing settings such as ``timelake_cache=off`` on the same tables.
-    """
-    raw = os.environ.get("TIMEBENCH_TIMELAKE_OPTIONS", "")
-    return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)
-
-
-def reader_settings() -> dict[str, str]:
-    """Session settings for Timelake's readers, from ``TIMEBENCH_TIMELAKE_SETTINGS`` (``key=value,...``).
-
-    For comparing settings such as ``timelake.filter_pushdown=true`` on the same tables.
-    """
-    raw = os.environ.get("TIMEBENCH_TIMELAKE_SETTINGS", "")
-    return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)

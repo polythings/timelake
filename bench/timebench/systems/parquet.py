@@ -13,13 +13,19 @@ import pyarrow as pa
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 
-from timebench.meta import version
-from timebench.s3 import BUCKET, PROXY
-from timebench.systems import Runner, System, arrow_result, duckdb_connection, duckdb_runner
+from timebench.s3 import BUCKET
+from timebench.systems import (
+    Runner,
+    System,
+    datafusion_runner,
+    duckdb_connection,
+    duckdb_runner,
+    package_versions,
+)
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     from timebench.targets import Place
-    from timebench.workloads import TableSpec
 
 
 class ParquetFiles(System):
@@ -33,26 +39,18 @@ class ParquetFiles(System):
     name = "parquet"
     title = "Parquet files"
     readers = ("duckdb", "datafusion")
-    tunings = ("tuned", "default")
-
-    def __init__(self, place: Place, namespace: str) -> None:
-        super().__init__(place, namespace)
-        self.specs: dict[str, TableSpec] = {}
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     @property
     def fs(self) -> pafs.FileSystem:
         """The filesystem the files go to: S3 through the counting proxy, or the local disk."""
-        return PROXY.pyarrow_fs() if self.target.s3 else pafs.LocalFileSystem()
+        return self.place.s3.pyarrow_fs() if self.place.s3 else pafs.LocalFileSystem()
 
     def dir(self, table: str) -> str:
         """A table's directory as the filesystem names it."""
         if self.target.s3:
             return f"{BUCKET}/{self.place.prefix}/{table}"
         return f"{self.place.root}/{table}"
-
-    @override
-    def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        self.specs[spec.name] = spec
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -80,7 +78,7 @@ class ParquetFiles(System):
         if not self.tuned:
             return
         fs = self.fs
-        for table, spec in self.load_specs().items():
+        for table, spec in self.saved_specs().items():
             if not spec["time_column"]:
                 continue
             days = fs.get_file_info(pafs.FileSelector(self.dir(table)))
@@ -94,32 +92,22 @@ class ParquetFiles(System):
                 for f in files:
                     fs.delete_file(f)
 
-    def load_specs(self) -> dict[str, dict[str, Any]]:
-        """The tables' specs, as ``state`` saved them."""
-        return self.place.load_state()["specs"]
-
     @override
     def state(self) -> dict[str, Any]:
-        specs = {
-            n: {"time_column": s.time_column, "series_key": list(s.series_key)} for n, s in self.specs.items()
-        } or self.load_specs()
+        specs = self.saved_specs()
         root = f"s3://{BUCKET}/{self.place.prefix}" if self.target.s3 else self.place.root
         return {"root": root, "specs": specs, "tables": {n: f"{root}/{n}" for n in specs}}
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return {
-            "pyarrow": version("pyarrow") or "?",
-            "duckdb": version("duckdb") or "?",
-            "datafusion": version("datafusion") or "?",
-        }
+    def version(cls, place: Place) -> dict[str, str]:
+        return package_versions("pyarrow", "duckdb", "datafusion")
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
         if reader == "duckdb":
-            con = duckdb_connection(place.target)
+            con = duckdb_connection(place.s3)
             for t, location in state["tables"].items():
                 files = f"{location}/**/*.parquet"
                 con.execute(f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{files}', hive_partitioning = false)")
@@ -128,9 +116,9 @@ class ParquetFiles(System):
         from datafusion import SessionContext
 
         ctx = SessionContext()
-        if place.target.s3:
-            ctx.register_object_store("s3://", PROXY.datafusion_store(), BUCKET)
+        if place.s3:
+            ctx.register_object_store("s3://", place.s3.datafusion_store(), BUCKET)
         for t, location in state["tables"].items():
             days = [("day", "string")] if state["specs"][t]["time_column"] else []
             ctx.register_parquet(t, f"{location}/", table_partition_cols=days)
-        return lambda sql: arrow_result(ctx.sql(sql).to_arrow_table())
+        return datafusion_runner(ctx)

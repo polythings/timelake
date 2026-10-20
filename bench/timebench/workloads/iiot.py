@@ -15,6 +15,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from timebench.results import INGESTED
 from timebench.workloads import Batch, Stage, TableSpec, Workload
 from timebench.workloads.plant import (
     DAY,
@@ -142,7 +143,7 @@ class Iiot(Workload):
             stages.append(Stage(f"history-{days}d", self.bulk(done, end), f"{days}d", live=False, now=at(end)))
             done = end
         stages.append(Stage("history", self.bulk(done, live_from), None, live=False, now=at(live_from)))
-        stages.append(Stage("live", self.live(live_from, hours), "ingested", now=at(hours)))
+        stages.append(Stage("live", self.live(live_from, hours), INGESTED, now=at(hours)))
         return stages
 
 

@@ -27,9 +27,9 @@ def dirty() -> bool:
     return bool(git("status", "--porcelain", "--untracked-files=no", "--", "..", ":!results", ":!../dashboard"))
 
 
-def machine() -> str:
-    """The machine, as ``BENCH_MACHINE`` describes it (e.g. ``c8gd.2xlarge``), else the CPU and core count."""
-    return os.environ.get("BENCH_MACHINE") or f"{platform.machine()} {os.cpu_count()} cores"
+def machine(described: str = "") -> str:
+    """The machine as ``described`` (``BenchConfig.machine``, e.g. ``c8gd.2xlarge``), else its CPU and core count."""
+    return described or f"{platform.machine()} {os.cpu_count()} cores"
 
 
 def version(package: str) -> str | None:

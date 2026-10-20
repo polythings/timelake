@@ -1,45 +1,53 @@
-"""TimescaleDB: hypertables loaded with ``COPY`` per commit; maintenance converts every chunk to the columnstore.
+"""TimescaleDB: hypertables loaded with ``COPY`` per commit, in a schema ``bench_<dataset>`` per dataset.
 
 Any TimescaleDB server works: a local container, one on the benchmark instance, or Tiger Cloud. Set
-``BENCH_TIMESCALEDB_DSN`` (never a production database: each dataset gets a schema ``bench_<dataset>`` that a
-run drops and recreates). The server keeps its data on its own disk, so the run's target doesn't apply, and a
-query's "first run" is warm on the server's side (its buffer cache), unlike the lake readers' fresh processes.
+``BENCH_TIMESCALEDB_DSN``, never to a production database: a run drops and recreates its schema. A query's "first
+run" is warm on the server's side (its buffer cache), unlike the lake readers' fresh processes.
 """
 
 from __future__ import annotations
 
 import io
-import os
 from typing import TYPE_CHECKING, Any, LiteralString, cast, override
 
 import pyarrow as pa
 import pyarrow.csv as pacsv
 
-from timebench.systems import Result, Runner, System, rows_result
+from timebench.config import TIMESCALEDB_ENV, ConfigError
+from timebench.systems import (
+    UNKNOWN,
+    Runner,
+    System,
+    database_name,
+    pg_execute,
+    pg_runner,
+    server_storage,
+    server_versions,
+)
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     import psycopg
 
+    from timebench.config import BenchConfig
     from timebench.targets import Place, StorageStats
     from timebench.workloads import TableSpec
 
-DSN_ENV = "BENCH_TIMESCALEDB_DSN"
 CHUNK_INTERVAL = "12 hours"
 """Hypertable chunk size: the TSBS loader's default."""
 
 
-def connect(schema: str | None = None) -> psycopg.Connection:
+def connect(config: BenchConfig, schema: str | None = None) -> psycopg.Connection:
     """An autocommit connection in UTC, with the dataset's schema on the search path."""
     import psycopg
     from psycopg import sql
 
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        msg = f"set {DSN_ENV} to a TimescaleDB server used only for benchmarks"
-        raise SystemExit(msg)
-    conn = psycopg.connect(dsn, autocommit=True)
+    if not config.timescaledb_dsn:
+        msg = f"set {TIMESCALEDB_ENV} to a TimescaleDB server used only for benchmarks"
+        raise ConfigError(msg)
+    conn = psycopg.connect(config.timescaledb_dsn, autocommit=True)
     conn.execute("SET TimeZone = 'UTC'")
     if schema:
         conn.execute(sql.SQL("SET search_path = {}, public").format(sql.Identifier(schema)))
@@ -92,25 +100,23 @@ class TimescaleDB(System):
     title = "TimescaleDB"
     readers = ("postgres",)
     server = True
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
-        self.schema = "bench_" + place.dataset.replace("-", "_")
+        self.schema = database_name(place)
         self._conn: psycopg.Connection | None = None
-        self.specs: dict[str, TableSpec] = {}
 
     @property
     def conn(self) -> psycopg.Connection:
         """The writer's connection."""
         if self._conn is None:
-            self._conn = connect(self.schema)
+            self._conn = connect(self.place.config, self.schema)
         return self._conn
 
     def execute(self, sql: str) -> list[tuple[Any, ...]]:
-        """Runs a statement built from this module's own templates and the workload's names."""
-        cur = self.conn.execute(cast("LiteralString", sql))
-        return cur.fetchall() if cur.description else []
+        """Runs a statement on the writer's connection."""
+        return pg_execute(self.conn, sql)
 
     @override
     def reset(self) -> None:
@@ -120,6 +126,7 @@ class TimescaleDB(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
+        super().create(spec, schema)
         columns = ", ".join(
             f"{f.name} {pg_type(f.type)}{' NOT NULL' if f.name == spec.time_column else ''}" for f in schema
         )
@@ -134,12 +141,10 @@ class TimescaleDB(System):
                 self.execute(f"CREATE {unique}INDEX ON {spec.name} ({keys}, {spec.time_column} DESC)")
         if spec.dedup:
             self.execute(f"CREATE UNLOGGED TABLE {spec.name}_staging (LIKE {spec.name})")
-        self.specs[spec.name] = spec
 
     @override
-    def tune(self, statements: list[str]) -> None:
-        for sql in statements:
-            self.execute(sql)
+    def run_statement(self, sql: str) -> None:
+        self.execute(sql)
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -163,7 +168,7 @@ class TimescaleDB(System):
         if not self.tuned:
             self.execute("ANALYZE")
             return
-        for table, spec in self.place.load_state()["specs"].items():
+        for table, spec in self.saved_specs().items():
             if not spec["time_column"]:
                 continue
             self.execute(
@@ -182,36 +187,31 @@ class TimescaleDB(System):
 
     @override
     def state(self) -> dict[str, Any]:
-        specs = {
-            n: {"time_column": s.time_column, "series_key": list(s.series_key)} for n, s in self.specs.items()
-        } or self.place.load_state()["specs"]
+        specs = self.saved_specs()
         return {"schema": self.schema, "specs": specs, "tables": {n: f"{self.schema}.{n}" for n in specs}}
 
     @override
     def stats(self) -> StorageStats:
         size = 0
-        for table, spec in self.place.load_state()["specs"].items():
+        for table, spec in self.saved_specs().items():
             fn = "hypertable_size" if spec["time_column"] else "pg_total_relation_size"
             size += self.execute(f"SELECT {fn}('{self.schema}.{table}')")[0][0]
-        return {"objects": None, "bytes": size, "data_files": 0, "data_bytes": size}
+        return server_storage(size)
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        if not os.environ.get(DSN_ENV):
-            return {"timescaledb": "?"}
-        with connect() as conn:
-            row = conn.execute("SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'").fetchone()
-            pg = conn.execute("SHOW server_version").fetchone()
-        return {"timescaledb": row[0] if row else "?", "postgres": pg[0].split()[0] if pg else "?"}
+    def version(cls, place: Place) -> dict[str, str]:
+        import psycopg
+
+        def ask() -> dict[str, str]:
+            with connect(place.config) as conn:
+                row = conn.execute("SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'").fetchone()
+                pg = conn.execute("SHOW server_version").fetchone()
+            return {"timescaledb": row[0] if row else UNKNOWN, "postgres": pg[0].split()[0] if pg else UNKNOWN}
+
+        return server_versions(ask, ("timescaledb", "postgres"), (psycopg.Error,))
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
-        conn = connect(state["schema"])
-
-        def run(sql: str) -> Result:
-            # The query text comes from queries/, so it is trusted SQL.
-            return rows_result(conn.execute(cast("LiteralString", sql)).fetchall())
-
-        return run
+        return pg_runner(connect(place.config, state["schema"]))

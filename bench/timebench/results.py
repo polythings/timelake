@@ -17,6 +17,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+INGESTED = "ingested"
+"""The checkpoint once the whole stream arrived (a workload may have earlier ones, such as ``1d``)."""
+MAINTAINED = "maintained"
+"""The checkpoint after each system's maintenance: the last one."""
+
+
 class RunRecord(TypedDict, total=False):
     """The first line of a run file: what ran, where, and on which commit."""
 

@@ -12,21 +12,41 @@ uv run timebench history --workload tsbs-iot
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import tomllib
 
 from timebench import BENCH, RUNS
-from timebench.harness import RunSpec, run
+from timebench.config import BenchConfig, ConfigError
+from timebench.harness import REFERENCE, RunSpec, run
 from timebench.queries import SITE_SUITES, described_queries, site_sql
 from timebench.report import Run, history, markdown, runs
-from timebench.systems import TUNINGS, systems
-from timebench.targets import Target
+from timebench.results import MAINTAINED
+from timebench.systems import systems
+from timebench.targets import Target, Tuning
 from timebench.workloads import Workload, workloads
 
 PROFILES = BENCH / "profiles"
+PROFILE_SETTINGS = (
+    "runs",
+    "timeout",
+    "reference_timeout",
+    "skip_after_timeout",
+    "live_interval",
+    "concurrency",
+    "concurrency_seconds",
+    "pace",
+)
+"""``RunSpec`` fields a profile sets for all its entries, and an entry for itself; unset, they keep ``RunSpec``'s."""
+
+
+def default(setting: str) -> Any:  # noqa: ANN401 (whatever type the RunSpec field has)
+    """A run setting's default, as ``RunSpec`` declares it."""
+    return next(f.default for f in dataclasses.fields(RunSpec) if f.name == setting)
 
 
 def make_workload(name: str, scale: str | None, params: dict[str, object]) -> Workload:
@@ -51,7 +71,7 @@ def split(value: str | None) -> list[str] | None:
     return value.split(",") if value else None
 
 
-def cmd_list(_: argparse.Namespace) -> None:
+def cmd_list(_args: argparse.Namespace, _config: BenchConfig) -> None:
     """Prints the workloads with their scales, and the systems with their readers."""
     print("Workloads:")
     for w in workloads().values():
@@ -63,10 +83,11 @@ def cmd_list(_: argparse.Namespace) -> None:
         print(f"  {s.name:12} {s.title} ({', '.join(s.readers)}){'; a database server' if s.server else ''}")
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+def cmd_run(args: argparse.Namespace, config: BenchConfig) -> None:
     """Runs one workload on some systems."""
     workload = make_workload(args.workload, args.scale, parse_params(args.param))
-    names = split(args.systems) or [s for s in systems() if s != "s3tables" and not systems()[s].server]
+    lakes = [n for n, s in systems().items() if not (s.server or s.local or s.aws_only)]
+    names = split(args.systems) or lakes
     unknown = set(names) - set(systems())
     if unknown:
         msg = f"unknown systems {sorted(unknown)} (systems: {', '.join(systems())})"
@@ -78,6 +99,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         workload=workload,
         target=Target(args.target),
         systems=names,
+        config=config,
         readers=split(args.readers),
         checkpoints=None if args.checkpoints is None else tuple(c for c in args.checkpoints.split(",") if c),
         queries=set(split(args.queries) or []) or None,
@@ -99,35 +121,32 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(markdown(Run(run(spec))))
 
 
-def cmd_profile(args: argparse.Namespace) -> None:
+def cmd_profile(args: argparse.Namespace, config: BenchConfig) -> None:
     """Runs every entry of a profile (``profiles/<name>.toml``), once per tuning it lists (``tunings``)."""
     profile = tomllib.loads((PROFILES / f"{args.name}.toml").read_text())
     entries = [
-        (entry, tuning)
+        (entry, Tuning(tuning))
         for entry in profile["run"]
-        for tuning in entry.get("tunings", profile.get("tunings", ["tuned"]))
+        for tuning in entry.get("tunings", profile.get("tunings", [Tuning.TUNED]))
         if not args.target or entry["target"] == args.target
     ]
     for entry, tuning in entries:
         names = [s for s in entry["systems"] if tuning in systems()[s].tunings]
-        if not [s for s in names if s != "reference"]:
+        if not [s for s in names if s != REFERENCE]:
             continue  # no system has this tuning yet
+        settings = {k: entry.get(k, profile.get(k)) for k in PROFILE_SETTINGS if k in entry or k in profile}
+        if "concurrency" in settings:
+            settings["concurrency"] = tuple(settings["concurrency"])
         spec = RunSpec(
             workload=make_workload(entry["workload"], entry.get("scale"), entry.get("params", {})),
             target=Target(entry["target"]),
             systems=names,
+            config=config,
             tuning=tuning,
-            runs=entry.get("runs", profile.get("runs", 2)),
-            timeout=entry.get("timeout", profile.get("timeout", 600)),
-            reference_timeout=entry.get("reference_timeout", profile.get("reference_timeout", 1800)),
-            skip_after_timeout=entry.get("skip_after_timeout", profile.get("skip_after_timeout", True)),
             label=profile.get("label", args.name),
-            live_interval=entry.get("live_interval", profile.get("live_interval", 0)),
-            concurrency=tuple(entry.get("concurrency", profile.get("concurrency", []))),
-            concurrency_seconds=entry.get("concurrency_seconds", profile.get("concurrency_seconds", 30)),
-            pace=entry.get("pace", profile.get("pace", 0)),
             variant=entry.get("variant", ""),
             checkpoints=tuple(entry["checkpoints"]) if "checkpoints" in entry else None,
+            **settings,
         )
         try:
             print(markdown(Run(run(spec))))
@@ -136,7 +155,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
             print(f"PROFILE ENTRY FAILED {failed}: {type(e).__name__}: {e}", flush=True)
 
 
-def cmd_report(args: argparse.Namespace) -> None:
+def cmd_report(args: argparse.Namespace, _: BenchConfig) -> None:
     """Prints one run as Markdown."""
     if args.run == "latest":
         found = sorted(RUNS.glob("*.jsonl"))
@@ -149,7 +168,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(markdown(Run(path)))
 
 
-def cmd_history(args: argparse.Namespace) -> None:
+def cmd_history(args: argparse.Namespace, _: BenchConfig) -> None:
     """Prints the history of runs."""
     print(history(runs(args.workload, args.label), args.checkpoint))
 
@@ -169,7 +188,7 @@ def site_queries(suite: str) -> list[dict[str, str]]:
     return out
 
 
-def cmd_queries(args: argparse.Namespace) -> None:
+def cmd_queries(args: argparse.Namespace, _: BenchConfig) -> None:
     """Writes the website's query descriptions and SQL (or with ``--check`` fails if the file is out of date)."""
     site = {suite: site_queries(suite) for suite in SITE_SUITES}
     missing = [f"{s}/{q['name']}" for s, qs in site.items() for q in qs if not q["description"]]
@@ -205,30 +224,62 @@ def main() -> None:
         "(default: all; empty: ingest only)",
     )
     r.add_argument("--queries", help="comma-separated query names (default: all)")
-    r.add_argument("--runs", type=int, default=2, help="repeat runs per query after the first run")
-    r.add_argument("--timeout", type=int, default=600, help="seconds per query, all runs")
-    r.add_argument("--reference-timeout", type=int, default=1800, help="--timeout for the reference system")
+    r.add_argument("--runs", type=int, default=default("runs"), help="repeat runs per query after the first run")
+    r.add_argument("--timeout", type=int, default=default("timeout"), help="seconds per query, all runs")
+    r.add_argument(
+        "--reference-timeout",
+        type=int,
+        default=default("reference_timeout"),
+        help="--timeout for the reference system",
+    )
     r.add_argument(
         "--skip-after-timeout",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=default("skip_after_timeout"),
         help="skip a query at a system's later checkpoints once it timed out there",
     )
-    r.add_argument("--ttfb-ms", type=int, default=0, help="latency the proxy adds per request (local object stores)")
     r.add_argument(
-        "--mibps", type=int, default=0, help="throughput cap per response in MiB/s the proxy applies, 0 for none"
+        "--ttfb-ms",
+        type=int,
+        default=default("ttfb_ms"),
+        help="latency the proxy adds per request (local object stores)",
+    )
+    r.add_argument(
+        "--mibps",
+        type=int,
+        default=default("mibps"),
+        help="throughput cap per response in MiB/s the proxy applies, 0 for none",
     )
     r.add_argument("--param", action="append", default=[], help="workload parameter key=value (repeatable)")
     r.add_argument("--label", default="", help="free text recorded with the run")
     r.add_argument("--variant", default="", help="names a kind of run kept apart from the others, e.g. bulk")
-    r.add_argument("--tuning", default="tuned", choices=TUNINGS, help="every system's configuration (D23)")
+    r.add_argument(
+        "--tuning",
+        type=Tuning,
+        default=default("tuning"),
+        choices=list(Tuning),
+        help="every system's configuration (D23)",
+    )
     r.add_argument("--reuse", action="store_true", help="query the tables an earlier run left (no ingest)")
     r.add_argument(
-        "--live-interval", type=float, default=0, help="seconds between probe rounds during ingest (0 = no probes)"
+        "--live-interval",
+        type=float,
+        default=default("live_interval"),
+        help="seconds between probe rounds during ingest (0 = no probes)",
     )
     r.add_argument("--concurrency", help="client counts for concurrent dashboards, e.g. 1,4,16 (default: none)")
-    r.add_argument("--concurrency-seconds", type=float, default=30, help="how long each client count runs")
-    r.add_argument("--pace", type=float, default=0, help="at least this many seconds between arrivals (0 = no pacing)")
+    r.add_argument(
+        "--concurrency-seconds",
+        type=float,
+        default=default("concurrency_seconds"),
+        help="how long each client count runs",
+    )
+    r.add_argument(
+        "--pace",
+        type=float,
+        default=default("pace"),
+        help="at least this many seconds between arrivals (0 = no pacing)",
+    )
     r.set_defaults(func=cmd_run)
 
     pr = commands.add_parser("profile", help="run a set of runs (profiles/<name>.toml)")
@@ -243,7 +294,7 @@ def main() -> None:
     h = commands.add_parser("history", help="first-run geometric means of every run")
     h.add_argument("--workload")
     h.add_argument("--label")
-    h.add_argument("--checkpoint", default="maintained")
+    h.add_argument("--checkpoint", default=MAINTAINED)
     h.set_defaults(func=cmd_history)
 
     q = commands.add_parser("queries", help="the website's query descriptions and SQL, as JSON")
@@ -252,4 +303,7 @@ def main() -> None:
     q.set_defaults(func=cmd_queries)
 
     args = p.parse_args()
-    args.func(args)
+    try:
+        args.func(args, BenchConfig.from_env())
+    except ConfigError as e:
+        sys.exit(f"timebench: {e}")

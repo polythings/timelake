@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from timebench.worker import command
+from timebench.worker import command, failure, job_for
 
 if TYPE_CHECKING:
     from timebench.results import ConcurrencyRecord
@@ -37,17 +37,9 @@ def dashboards(
     ``queries`` are the dashboard's queries (``name``, ``sql``) in the system's own reader's SQL.
     """
     reader = type(system).readers[0]
-    place = system.place
-    job = {
-        "mode": "client",
-        "system": system.name,
-        "reader": reader,
-        "target": place.target.name,
-        "dataset": place.dataset,
-        "tuning": place.tuning,
-        "queries": queries,
-        "seconds": seconds,
-    }
+    job = job_for(system, reader)
+    job.update(mode="client", queries=queries, seconds=seconds)
+    env = system.place.config.environ()
     procs = [
         subprocess.Popen(
             command({**job, "offset": i}),
@@ -55,6 +47,7 @@ def dashboards(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
         for i in range(clients)
     ]
@@ -67,7 +60,7 @@ def dashboards(
         if not is_ready:
             proc.kill()  # if it's still opening its reader
             _, stderr = proc.communicate()
-            errors.append((stderr.strip().splitlines() or ["client didn't open its reader in time"])[-1][:200])
+            errors.append((failure(stderr) if stderr.strip() else "client didn't open its reader in time")[:200])
             continue
         if proc.stdin:
             proc.stdin.write(f"{start_at}\n")
@@ -83,7 +76,7 @@ def dashboards(
             errors.append("client timed out")
             continue
         if proc.returncode != 0:
-            errors.append((stderr.strip().splitlines() or ["?"])[-1][:200])
+            errors.append(failure(stderr)[:200])
             continue
         out = json.loads(stdout.strip().splitlines()[-1])
         latencies += [t for _, t in out["latencies"]]

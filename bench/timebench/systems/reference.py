@@ -13,9 +13,8 @@ from typing import TYPE_CHECKING, Any, override
 
 import pyarrow.parquet as pq
 
-from timebench.meta import version
-from timebench.systems import TUNINGS, Runner, System, duckdb_connection, duckdb_runner
-from timebench.targets import Target
+from timebench.systems import Runner, System, duckdb_connection, duckdb_runner, package_versions
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -30,13 +29,9 @@ class Reference(System):
     name = "reference"
     title = "Reference"
     readers = ("duckdb",)
-    tunings = TUNINGS  # the answers every tuning is checked against
-    server = True  # local files, whatever the target
+    tunings = tuple(Tuning)  # the answers every tuning is checked against
+    local = True
     s3_storage_prices = False
-
-    def __init__(self, place: Place, namespace: str) -> None:
-        super().__init__(place, namespace)
-        self.specs: dict[str, TableSpec] = {}
 
     @override
     def reset(self) -> None:
@@ -48,7 +43,7 @@ class Reference(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        self.specs[spec.name] = spec
+        super().create(spec, schema)
         (self.place.local_dir / "lake" / spec.name).mkdir(parents=True, exist_ok=True)
 
     @override
@@ -61,8 +56,8 @@ class Reference(System):
 
     @override
     def state(self) -> dict[str, Any]:
-        specs = {n: s.time_column for n, s in self.specs.items()} or self.place.load_state()["time_columns"]
-        return {"time_columns": specs, "tables": {n: self.dir(n) for n in specs}}
+        specs = self.saved_specs()
+        return {"specs": specs, "tables": {n: self.dir(n) for n in specs}}
 
     @override
     def stats(self) -> StorageStats:
@@ -72,14 +67,14 @@ class Reference(System):
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return {"duckdb": version("duckdb") or "?"}
+    def version(cls, place: Place) -> dict[str, str]:
+        return package_versions("duckdb")
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
-        con = duckdb_connection(Target("local"))
+        con = duckdb_connection(None)
         for t, location in state["tables"].items():
-            distinct = "DISTINCT " if state["time_columns"][t] else ""
+            distinct = "DISTINCT " if state["specs"][t]["time_column"] else ""
             con.execute(f"CREATE VIEW {t} AS SELECT {distinct}* FROM read_parquet('{location}/*.parquet')")
         return duckdb_runner(con)

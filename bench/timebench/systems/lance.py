@@ -5,15 +5,22 @@ from __future__ import annotations
 import datetime as dt
 from typing import TYPE_CHECKING, Any, override
 
-from timebench.meta import version
-from timebench.s3 import PROXY
-from timebench.systems import Runner, System, arrow_result, duckdb_connection, duckdb_runner
+from timebench.s3 import S3Endpoint
+from timebench.systems import (
+    Runner,
+    System,
+    datafusion_runner,
+    duckdb_connection,
+    duckdb_runner,
+    package_versions,
+    store_options,
+)
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
     from timebench.targets import Place
-    from timebench.workloads import TableSpec
 
 
 class Lance(System):
@@ -26,22 +33,16 @@ class Lance(System):
     name = "lance"
     title = "Lance"
     readers = ("duckdb", "datafusion")
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
-        self.options = PROXY.lance_options() if place.target.s3 else None
+        self.options = store_options(place, S3Endpoint.lance_options) or None
         self.created: set[str] = set()
-        self.specs: dict[str, TableSpec] = {}
 
     def uri(self, table: str) -> str:
         """Where a table's dataset lives."""
         return f"{self.place.root}/{table}.lance"
-
-    @override
-    def create(self, spec: TableSpec, schema: pa.Schema) -> None:
-        """Lance creates a dataset on its first write: this only notes the table's columns."""
-        self.specs[spec.name] = spec
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -58,43 +59,36 @@ class Lance(System):
         if not self.tuned:
             return
         state = self.place.load_state()
+        specs = self.saved_specs()
         for table in state["tables"]:
             lance.dataset(self.uri(table), storage_options=self.options).optimize.compact_files()
             ds = lance.dataset(self.uri(table), storage_options=self.options)
             ds.cleanup_old_versions(older_than=dt.timedelta(0))
-            spec = state.get("specs", {}).get(table, {})
-            for column in spec.get("series_key", []):
+            spec = specs.get(table)
+            for column in spec["series_key"] if spec else []:
                 ds.create_scalar_index(column, "BTREE")
-            if spec.get("time_column"):
+            if spec and spec["time_column"]:
                 ds.create_scalar_index(spec["time_column"], "ZONEMAP")
 
     @override
     def state(self) -> dict[str, Any]:
-        saved = self.place.load_state() if not self.created else {}
-        tables = self.created or set(saved["tables"])
-        specs = {
-            n: {"time_column": s.time_column, "series_key": list(s.series_key)} for n, s in self.specs.items()
-        } or saved.get("specs", {})
-        return {"tables": {t: self.uri(t) for t in sorted(tables)}, "specs": specs}
+        tables = self.created or set(self.place.load_state()["tables"])
+        return {"tables": {t: self.uri(t) for t in sorted(tables)}, "specs": self.saved_specs()}
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
-        return {
-            "pylance": version("pylance") or "?",
-            "duckdb": version("duckdb") or "?",
-            "datafusion": version("datafusion") or "?",
-        }
+    def version(cls, place: Place) -> dict[str, str]:
+        return package_versions("pylance", "duckdb", "datafusion")
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
         import lance
 
-        options = PROXY.lance_options() if place.target.s3 else None
+        options = store_options(place, S3Endpoint.lance_options) or None
         datasets = {t: lance.dataset(uri, storage_options=options) for t, uri in state["tables"].items()}
         if reader == "duckdb":
-            con = duckdb_connection(place.target)
+            con = duckdb_connection(place.s3)
             for t, ds in datasets.items():
                 con.register(t, ds)
             return duckdb_runner(con)
@@ -104,4 +98,4 @@ class Lance(System):
         ctx = SessionContext()
         for t, ds in datasets.items():
             ctx.register_table(t, lance.FFILanceTableProvider(ds))
-        return lambda sql: arrow_result(ctx.sql(sql).to_arrow_table())
+        return datafusion_runner(ctx)

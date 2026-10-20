@@ -10,6 +10,7 @@ import pytest
 import tomllib
 
 from timebench import BENCH, queries
+from timebench.config import BenchConfig
 from timebench.queries import (
     CLICKBENCH_COMMIT,
     DATAFUSION,
@@ -21,9 +22,9 @@ from timebench.queries import (
     clickbench_queries,
     raw_queries,
 )
-from timebench.results import append_jsonl, best_time, geomean, load_ok, order_engines, read_jsonl
-from timebench.systems import TUNINGS, systems
-from timebench.targets import Place, Target
+from timebench.results import INGESTED, MAINTAINED, append_jsonl, best_time, geomean, load_ok, order_engines, read_jsonl
+from timebench.systems import systems
+from timebench.targets import Place, Target, Tuning
 from timebench.workloads import workloads
 
 if TYPE_CHECKING:
@@ -92,18 +93,21 @@ def test_tsbs_devops_has_the_15_query_types() -> None:
 
 
 def test_s3_tables_live_in_the_bench_bucket() -> None:
-    assert Place(Target("aws-s3"), "tsbs-iot-small", "timelake").root == "s3://bench/lakes/tsbs-iot-small/timelake"
+    assert (
+        Place(Target("aws-s3"), "tsbs-iot-small", "timelake", config=BenchConfig()).root
+        == "s3://bench/lakes/tsbs-iot-small/timelake"
+    )
 
 
 def test_local_target_keeps_tables_on_disk() -> None:
-    place = Place(Target("local"), "tsbs-iot-small", "lance")
+    place = Place(Target("local"), "tsbs-iot-small", "lance", config=BenchConfig())
     assert place.root.endswith("lakes/local/tsbs-iot-small/lance/lake")
     assert not place.target.s3
 
 
 def test_a_default_system_keeps_its_tables_apart_from_the_tuned_one() -> None:
-    tuned = Place(Target("aws-s3"), "iiot-small", "lance")
-    default = Place(Target("aws-s3"), "iiot-small", "lance", "default")
+    tuned = Place(Target("aws-s3"), "iiot-small", "lance", config=BenchConfig())
+    default = Place(Target("aws-s3"), "iiot-small", "lance", Tuning.DEFAULT, config=BenchConfig())
     assert tuned.root == "s3://bench/lakes/iiot-small/lance"
     assert default.root == "s3://bench/lakes/iiot-small/lance-default"
     assert default.local_dir.name == "lance-default"
@@ -111,9 +115,8 @@ def test_a_default_system_keeps_its_tables_apart_from_the_tuned_one() -> None:
 
 def test_every_system_is_tuned_and_tunings_are_known() -> None:
     for system in systems().values():
-        assert "tuned" in system.tunings
-        assert set(system.tunings) <= set(TUNINGS)
-    assert "default" in systems()["influxdb3"].tunings
+        assert Tuning.TUNED in system.tunings
+    assert Tuning.DEFAULT in systems()["influxdb3"].tunings
 
 
 def test_clickbench_queries_come_from_the_download_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,11 +130,11 @@ def test_clickbench_queries_come_from_the_download_cache(tmp_path: Path, monkeyp
 @pytest.mark.parametrize("name", ["weekly", "iiot"])
 def test_the_weekly_profiles_name_real_workloads_systems_and_scales(name: str) -> None:
     profile = tomllib.loads((BENCH / "profiles" / f"{name}.toml").read_text())
-    assert set(profile.get("tunings", ["tuned"])) <= set(TUNINGS)
+    assert {Tuning(t) for t in profile.get("tunings", [Tuning.TUNED])}  # a tuning that doesn't exist raises
     for entry in profile["run"]:
         workload = workloads()[entry["workload"]](entry.get("scale"), **entry.get("params", {}))
         assert set(entry["systems"]) <= set(systems())
-        assert set(entry.get("checkpoints", [])) <= {"ingested", "maintained"}
+        assert set(entry.get("checkpoints", [])) <= {INGESTED, MAINTAINED}
         assert workload.dataset
 
 

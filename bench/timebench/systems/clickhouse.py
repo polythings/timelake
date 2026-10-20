@@ -1,38 +1,31 @@
-"""ClickHouse: MergeTree tables loaded with Arrow inserts; a tuned run merges every partition (``OPTIMIZE ... FINAL``).
+"""ClickHouse: MergeTree tables loaded with Arrow inserts, in a database ``bench_<dataset>`` per dataset.
 
-Any ClickHouse server works (``bench/infra/servers.sh`` starts one); set ``BENCH_CLICKHOUSE_URL`` (default
-``http://default:bench@localhost:58123``). Each dataset gets a database ``bench_<dataset>`` that a run drops and
-recreates. Following ClickHouse's docs: ordered by (series key, time), partitioned by month, and tables whose rows
-may arrive twice use ``ReplacingMergeTree``, which removes duplicates when parts merge; until then readers query with
-``FINAL``.
+Any ClickHouse server works (``infra/servers.sh`` starts one; ``BENCH_CLICKHOUSE_URL`` names another).
 """
 
 from __future__ import annotations
 
-import os
 import urllib.parse
 from typing import TYPE_CHECKING, Any, override
 
 import pyarrow as pa
 
-from timebench.meta import version
-from timebench.systems import Runner, System, arrow_result
+from timebench.systems import Runner, System, arrow_result, database_name, package_versions, server_versions
+from timebench.targets import Tuning
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver.client import Client
 
+    from timebench.config import BenchConfig
     from timebench.targets import Place, StorageStats
     from timebench.workloads import TableSpec
 
-URL_ENV = "BENCH_CLICKHOUSE_URL"
-DEFAULT_URL = "http://default:bench@localhost:58123"
 
-
-def connect(database: str | None = None) -> Client:
+def connect(config: BenchConfig, database: str | None = None) -> Client:
     """A client of the benchmark server (an hour per request: maintenance merges a whole table in one)."""
     import clickhouse_connect
 
-    url = urllib.parse.urlsplit(os.environ.get(URL_ENV, DEFAULT_URL))
+    url = urllib.parse.urlsplit(config.clickhouse_url)
     return clickhouse_connect.get_client(
         host=url.hostname or "localhost",
         port=url.port or 8123,
@@ -72,32 +65,33 @@ def ch_type(field: pa.Field, spec: TableSpec, key: str) -> str:
 
 
 class ClickHouse(System):
-    """MergeTree tables, ReplacingMergeTree ordered by (series key, time) where rows repeat.
+    """MergeTree tables; ReplacingMergeTree ordered by (series key, time) where rows repeat.
 
-    Where rows repeat that is both tunings' layout: the answers are wrong without it.
+    Where rows repeat that is both tunings' layout: the answers are wrong without it. ReplacingMergeTree removes
+    duplicates when parts merge; until then readers query with ``FINAL``.
 
     Default: ordered by time, unpartitioned, no maintenance (ClickHouse merges in the background). Tuned, as its
     docs recommend: ordered by (series key, time), partitioned by month, the workload's materialized views
-    (``tunings/<workload>/clickhouse.sql``) where they stay exact, and maintenance that merges every partition.
+    (``tunings/<workload>/clickhouse.sql``) where they stay exact, and maintenance that merges every partition
+    (``OPTIMIZE ... FINAL``).
     """
 
     name = "clickhouse"
     title = "ClickHouse"
     readers = ("clickhouse",)
     server = True
-    tunings = ("tuned", "default")
+    tunings = (Tuning.TUNED, Tuning.DEFAULT)
 
     def __init__(self, place: Place, namespace: str) -> None:
         super().__init__(place, namespace)
-        self.database = "bench_" + place.dataset.replace("-", "_")
+        self.database = database_name(place)
         self._client: Client | None = None
-        self.specs: dict[str, TableSpec] = {}
 
     @property
     def client(self) -> Client:
         """The writer's client."""
         if self._client is None:
-            self._client = connect()
+            self._client = connect(self.place.config)
         return self._client
 
     @override
@@ -108,6 +102,7 @@ class ClickHouse(System):
 
     @override
     def create(self, spec: TableSpec, schema: pa.Schema) -> None:
+        super().create(spec, schema)
         columns = ", ".join(f"{f.name} {ch_type(f, spec, schema[0].name)}" for f in schema)
         if spec.time_column:
             engine = "ReplacingMergeTree" if spec.dedup else "MergeTree"
@@ -119,12 +114,10 @@ class ClickHouse(System):
         else:
             layout = f"ENGINE = MergeTree ORDER BY {schema[0].name}"
         self.client.command(f"CREATE TABLE {self.database}.{spec.name} ({columns}) {layout}")
-        self.specs[spec.name] = spec
 
     @override
-    def tune(self, statements: list[str]) -> None:
-        for sql in statements:
-            self.client.command(sql.replace("{database}", self.database))
+    def run_statement(self, sql: str) -> None:
+        self.client.command(sql.replace("{database}", self.database))
 
     @override
     def append(self, table: str, data: pa.Table) -> None:
@@ -154,19 +147,17 @@ class ClickHouse(System):
 
     @override
     @classmethod
-    def version(cls) -> dict[str, str]:
+    def version(cls, place: Place) -> dict[str, str]:
         from clickhouse_connect.driver.exceptions import Error
 
-        out = {"clickhouse-connect": version("clickhouse-connect") or "?"}
-        try:
-            out["clickhouse"] = str(connect().command("SELECT version()"))
-        except Error:  # no server: ingest records the failure
-            out["clickhouse"] = "?"
-        return out
+        def ask() -> dict[str, str]:
+            return {"clickhouse": str(connect(place.config).command("SELECT version()"))}
+
+        return {**package_versions("clickhouse-connect"), **server_versions(ask, ("clickhouse",), (Error,))}
 
     @override
     @classmethod
     def open_reader(cls, reader: str, place: Place, state: dict[str, Any]) -> Runner:
-        client = connect(state["database"])
+        client = connect(place.config, state["database"])
         settings = {"final": 1} if state.get("final") else {}
         return lambda sql: arrow_result(client.query_arrow(sql, settings=settings))

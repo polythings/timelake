@@ -11,14 +11,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from timebench import harness, targets, workloads
+from timebench import harness, workloads
+from timebench.config import BenchConfig
 from timebench.queries import DUCKDB, apply_dialect
 from timebench.results import QueryRecord, read_jsonl
 from timebench.systems import DIALECTS, arrow_result, column_sum, rows_result
 from timebench.systems.clickhouse import ch_type
 from timebench.systems.influxdb3 import line_protocol
 from timebench.systems.questdb import qdb_type
-from timebench.targets import Target
+from timebench.targets import Target, Tuning
 from timebench.workloads import TableSpec
 from timebench.workloads.iiot import Iiot
 from timebench.workloads.plant import DAY, START, TAGS_PER_MACHINE, generate, plan
@@ -28,13 +29,11 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> BenchConfig:
     """Generated workloads, run files and tables under a temporary directory."""
     monkeypatch.setattr(workloads, "DATA", tmp_path / "data")
-    monkeypatch.setattr(targets, "LAKES", tmp_path / "lakes")
-    monkeypatch.setenv("BENCH_LAKES", str(tmp_path / "lakes"))  # for the query processes
     monkeypatch.setattr(harness, "RUNS", tmp_path / "runs")
-    return tmp_path
+    return BenchConfig(lakes=tmp_path / "lakes")
 
 
 def test_ago_is_a_time_before_now() -> None:
@@ -48,17 +47,17 @@ def test_ago_is_a_time_before_now() -> None:
 def test_a_reader_gets_its_own_version_of_a_query(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workloads, "raw_queries", lambda _: iter([("q", "SELECT 1"), ("q [clickhouse]", "SELECT 2")]))
     [query] = Iiot().queries()
-    assert query.sql_for("duckdb") == "SELECT 1"
-    assert query.sql_for("clickhouse") == "SELECT 2"
+    assert query.sql_for("duckdb", Tuning.TUNED) == "SELECT 1"
+    assert query.sql_for("clickhouse", Tuning.TUNED) == "SELECT 2"
 
 
 def test_a_tuned_run_reads_the_tuned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = iter([("q", "SELECT 1"), ("q [timelake tuned]", "SELECT 2")])
     monkeypatch.setattr(workloads, "raw_queries", lambda _: rows)
     [query] = Iiot().queries()
-    assert query.sql_for("timelake", tuning="tuned") == "SELECT 2"
-    assert query.sql_for("timelake", tuning="default") == "SELECT 1"
-    assert query.sql_for("duckdb", tuning="tuned") == "SELECT 1"
+    assert query.sql_for("timelake", Tuning.TUNED) == "SELECT 2"
+    assert query.sql_for("timelake", Tuning.DEFAULT) == "SELECT 1"
+    assert query.sql_for("duckdb", Tuning.TUNED) == "SELECT 1"
 
 
 def test_tuning_statements() -> None:
@@ -70,7 +69,7 @@ def test_tuning_statements() -> None:
 @pytest.mark.parametrize("reader", sorted(set(DIALECTS) - {"polars"}))
 def test_every_iiot_query_is_translated(reader: str) -> None:
     for query in Iiot().queries():
-        assert "@" not in query.sql_for(reader, START + 30 * DAY), query.name
+        assert "@" not in query.sql_for(reader, Tuning.TUNED, START + 30 * DAY), query.name
 
 
 def record(rows: int, sums: list[float | None] | None) -> QueryRecord:
@@ -143,7 +142,7 @@ def test_every_tenth_gateway_is_wired() -> None:
     assert all(g % 10 != 0 for g in p.outages.owner.tolist())
 
 
-@pytest.mark.usefixtures("data_dir")
+@pytest.mark.usefixtures("config")
 def test_iiot_stages_load_history_in_bulk_then_a_live_day() -> None:
     workload = Iiot("small", machines=2, days=9)
     workload.prepare()
@@ -159,9 +158,9 @@ def test_iiot_stages_load_history_in_bulk_then_a_live_day() -> None:
     assert len(history) == 6 * 24, "a commit per hour"
 
 
-@pytest.mark.usefixtures("data_dir")
-def test_answers_are_checked_against_the_reference() -> None:
+def test_answers_are_checked_against_the_reference(config: BenchConfig) -> None:
     spec = harness.RunSpec(
+        config=config,
         workload=Iiot("small", machines=8, days=9),  # trend-30d reads machine 7
         target=Target("local"),
         systems=["reference", "parquet"],

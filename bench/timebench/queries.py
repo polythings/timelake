@@ -96,11 +96,7 @@ def ts_literal(epoch: int) -> str:
 
 def raw_queries(suite: str) -> Iterator[tuple[str, str]]:
     """``(name, sql)`` of a ``-- name:``-delimited suite, with comments removed and placeholders kept."""
-    text = (QUERIES / suite / "queries.sql").read_text()
-    for block in re.split(r"^-- name: ", text, flags=re.MULTILINE)[1:]:
-        name, _, sql = block.partition("\n")
-        body = "\n".join(line for line in sql.splitlines() if not line.startswith("--"))
-        yield name.strip(), body.strip().rstrip(";")
+    return ((name, sql) for name, _, sql in described_queries(suite))
 
 
 SITE_SUITES = ("tsbs_iot", "iot_point", "tsbs_devops", "iiot")
