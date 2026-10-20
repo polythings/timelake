@@ -116,6 +116,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   as a boolean or a timestamp to an integer, are an error too. The architecture page lists what converts.
 - The website's Spec section opens on the first spec, with every spec in the sidebar (and in the menu on phones),
   instead of a list page. Spec pages are wider, and table cells break long words only when they don't fit.
+- The website's roadmap is a board with a column per status and a small card per milestone; a milestone's page has no
+  sidebar. The benchmarks page lists the benchmarks in a sidebar and shows each one's query times after maintenance,
+  with the rest on its own page. The requests chart is drawn complete instead of played. The home page no longer has
+  a benchmarks section.
 - Setting `newest-first` also covers the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket with a
   limit: older time partitions are skipped once they can't hold a row of those buckets. TSBS DevOps
   `groupby-orderby-limit`: 254 → 115 ms.

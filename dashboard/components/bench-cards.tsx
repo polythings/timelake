@@ -47,7 +47,7 @@ export function BenchCards({ run, queries = true }: { run: Run; queries?: boolea
           racers={racers}
           unit="requests"
           dot={2}
-          caption="Requests each system makes for one query, right after ingest; each dot is a request, played at the measured pace (sped up)."
+          caption="Requests each system makes for one query, right after ingest, and the time it takes; each dot is a request."
         />
       ) : null}
     </div>

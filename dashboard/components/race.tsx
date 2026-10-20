@@ -1,7 +1,6 @@
 "use client"
 
-import { RotateCcw } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 
 import { watchTheme } from "@/lib/theme"
 
@@ -16,13 +15,11 @@ export type Racer = {
   color: string
 }
 
-/** The slowest racer finishes after this many milliseconds of animation; the others keep their proportions. */
-const PLAY_MS = 7000
 const GAP = 1
 
 /**
- * Systems side by side, each a lane of dots that fill at the pace the run measured (sped up so the slowest finishes
- * in a few seconds). What a dot stands for is in `unit` and the caption.
+ * Systems side by side, each a lane of dots with its total and how long it took. What a dot stands for is in `unit`
+ * and the caption.
  */
 export function Race({
   title,
@@ -40,66 +37,20 @@ export function Race({
   /** Pixels per square. */
   dot?: number
 }) {
-  // A replay mounts the lanes afresh, which restarts the clock.
-  const [run, setRun] = useState(0)
   return (
     <div className="flex flex-col gap-5 rounded-lg border bg-card p-6">
       {title ? <h3 className="text-lg font-normal">{title}</h3> : null}
-      <Lanes key={run} racers={racers} unit={unit} decimals={decimals} dot={dot} />
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-xs text-muted-foreground">
-        <span className="max-w-3xl">{caption}</span>
-        <button
-          type="button"
-          onClick={() => setRun((n) => n + 1)}
-          className="-my-2 flex min-h-8 items-center gap-1.5 font-mono tracking-[0.06em] uppercase hover:text-foreground"
-        >
-          <RotateCcw className="size-3.5" /> Replay
-        </button>
-      </div>
+      {racers.map((r) => (
+        <Lane key={r.label} racer={r} unit={unit} decimals={decimals} dot={dot} />
+      ))}
+      <p className="max-w-3xl border-t pt-4 text-xs text-muted-foreground">{caption}</p>
     </div>
   )
 }
 
-/** Every racer against one clock, from mount until the slowest is done. */
-function Lanes({ racers, unit, decimals, dot }: { racers: Racer[]; unit: string; decimals: number; dot: number }) {
-  const [elapsed, setElapsed] = useState(0)
-  const slowest = Math.max(...racers.map((r) => r.seconds))
-  const scale = PLAY_MS / 1000 / slowest
-
-  useEffect(() => {
-    let frame = 0
-    const start = performance.now()
-    const tick = (now: number) => {
-      const t = (now - start) / 1000 / scale
-      setElapsed(Math.min(t, slowest))
-      if (t < slowest) frame = requestAnimationFrame(tick)
-    }
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [scale, slowest])
-
-  return racers.map((r) => <Lane key={r.label} racer={r} elapsed={elapsed} unit={unit} decimals={decimals} dot={dot} />)
-}
-
-function Lane({
-  racer,
-  elapsed,
-  unit,
-  decimals,
-  dot,
-}: {
-  racer: Racer
-  elapsed: number
-  unit: string
-  decimals: number
-  dot: number
-}) {
+function Lane({ racer, unit, decimals, dot }: { racer: Racer; unit: string; decimals: number; dot: number }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const frac = Math.min(1, elapsed / racer.seconds)
-  const shown = Math.round(racer.dots * frac)
-  const done = frac >= 1
-  const fmt = (v: number) =>
-    v.toLocaleString("en", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  const value = racer.value.toLocaleString("en", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 
   useEffect(() => {
     const c = canvas.current
@@ -116,25 +67,22 @@ function Lane({
     ctx.scale(dpr, dpr)
     const css = getComputedStyle(c)
     const draw = () => {
-      const on = css.getPropertyValue(/^var\((--[\w-]+)\)$/.exec(racer.color)?.[1] ?? "--muted-foreground").trim()
-      const off = css.getPropertyValue("--dot").trim()
+      ctx.fillStyle = css.getPropertyValue(/^var\((--[\w-]+)\)$/.exec(racer.color)?.[1] ?? "--muted-foreground").trim()
       for (let i = 0; i < racer.dots; i++) {
-        ctx.fillStyle = i < shown ? on : off
         ctx.fillRect((i % perRow) * (dot + GAP), Math.floor(i / perRow) * (dot + GAP), dot, dot)
       }
     }
     draw()
     return watchTheme(draw)
-  }, [racer, shown, dot])
+  }, [racer, dot])
 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 text-sm">
         <span className={racer.timelake ? "font-medium" : "text-muted-foreground"}>{racer.label}</span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
-          <span className="text-foreground">{fmt(racer.value * frac)}</span>
-          {` / ${fmt(racer.value)} ${unit} · `}
-          {(done ? racer.seconds : elapsed).toFixed(2)} s{done ? " ✓" : ""}
+          <span className="text-foreground">{value}</span>
+          {` ${unit} · ${racer.seconds.toFixed(2)} s`}
         </span>
       </div>
       <canvas ref={canvas} className="w-full" />

@@ -13,17 +13,14 @@ import {
 } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
-import { Suspense } from "react"
 
-import { BenchCards } from "@/components/bench-cards"
 import { BenefitCards } from "@/components/benefit-cards"
 import { GithubIcon } from "@/components/github-icon"
 import { HeroFlow } from "@/components/hero-flow"
-import { MoreLink, SectionHead } from "@/components/section-head"
+import { SectionHead } from "@/components/section-head"
 import { StackDiagram } from "@/components/stack-diagram"
 import { Button } from "@/components/ui/button"
 import { type ArtKind, UseCaseArt } from "@/components/use-case-art"
-import { latestByTarget, loadRuns, tuningOf } from "@/lib/benchmarks"
 import { REPO_URL, SITE_NAME, SITE_URL } from "@/lib/site"
 
 export const metadata: Metadata = { alternates: { canonical: "/" } }
@@ -187,32 +184,6 @@ export default function Home() {
         </SectionHead>
         <StackDiagram />
       </section>
-
-      <Suspense fallback={null}>
-        <Measurements />
-      </Suspense>
     </div>
-  )
-}
-
-/** The latest weekly run of TSBS IoT on S3: what was measured, and the results. */
-async function Measurements() {
-  const run = latestByTarget(await loadRuns(), "tsbs-iot").find(
-    (r) => r.header.target === "aws-s3" && !r.header.variant && tuningOf(r) === "tuned",
-  )
-  if (!run) return null
-  return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-3">
-        <SectionHead label="Benchmarks">
-          Measured every week on AWS S3, against other lakes with the same data and queries.
-        </SectionHead>
-        <nav className="flex flex-wrap gap-x-5 gap-y-1">
-          <MoreLink href="/benchmarks">All benchmarks</MoreLink>
-          <MoreLink href="/benchmarks/timebench">How we measure</MoreLink>
-        </nav>
-      </div>
-      <BenchCards run={run} />
-    </section>
   )
 }

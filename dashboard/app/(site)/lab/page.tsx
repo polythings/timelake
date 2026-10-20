@@ -486,7 +486,7 @@ async function Races() {
     <Idea
       n={6}
       title="Races"
-      note="For “How fast is it?”: the weekly run's numbers as races, each unit a dot, at the pace that was measured (sped up so the slowest finishes in seven seconds). All real numbers from the run below."
+      note="For “How fast is it?”: the weekly run's numbers as races, each unit a dot, with the time each system took. All real numbers from the run below."
     >
       <div className="flex flex-col gap-6">
         <Race

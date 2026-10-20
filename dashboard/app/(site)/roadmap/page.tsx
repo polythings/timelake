@@ -17,6 +17,9 @@ const UPDATED = MILESTONES.map((m) => m.updated)
   .toSorted()
   .at(-1)
 
+/** The board's columns, in the order a milestone moves through them. */
+const COLUMNS: MilestoneStatus[] = ["exploring", "planned", "in-progress", "done"]
+
 export default function RoadmapPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-14 px-4 py-12">
@@ -27,33 +30,37 @@ export default function RoadmapPage() {
           <Link className="underline underline-offset-4" href="/spec">
             specs
           </Link>
-          , one per feature. Each milestone links its specs, and each spec the releases that changed it. Updated{" "}
-          {UPDATED}.
+          , one per feature. Each square on a milestone is one of its specs. Updated {UPDATED}.
         </p>
         <StatusLegend />
       </header>
 
-      {(Object.keys(MILESTONE_STATUS_LABEL) as MilestoneStatus[]).map((status) => {
-        // Done milestones newest first; the others in order of priority.
-        const listed = MILESTONES.filter((m) => m.status === status).toSorted((x, y) =>
-          status === "done" ? y.number - x.number : x.number - y.number,
-        )
-        return (
-          listed.length > 0 && (
-            <section key={status} className="space-y-4">
-              <div className="space-y-1">
-                <h2 className="text-xl font-medium tracking-tight">{MILESTONE_STATUS_LABEL[status]}</h2>
-                <p className="text-sm text-muted-foreground">{MILESTONE_STATUS_MEANING[status]}</p>
+      <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {COLUMNS.map((status) => {
+          // Done milestones newest first; the others in order of priority.
+          const listed = MILESTONES.filter((m) => m.status === status).toSorted((x, y) =>
+            status === "done" ? y.number - x.number : x.number - y.number,
+          )
+          return (
+            <section key={status} className="flex flex-col gap-3 rounded-lg bg-muted/50 p-3">
+              <div className="space-y-0.5 px-0.5">
+                <h2 className="flex items-baseline justify-between gap-2 text-sm font-medium">
+                  {MILESTONE_STATUS_LABEL[status]}
+                  <span className="font-mono text-xs font-normal text-muted-foreground tabular-nums">
+                    {listed.length}
+                  </span>
+                </h2>
+                <p className="text-xs text-muted-foreground">{MILESTONE_STATUS_MEANING[status]}</p>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="flex flex-col gap-2">
                 {listed.map((m) => (
                   <MilestoneCard key={m.slug} milestone={m} />
                 ))}
               </div>
             </section>
           )
-        )
-      })}
+        })}
+      </div>
 
       <section className="max-w-3xl space-y-4 border-t pt-10">
         <h2 className="text-xl font-medium tracking-tight">Build it with us</h2>
