@@ -15,6 +15,10 @@ homepage = "https://timelake.dev"
 # The published crates depend on each other by version too; scripts/release.py keeps these in step.
 timelake = { path = "crates/timelake", version = "0.7.0" }
 timelake-format = { path = "crates/timelake-format", version = "0.7.0" }
+# Iceberg metadata, manifests and commits without I/O of their own (github.com/polythings/lakebed), shared with the
+# WASM reader and writer.
+lakebed-core = "0.1"
+lakebed-iceberg = { version = "0.1", default-features = false }
 # iceberg 0.10.1 is on Arrow 58, so DataFusion 54.x (Arrow 58, object_store 0.13) is the newest matching engine.
 iceberg = "=0.10.1"
 datafusion = "54.1"
@@ -40,6 +44,11 @@ thiserror = "2"
 chrono = "0.4"
 rand = "0.10"
 tempfile = "3"
+
+# Until lakebed 0.1.0 is on crates.io: the checkout next to this one.
+[patch.crates-io]
+lakebed-core = { path = "../../../../lakebed/crates/lakebed-core" }
+lakebed-iceberg = { path = "../../../../lakebed/crates/lakebed-iceberg" }
 
 [profile.release]
 debug = "line-tables-only"

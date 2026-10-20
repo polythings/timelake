@@ -13,10 +13,11 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
+use lakebed_iceberg::{Error as HostError, Result as HostResult};
 use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
-use timelake_format::host::{Host, Listed, Upload};
+use timelake_format::host::{Host, Listed, Upload, WriteHost};
 use timelake_format::maintain::{MaintainOptions, MaintainReport, maintain};
 use timelake_format::table::TableState;
 use wasm_bindgen::prelude::*;
@@ -28,17 +29,17 @@ struct JsHost {
     store: JsValue,
 }
 
-fn js_err(e: &JsValue) -> WriteError {
+fn js_err(e: &JsValue) -> HostError {
     let msg = e.as_string().or_else(|| e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())));
-    WriteError::Store(msg.unwrap_or_else(|| format!("{e:?}")))
+    HostError::Store(msg.unwrap_or_else(|| format!("{e:?}")))
 }
 
 impl JsHost {
-    async fn call(&self, method: &str, args: &[JsValue]) -> WriteResult<JsValue> {
+    async fn call(&self, method: &str, args: &[JsValue]) -> HostResult<JsValue> {
         let f: Function = Reflect::get(&self.store, &method.into())
             .map_err(|e| js_err(&e))?
             .dyn_into()
-            .map_err(|_| WriteError::Store(format!("the store has no {method} method")))?;
+            .map_err(|_| HostError::Store(format!("the store has no {method} method")))?;
         let args: Array = args.iter().collect();
         let value = f.apply(&self.store, &args).map_err(|e| js_err(&e))?;
         JsFuture::from(Promise::resolve(&value)).await.map_err(|e| js_err(&e))
@@ -63,7 +64,7 @@ enum JsUpload {
 }
 
 impl Upload for JsUpload {
-    async fn put_part(&mut self, part: Vec<u8>) -> WriteResult<()> {
+    async fn put_part(&mut self, part: Vec<u8>) -> HostResult<()> {
         match self {
             Self::Parts { upload } => {
                 JsHost { store: upload.clone() }.call("putPart", &[Uint8Array::from(part.as_slice()).into()]).await?;
@@ -76,7 +77,7 @@ impl Upload for JsUpload {
         }
     }
 
-    async fn complete(self) -> WriteResult<()> {
+    async fn complete(self) -> HostResult<()> {
         match self {
             Self::Parts { upload } => JsHost { store: upload }.call("complete", &[]).await.map(drop),
             Self::Buffered { host, uri, bytes } => host.put(&uri, bytes).await,
@@ -99,29 +100,29 @@ struct JsListed {
 impl Host for JsHost {
     type Upload = JsUpload;
 
-    async fn get(&self, uri: &str) -> WriteResult<Option<Vec<u8>>> {
+    async fn get(&self, uri: &str) -> HostResult<Option<Vec<u8>>> {
         let v = self.call("get", &[uri.into()]).await?;
         Ok((!v.is_null() && !v.is_undefined()).then(|| bytes(&v)))
     }
 
-    async fn get_range(&self, uri: &str, start: u64, len: u64) -> WriteResult<Vec<u8>> {
+    async fn get_range(&self, uri: &str, start: u64, len: u64) -> HostResult<Vec<u8>> {
         Ok(bytes(&self.call("getRange", &[uri.into(), number(start), number(len)]).await?))
     }
 
-    async fn exists(&self, uri: &str) -> WriteResult<bool> {
+    async fn exists(&self, uri: &str) -> HostResult<bool> {
         Ok(self.call("exists", &[uri.into()]).await?.is_truthy())
     }
 
-    async fn put(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<()> {
+    async fn put(&self, uri: &str, bytes: Vec<u8>) -> HostResult<()> {
         self.call("put", &[uri.into(), Uint8Array::from(bytes.as_slice()).into()]).await.map(drop)
     }
 
-    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<bool> {
+    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> HostResult<bool> {
         let v = self.call("putIfAbsent", &[uri.into(), Uint8Array::from(bytes.as_slice()).into()]).await?;
         Ok(v.is_truthy())
     }
 
-    async fn upload(&self, uri: &str) -> WriteResult<JsUpload> {
+    async fn upload(&self, uri: &str) -> HostResult<JsUpload> {
         let has = Reflect::get(&self.store, &"upload".into()).is_ok_and(|f| f.is_function());
         if !has {
             return Ok(JsUpload::Buffered { host: self.clone(), uri: uri.to_string(), bytes: vec![] });
@@ -130,15 +131,15 @@ impl Host for JsHost {
         Ok(JsUpload::Parts { upload })
     }
 
-    async fn list(&self, prefix: &str) -> WriteResult<Vec<Listed>> {
+    async fn list(&self, prefix: &str) -> HostResult<Vec<Listed>> {
         let v = self.call("list", &[prefix.into()]).await?;
         let listed: Vec<JsListed> =
-            serde_wasm_bindgen::from_value(v).map_err(|e| WriteError::Store(format!("list: {e}")))?;
+            serde_wasm_bindgen::from_value(v).map_err(|e| HostError::Store(format!("list: {e}")))?;
         #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "object sizes")]
         Ok(listed.into_iter().map(|o| Listed { uri: o.uri, size: o.size as u64 }).collect())
     }
 
-    async fn delete(&self, uris: &[String]) -> WriteResult<()> {
+    async fn delete(&self, uris: &[String]) -> HostResult<()> {
         if uris.is_empty() {
             return Ok(());
         }
@@ -162,14 +163,6 @@ impl Host for JsHost {
         u64::from_le_bytes(b)
     }
 
-    fn max_row_group_bytes(&self) -> Option<usize> {
-        Some(MAX_ROW_GROUP_BYTES)
-    }
-
-    fn data_page_rows(&self) -> usize {
-        DATA_PAGE_ROWS
-    }
-
     async fn sleep(&self, ms: u64) {
         let promise = Promise::new(&mut |resolve, _| {
             let global = js_sys::global();
@@ -181,6 +174,16 @@ impl Host for JsHost {
             }
         });
         let _ = JsFuture::from(promise).await;
+    }
+}
+
+impl WriteHost for JsHost {
+    fn max_row_group_bytes(&self) -> Option<usize> {
+        Some(MAX_ROW_GROUP_BYTES)
+    }
+
+    fn data_page_rows(&self) -> usize {
+        DATA_PAGE_ROWS
     }
 }
 

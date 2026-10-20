@@ -12,8 +12,9 @@ pub enum Error {
     Metadata(#[from] serde_json::Error),
     #[error("bad table contract: {0}")]
     Contract(#[from] FormatError),
-    #[error("bad Avro file: {0}")]
-    Avro(#[from] Box<apache_avro::Error>),
+    /// A manifest or manifest list (lakebed reads them).
+    #[error("{0}")]
+    Iceberg(#[from] lakebed_iceberg::Error),
     #[error("Parquet: {0}")]
     Parquet(#[from] ParquetError),
     #[error("Arrow: {0}")]
@@ -23,13 +24,6 @@ pub enum Error {
 impl Error {
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::Invalid(message.into())
-    }
-}
-
-// apache_avro::Error is large; boxing keeps every `Result<_, Error>` small.
-impl From<apache_avro::Error> for Error {
-    fn from(e: apache_avro::Error) -> Self {
-        Self::Avro(Box::new(e))
     }
 }
 

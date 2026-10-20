@@ -10,8 +10,8 @@ use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataWriter};
 use crate::commit::{Change, CommitInfo, commit};
 use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
-use crate::host::{Host, Upload, uuid_v7};
-use crate::iceberg::DataFile;
+use crate::host::{Upload, WriteHost, uuid_v7};
+use crate::iceberg::{DataFile, partition_values};
 use crate::maintain::{MaintainOptions, MaintainReport, maintain};
 use crate::rows::{latest_of_sorted, sort_and_split};
 use crate::summary;
@@ -52,7 +52,7 @@ pub struct AppendReport {
 }
 
 /// Appends `batches` to `table` as one commit; returns the new version.
-pub async fn append<H: Host>(
+pub async fn append<H: WriteHost>(
     host: &H,
     table: TableState,
     batches: &[RecordBatch],
@@ -122,7 +122,7 @@ pub async fn append<H: Host>(
 
 /// Writes the sorted rows of one partition as data files of the table's target size, each with its
 /// encoded footer (for the head).
-pub async fn write_files<H: Host>(
+pub async fn write_files<H: WriteHost>(
     host: &H,
     table: &TableState,
     partition: Option<i32>,
@@ -140,7 +140,7 @@ pub async fn write_files<H: Host>(
 
 /// Writes sorted batches of one partition into files of the target size, uploading as they grow.
 /// After a failed [`write`](Self::write), [`abort`](Self::abort) removes what was written.
-pub struct PartitionFiles<'a, H: Host> {
+pub struct PartitionFiles<'a, H: WriteHost> {
     host: &'a H,
     table: &'a TableState,
     partition: Option<i32>,
@@ -148,7 +148,7 @@ pub struct PartitionFiles<'a, H: Host> {
     done: Vec<(DataFile, Vec<u8>)>,
 }
 
-impl<H: Host> std::fmt::Debug for PartitionFiles<'_, H> {
+impl<H: WriteHost> std::fmt::Debug for PartitionFiles<'_, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionFiles").field("partition", &self.partition).finish_non_exhaustive()
     }
@@ -196,7 +196,7 @@ impl Pending {
     }
 }
 
-impl<'a, H: Host> PartitionFiles<'a, H> {
+impl<'a, H: WriteHost> PartitionFiles<'a, H> {
     /// A writer of `partition`'s files for `table`.
     pub fn new(host: &'a H, table: &'a TableState, partition: Option<i32>) -> WriteResult<Self> {
         Ok(Self { host, table, partition, open: None, done: vec![] })
@@ -271,7 +271,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
                 Ok(stats) => {
                     if let Err(e) = u.complete().await {
                         let _ = self.host.delete(std::slice::from_ref(&uri)).await;
-                        return Err(e);
+                        return Err(e.into());
                     }
                     stats
                 }
@@ -286,7 +286,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
             let all = pending.len;
             if let Err(e) = self.host.put(&uri, pending.take(all)).await {
                 let _ = self.host.delete(std::slice::from_ref(&uri)).await;
-                return Err(e);
+                return Err(e.into());
             }
             stats
         };
@@ -328,18 +328,8 @@ fn created_by() -> String {
 /// The Iceberg entry of a written file.
 pub fn data_file(table: &TableState, uri: String, partition: Option<i32>, stats: &FileStats) -> DataFile {
     DataFile {
-        path: uri,
-        partition,
-        record_count: stats.record_count,
-        file_size: stats.file_size,
-        column_sizes: stats.column_sizes.clone(),
-        value_counts: stats.value_counts.clone(),
-        null_counts: stats.null_counts.clone(),
-        nan_counts: stats.nan_counts.clone(),
-        lower_bounds: stats.lower_bounds.clone(),
-        upper_bounds: stats.upper_bounds.clone(),
-        split_offsets: Some(stats.split_offsets.clone()),
         sort_order_id: (!table.contract.sort_columns().is_empty()).then(|| table.metadata.sort_order_id()),
+        ..stats.iceberg.data_file(uri, partition_values(table.contract.chunk, partition))
     }
 }
 

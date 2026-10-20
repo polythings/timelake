@@ -24,7 +24,7 @@ are shared with the engine, which got 4× less memory and 3× faster compaction 
 
 | # | Spec | Status | Versions |
 |---:|---|---|---|
-| 13 | [Writes from WebAssembly](../0013-wasm-writes.md) | Done | 0.6.0 |
+| 13 | [Writes from WebAssembly](../0013-wasm-writes.md) | Done | 0.6.0, unreleased |
 | 19 | [Compaction](../0019-compaction.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0 |
 | 11 | [Appends](../0011-appends.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased |
 

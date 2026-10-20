@@ -73,7 +73,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 |---:|---|---|---|---|
 | 11 | [Appends](0011-appends.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased | 2026-10-20 |
 | 12 | [Late data and dedup on read](0012-late-data-and-dedup.md) | Done | 0.5.0 | 2026-10-16 |
-| 13 | [Writes from WebAssembly](0013-wasm-writes.md) | Done | 0.6.0 | 2026-10-17 |
+| 13 | [Writes from WebAssembly](0013-wasm-writes.md) | Done | 0.6.0, unreleased | 2026-10-20 |
 | 14 | [Hot tier and seconds-fresh reads](0014-hot-tier.md) | Planned | – | 2026-10-12 |
 | 15 | [Backfill](0015-backfill.md) | Planned | – | 2026-10-11 |
 | 16 | [Import and migration](0016-import.md) | In progress | 0.1.0 | 2026-10-12 |

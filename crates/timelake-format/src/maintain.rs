@@ -21,9 +21,10 @@ use parquet::file::reader::{ChunkReader, Length};
 use crate::append::PartitionFiles;
 use crate::commit::{Change, commit, put_metadata};
 use crate::error::{WriteError, WriteResult};
-use crate::host::Host;
-use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
+use crate::host::WriteHost;
+use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list, time_partition};
 use crate::merge::{Merge, Step};
+use crate::metadata::TimelakeMetadata;
 use crate::rows::{align_batch, stable_sort};
 use crate::table::{TableState, metadata_uri};
 
@@ -146,7 +147,7 @@ impl MaintainReport {
 }
 
 /// Runs maintenance: retention, then compaction, then snapshot expiry. Returns the new version.
-pub async fn maintain<H: Host>(
+pub async fn maintain<H: WriteHost>(
     host: &H,
     table: TableState,
     opts: &MaintainOptions,
@@ -170,16 +171,25 @@ fn micros(d: Duration) -> i64 {
 }
 
 /// Drops whole time partitions entirely older than the retention period.
-async fn retention<H: Host>(host: &H, mut table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
+async fn retention<H: WriteHost>(
+    host: &H,
+    mut table: TableState,
+    report: &mut MaintainReport,
+) -> WriteResult<TableState> {
     let (Some(retention), Some(chunk)) = (table.contract.retention, table.contract.chunk) else { return Ok(table) };
     let cutoff = host.now_ms().saturating_mul(1000).saturating_sub(micros(retention));
     let expired = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
-    let removed: Vec<Entry> =
-        table.live_files(host).await?.iter().filter(|e| e.file.partition.is_some_and(expired)).cloned().collect();
+    let removed: Vec<Entry> = table
+        .live_files(host)
+        .await?
+        .iter()
+        .filter(|e| time_partition(&e.file).is_some_and(expired))
+        .cloned()
+        .collect();
     if removed.is_empty() {
         return Ok(table);
     }
-    report.partitions_dropped += removed.iter().map(|e| e.file.partition).collect::<HashSet<_>>().len();
+    report.partitions_dropped += removed.iter().map(|e| time_partition(&e.file)).collect::<HashSet<_>>().len();
     report.files_dropped += removed.len();
     let change = Change::Delete { removed, lvi_cutoff: Some(cutoff) };
     Ok(commit(host, table, &change, &HashMap::<String, String>::new()).await?.0)
@@ -187,7 +197,7 @@ async fn retention<H: Host>(host: &H, mut table: TableState, report: &mut Mainta
 
 /// Rewrites groups of small (or unsorted) files into sorted files of the target size, removing
 /// duplicate `(series, time)` rows (latest write wins) when dedup is on.
-async fn compact<H: Host>(
+async fn compact<H: WriteHost>(
     host: &H,
     mut table: TableState,
     opts: &MaintainOptions,
@@ -272,7 +282,7 @@ fn time_field_id(table: &TableState) -> Option<i32> {
 
 /// Which files of which partitions to rewrite (the engine's plan). Each group is a run of files
 /// next to each other in commit order.
-async fn compaction_plan<H: Host>(
+async fn compaction_plan<H: WriteHost>(
     host: &H,
     table: &mut TableState,
     opts: &MaintainOptions,
@@ -298,14 +308,14 @@ async fn compaction_plan<H: Host>(
                 let cutoff = newest.saturating_sub(micros(cold_after));
                 let ended =
                     |p: i32| p.checked_add(1).and_then(|n| chunk.start_micros(n).ok()).is_some_and(|end| end <= cutoff);
-                files.iter().filter_map(|f| f.file.partition).filter(|&p| ended(p)).map(Some).collect()
+                files.iter().filter_map(|f| time_partition(&f.file)).filter(|&p| ended(p)).map(Some).collect()
             })
         }
         _ => HashSet::new(),
     };
     let mut by_partition: BTreeMap<Option<i32>, Vec<Entry>> = BTreeMap::new();
     for e in files {
-        let p = e.file.partition;
+        let p = time_partition(&e.file);
         if opts.partitions.as_ref().is_none_or(|ps| ps.contains(&p)) || cold.contains(&p) {
             by_partition.entry(p).or_default().push(e);
         }
@@ -341,7 +351,7 @@ async fn compaction_plan<H: Host>(
 }
 
 /// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files.
-async fn rewrite<H: Host>(
+async fn rewrite<H: WriteHost>(
     host: &H,
     table: &TableState,
     partition: Option<i32>,
@@ -413,7 +423,7 @@ impl Input {
     }
 
     /// The next batch, aligned to the table schema; `None` at the end.
-    async fn next<H: Host>(
+    async fn next<H: WriteHost>(
         &mut self,
         host: &H,
         table: &TableState,
@@ -465,7 +475,7 @@ impl Input {
     }
 
     /// Rows `start..end` of the current row group, from the pages that cover them.
-    async fn read_window<H: Host>(&mut self, host: &H, start: usize, end: usize) -> WriteResult<Batches> {
+    async fn read_window<H: WriteHost>(&mut self, host: &H, start: usize, end: usize) -> WriteResult<Batches> {
         let group = self.metadata.row_group(self.group);
         let rows = group.num_rows().unsigned_abs();
         let Some(index) = self.metadata.offset_index().and_then(|i| i.get(self.group)) else {
@@ -562,7 +572,7 @@ impl Sparse {
 }
 
 /// The batches of row groups `groups` of the file at `path`, read with one ranged request.
-async fn read_row_groups<H: Host>(
+async fn read_row_groups<H: WriteHost>(
     host: &H,
     path: &str,
     file_len: u64,
@@ -600,7 +610,7 @@ fn decode_footer(bytes: &[u8]) -> WriteResult<Arc<ParquetMetaData>> {
 }
 
 /// Reads the footer of the file at `path` of `size` bytes (one request for typical files).
-async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
+async fn read_footer<H: WriteHost>(host: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
     let mut want = FOOTER_PREFETCH.min(size);
     loop {
         let tail = Bytes::from(host.get_range(path, size - want, want).await?);
@@ -618,7 +628,7 @@ async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Ar
 // --- expiry ----------------------------------------------------------------------------------
 
 /// Expires old snapshots and deletes the files only they referenced.
-async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
+async fn expire<H: WriteHost>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
     let mut table = table;
     loop {
         let mut snapshots = table.metadata.snapshot_list();
@@ -688,7 +698,7 @@ enum Missing {
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
-async fn reachable<H: Host>(
+async fn reachable<H: WriteHost>(
     host: &H,
     snapshots: &[crate::metadata::SnapshotRef],
     missing: Missing,
@@ -735,7 +745,7 @@ async fn reachable<H: Host>(
 }
 
 /// Keeps the newest metadata files (those in the metadata log plus the current one).
-async fn prune_metadata_files<H: Host>(host: &H, table: &TableState) -> WriteResult<usize> {
+async fn prune_metadata_files<H: WriteHost>(host: &H, table: &TableState) -> WriteResult<usize> {
     let keep_from = table.version.saturating_sub(table.metadata.metadata_log_len() as u64 + 1);
     let doomed: Vec<String> = host
         .list(&format!("{}/metadata/v", table.location))

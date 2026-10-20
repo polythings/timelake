@@ -63,6 +63,23 @@ impl From<FormatError> for WriteError {
     }
 }
 
+/// lakebed's errors keep their meaning: a conflict stays a conflict, an unknown commit outcome stays
+/// unknown.
+impl From<lakebed_core::Error> for WriteError {
+    fn from(e: lakebed_core::Error) -> Self {
+        use lakebed_core::Error as E;
+        match e {
+            E::Invalid(m) | E::Unsupported(m) => Self::Invalid(m),
+            E::Conflict(m) => Self::Conflict(m),
+            E::CommitUnknown(m) => Self::CommitUnknown(m),
+            E::NotFound(m) => Self::NotFound(m),
+            E::Store(m) => Self::Store(m),
+            E::Corrupt(m) => Self::Corrupt(m),
+            other => Self::Store(other.to_string()),
+        }
+    }
+}
+
 impl From<ArrowError> for WriteError {
     fn from(e: ArrowError) -> Self {
         Self::Arrow(e)

@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A commit from JavaScript by a writer whose clock is behind the table's last update is dated at that update, so the
+  snapshot log stays in time order; iceberg-rust refused to load such a table.
 - The CLI prints a failed query's error once: DataFusion's errors repeat their cause, and each was printed again.
 - `time_weighted_mean` over a span of several files per scan partition, such as a month of daily files grouped by
   tag, failed with "runs that overlap in time": each partition now reads a stretch of time, kept to its files. Files
@@ -110,6 +112,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- The WASM reader and the writer for JavaScript runtimes read and write Iceberg manifests, manifest lists and table
+  metadata through [lakebed](https://github.com/polythings/lakebed), a separate project for table formats without
+  I/O of their own. The files they write are the same as before.
 - Appends convert a column to the table's type only where no value is lost. A value that doesn't fit (an integer out
   of range, text that doesn't parse, a fraction for an integer column, an integer above 2^53 for a double) is an error
   naming the column; it used to be written as NULL or truncated without a word. Conversions that are never exact, such

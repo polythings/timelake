@@ -14,6 +14,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
+use lakebed_iceberg::Table;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::{Compression, ZstdLevel};
@@ -23,10 +24,12 @@ use crate::error::{WriteError, WriteResult};
 use crate::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
 use crate::head::{FILE_NAME, HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, encode};
 use crate::host::Host;
-use crate::iceberg::{DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
-use crate::metadata::Metadata;
+use crate::iceberg::{DataFile, Entry, ManifestFile, Status, partition_values, time_partition};
+use crate::metadata::{Metadata, TimelakeMetadata};
 use crate::rows::align_batch;
-use crate::{Contract, summary};
+use crate::{Chunk, Contract, summary};
+
+pub use lakebed_iceberg::table::{hint_uri, metadata_uri};
 
 /// A table at one committed version.
 #[derive(Clone, Debug)]
@@ -49,23 +52,9 @@ pub struct TableState {
     pub footers: BTreeMap<String, Vec<u8>>,
 }
 
-/// `<location>/metadata/v<version>.metadata.json`.
-pub fn metadata_uri(location: &str, version: u64) -> String {
-    format!("{location}/metadata/v{version}.metadata.json")
-}
-
-/// `<location>/metadata/version-hint.text`.
-pub fn hint_uri(location: &str) -> String {
-    format!("{location}/metadata/version-hint.text")
-}
-
 /// `<location>/metadata/timelake-head`.
 pub fn head_uri(location: &str) -> String {
     format!("{location}/metadata/{FILE_NAME}")
-}
-
-fn metadata_version(uri: &str) -> Option<u64> {
-    uri.rsplit('/').next()?.strip_prefix('v')?.strip_suffix(".metadata.json")?.parse().ok()
 }
 
 impl TableState {
@@ -73,7 +62,7 @@ impl TableState {
     pub async fn load<H: Host>(host: &H, location: &str) -> WriteResult<Self> {
         let prefix = format!("{location}/metadata/v");
         let (head, listed) = futures_util::future::join(host.get(&head_uri(location)), host.list(&prefix)).await;
-        let newest = listed?.iter().filter_map(|o| metadata_version(&o.uri)).max();
+        let newest = listed?.iter().filter_map(|o| lakebed_iceberg::table::metadata_version(&o.uri)).max();
         let Some(newest) = newest else { return Err(WriteError::NotFound(location.to_string())) };
         if let Some(state) = head?.and_then(|bytes| decode_head(location, &bytes).ok())
             && state.version >= newest
@@ -91,6 +80,7 @@ impl TableState {
     }
 
     fn from_metadata(location: &str, version: u64, metadata: Metadata) -> WriteResult<Self> {
+        metadata.check_writable()?;
         let contract = metadata.contract()?;
         contract.check_writable().map_err(|e| WriteError::invalid(format!("{location}: {e}")))?;
         Ok(Self {
@@ -105,28 +95,26 @@ impl TableState {
         })
     }
 
+    /// This version as lakebed sees it (what a commit builds on).
+    pub fn table(&self) -> Table {
+        Table { files: self.files.clone(), ..Table::new(self.location.clone(), self.version, self.metadata.clone()) }
+    }
+
     /// The current snapshot's manifests.
     pub async fn manifests<H: Host>(&self, host: &H) -> WriteResult<Vec<ManifestFile>> {
-        let Some(list) = self.metadata.manifest_list() else { return Ok(vec![]) };
-        let bytes = host.get(list).await?.ok_or_else(|| WriteError::NotFound(list.to_string()))?;
-        read_manifest_list(&bytes)
+        Ok(self.table().manifests(host).await?)
     }
 
     /// The entries of `manifest`.
     pub async fn manifest<H: Host>(host: &H, manifest: &ManifestFile) -> WriteResult<Vec<Entry>> {
-        let bytes = host.get(&manifest.path).await?.ok_or_else(|| WriteError::NotFound(manifest.path.clone()))?;
-        read_manifest(manifest, &bytes)
+        Ok(Table::manifest(host, manifest).await?)
     }
 
     /// The live files, read from the manifests unless known.
     pub async fn live_files<H: Host>(&mut self, host: &H) -> WriteResult<&[Entry]> {
         if self.files.is_none() {
-            let mut files = vec![];
-            for m in self.manifests(host).await? {
-                let entries = Self::manifest(host, &m).await?;
-                files.extend(entries.into_iter().filter(|e| e.status != Status::Deleted));
-            }
-            self.files = Some(files);
+            let mut table = self.table();
+            self.files = Some(table.live_files(host).await?.to_vec());
         }
         Ok(self.files.as_deref().unwrap_or_default())
     }
@@ -153,7 +141,7 @@ impl TableState {
         let uri = head_uri(&self.location);
         let Some(codec) = built_in(&self.contract.head_format) else {
             // Turned off, or a codec the shared writer doesn't have: leave no stale head behind.
-            return host.delete(&[uri]).await;
+            return Ok(host.delete(&[uri]).await?);
         };
         if let Ok(prefix) = host.get_range(&uri, 0, MAX_HEADER).await
             && Header::parse(&prefix).is_some_and(|h| h.version >= self.version)
@@ -180,7 +168,7 @@ impl TableState {
             doc.sections.insert(FOOTERS.into(), footers);
             bytes = encode(self.version, codec, &doc)?;
         }
-        host.put(&uri, bytes).await
+        Ok(host.put(&uri, bytes).await?)
     }
 }
 
@@ -253,7 +241,7 @@ fn head_doc(metadata: &Metadata, files: &[Entry]) -> WriteResult<HeadDoc> {
         Arc::new(StringArray::from_iter_values(df().map(|f| f.path.as_str()))),
         Arc::new(UInt64Array::from_iter_values(df().map(|f| f.file_size))),
         Arc::new(UInt64Array::from_iter_values(df().map(|f| f.record_count))),
-        Arc::new(df().map(|f| f.partition).collect::<Int32Array>()),
+        Arc::new(df().map(time_partition).collect::<Int32Array>()),
         Arc::new(df().map(|f| f.sort_order_id).collect::<Int32Array>()),
         Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(
             df().map(|f| f.split_offsets.as_ref().map(|o| o.iter().copied().map(Some).collect::<Vec<_>>())),
@@ -309,7 +297,7 @@ fn encode_columns(files: &[Entry]) -> WriteResult<RecordBatch> {
 /// Footers of `files` this writer has, newest partitions first, while they fit in `budget` bytes.
 fn footers_within(files: &[Entry], known: &BTreeMap<String, Vec<u8>>, mut budget: u64) -> WriteResult<RecordBatch> {
     let mut files: Vec<&Entry> = files.iter().filter(|e| known.contains_key(&e.file.path)).collect();
-    files.sort_by_key(|e| std::cmp::Reverse((e.file.partition, e.file.path.as_str())));
+    files.sort_by_key(|e| std::cmp::Reverse((time_partition(&e.file), e.file.path.as_str())));
     let (mut paths, mut footers) = (vec![], vec![]);
     for e in files {
         let bytes = &known[&e.file.path];
@@ -335,7 +323,7 @@ fn decode_head(location: &str, bytes: &[u8]) -> WriteResult<TableState> {
         return Err(WriteError::Corrupt("head metadata must be one row".into()));
     }
     let mut state = TableState::from_metadata(location, header.version, Metadata::parse(json.value(0).as_bytes())?)?;
-    state.files = Some(decode_files(&doc)?);
+    state.files = Some(decode_files(&doc, state.contract.chunk)?);
     if let (Some(_), Some(index)) = (state.last_value_index(), doc.sections.get(LAST_VALUES)) {
         state.last_values = Some(align_batch(index, &state.schema)?);
     }
@@ -350,7 +338,7 @@ fn decode_head(location: &str, bytes: &[u8]) -> WriteResult<TableState> {
     Ok(state)
 }
 
-fn decode_files(doc: &HeadDoc) -> WriteResult<Vec<Entry>> {
+fn decode_files(doc: &HeadDoc, chunk: Option<Chunk>) -> WriteResult<Vec<Entry>> {
     let files = section(doc, FILES)?;
     let mut stats: Vec<DataFile> = (0..files.num_rows()).map(|_| DataFile::default()).collect();
     let columns = section(doc, COLUMNS)?;
@@ -399,7 +387,7 @@ fn decode_files(doc: &HeadDoc) -> WriteResult<Vec<Entry>> {
             f.path = path.value(i).to_string();
             f.file_size = size.value(i);
             f.record_count = records.value(i);
-            f.partition = partition.is_valid(i).then(|| partition.value(i));
+            f.partition = partition_values(chunk, partition.is_valid(i).then(|| partition.value(i)));
             f.sort_order_id = sort_order_id.is_valid(i).then(|| sort_order_id.value(i));
             if let Some(offsets) = split_offsets.filter(|s| s.is_valid(i)) {
                 let offsets = offsets.value(i);

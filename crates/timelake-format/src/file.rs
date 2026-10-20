@@ -1,28 +1,27 @@
 //! Writing Timelake data files without I/O, shared by the engine and the WASM writer (spec 13):
 //! the Parquet settings for time series, a file writer whose bytes the caller drains and uploads,
-//! and the Iceberg statistics of a written file, as iceberg-rust's writer computes them.
+//! and the Iceberg statistics of a written file (lakebed's, as iceberg-rust's writer computes them).
 //!
 //! On native targets a row group's columns are encoded on threads of their own; on WebAssembly,
 //! one after another.
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch};
 use arrow_schema::{DataType, SchemaRef};
+use lakebed_iceberg::stats::{ParquetStats, field_id};
 use parquet::arrow::ArrowSchemaConverter;
 use parquet::arrow::arrow_writer::{
     ArrowColumnChunk, ArrowColumnWriter, ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves,
 };
-use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, LogicalType, Type as PhysicalType, ZstdLevel};
+use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, SortingColumn};
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterPropertiesPtr};
-use parquet::file::statistics::Statistics;
 use parquet::file::writer::SerializedFileWriter;
-use parquet::schema::types::{ColumnDescriptor, ColumnPath};
+use parquet::schema::types::ColumnPath;
 
 use crate::Contract;
 
@@ -274,8 +273,7 @@ impl FileWriter {
         }
         let metadata = self.writer.finish()?;
         let rest = self.take_chunks();
-        let stats = FileStats::new(&metadata, self.taken, std::mem::take(&mut self.nan_counts));
-        Ok((rest, FileStats { metadata: Arc::new(metadata), ..stats }))
+        Ok((rest, FileStats::new(metadata, self.taken, std::mem::take(&mut self.nan_counts))))
     }
 
     fn encode(&mut self, batch: &RecordBatch) -> Result<(), ParquetError> {
@@ -366,155 +364,21 @@ fn nan_count(column: &ArrayRef) -> Option<u64> {
     }
 }
 
-fn field_id(column: &ColumnDescriptor) -> Option<i32> {
-    let info = column.self_type().get_basic_info();
-    info.has_id().then(|| info.id())
-}
-
-/// What Iceberg records about a data file, from its Parquet metadata: the same values iceberg-rust's
-/// writer records. Bounds are Iceberg's single-value binary encoding.
+/// What Iceberg records about a written data file ([`ParquetStats`]: counts, bounds, split offsets),
+/// with its footer, for readers that take footers from elsewhere (the head, spec 7).
 #[derive(Clone, Debug)]
 pub struct FileStats {
-    /// Rows in the file.
-    pub record_count: u64,
-    /// The file's size in bytes.
-    pub file_size: u64,
-    /// Compressed bytes per field id.
-    pub column_sizes: BTreeMap<i32, u64>,
-    /// Values (nulls included) per field id.
-    pub value_counts: BTreeMap<i32, u64>,
-    /// Nulls per field id.
-    pub null_counts: BTreeMap<i32, u64>,
-    /// NaNs per field id of a float column.
-    pub nan_counts: BTreeMap<i32, u64>,
-    /// Smallest value per field id, where Parquet's statistics give an exact one.
-    pub lower_bounds: BTreeMap<i32, Vec<u8>>,
-    /// Largest value per field id, likewise.
-    pub upper_bounds: BTreeMap<i32, Vec<u8>>,
-    /// Offsets of the row groups.
-    pub split_offsets: Vec<i64>,
-    /// The footer, for readers that take footers from elsewhere (the head, spec 7).
+    /// The statistics.
+    pub iceberg: ParquetStats,
+    /// The footer.
     pub metadata: Arc<ParquetMetaData>,
 }
 
 impl FileStats {
     /// The statistics of a file of `file_size` bytes with footer `metadata`.
-    pub fn new(metadata: &ParquetMetaData, file_size: u64, nan_counts: BTreeMap<i32, u64>) -> Self {
-        let mut s = Self {
-            record_count: u64::try_from(metadata.file_metadata().num_rows()).unwrap_or(0),
-            file_size,
-            column_sizes: BTreeMap::new(),
-            value_counts: BTreeMap::new(),
-            null_counts: BTreeMap::new(),
-            nan_counts,
-            lower_bounds: BTreeMap::new(),
-            upper_bounds: BTreeMap::new(),
-            split_offsets: metadata
-                .row_groups()
-                .iter()
-                .filter_map(parquet::file::metadata::RowGroupMetaData::file_offset)
-                .collect(),
-            metadata: Arc::new(metadata.clone()),
-        };
-        for group in metadata.row_groups() {
-            for chunk in group.columns() {
-                let Some(id) = field_id(chunk.column_descr()) else { continue };
-                *s.column_sizes.entry(id).or_default() += u64::try_from(chunk.compressed_size()).unwrap_or(0);
-                *s.value_counts.entry(id).or_default() += u64::try_from(chunk.num_values()).unwrap_or(0);
-                let Some(stats) = chunk.statistics() else { continue };
-                if let Some(nulls) = stats.null_count_opt() {
-                    *s.null_counts.entry(id).or_default() += nulls;
-                }
-                let descr = chunk.column_descr();
-                if stats.min_is_exact()
-                    && let Some(min) = stats.min_bytes_opt().and_then(|b| bound(b, stats, descr))
-                {
-                    keep(&mut s.lower_bounds, id, min, descr, Ordering::Less);
-                }
-                if stats.max_is_exact()
-                    && let Some(max) = stats.max_bytes_opt().and_then(|b| bound(b, stats, descr))
-                {
-                    keep(&mut s.upper_bounds, id, max, descr, Ordering::Greater);
-                }
-            }
-        }
-        s
+    pub fn new(metadata: ParquetMetaData, file_size: u64, nan_counts: BTreeMap<i32, u64>) -> Self {
+        Self { iceberg: ParquetStats::new(&metadata, file_size, nan_counts), metadata: Arc::new(metadata) }
     }
-}
-
-/// Keeps `value` for `id` if there is none yet or it compares `wins` against the current one.
-fn keep(bounds: &mut BTreeMap<i32, Vec<u8>>, id: i32, value: Vec<u8>, descr: &ColumnDescriptor, wins: Ordering) {
-    match bounds.get(&id) {
-        Some(current) if compare(&value, current, descr) != wins => {}
-        _ => {
-            bounds.insert(id, value);
-        }
-    }
-}
-
-/// A Parquet statistic's plain encoding as an Iceberg bound. They agree for booleans, ints,
-/// longs, floats, doubles, dates, times, timestamps, strings, binary, and fixed; decimals stored as
-/// INT32 or INT64 become big-endian bytes. INT96 has no Iceberg type.
-fn bound(plain: &[u8], stats: &Statistics, descr: &ColumnDescriptor) -> Option<Vec<u8>> {
-    let decimal = matches!(descr.logical_type_ref(), Some(LogicalType::Decimal { .. }));
-    match (stats, decimal) {
-        (Statistics::Int96(_), _) => None,
-        (Statistics::Int32(_), true) => Some(minimal_be(i128::from(i32::from_le_bytes(plain.try_into().ok()?)))),
-        (Statistics::Int64(_), true) => Some(minimal_be(i128::from(i64::from_le_bytes(plain.try_into().ok()?)))),
-        _ => Some(plain.to_vec()),
-    }
-}
-
-/// The shortest big-endian two's complement bytes of `v` (Iceberg's decimal bound encoding).
-fn minimal_be(v: i128) -> Vec<u8> {
-    let bytes = v.to_be_bytes();
-    let mut start = 0;
-    while start < bytes.len() - 1 {
-        let (b, next) = (bytes[start], bytes[start + 1]);
-        if (b == 0 && next & 0x80 == 0) || (b == 0xff && next & 0x80 != 0) {
-            start += 1;
-        } else {
-            break;
-        }
-    }
-    bytes[start..].to_vec()
-}
-
-/// Compares two bounds of a column by value.
-fn compare(a: &[u8], b: &[u8], descr: &ColumnDescriptor) -> Ordering {
-    let decimal = matches!(descr.logical_type_ref(), Some(LogicalType::Decimal { .. }));
-    if decimal {
-        return be_value(a).cmp(&be_value(b));
-    }
-    match descr.physical_type() {
-        PhysicalType::INT32 => le::<4>(a).map(i32::from_le_bytes).cmp(&le::<4>(b).map(i32::from_le_bytes)),
-        PhysicalType::INT64 => le::<8>(a).map(i64::from_le_bytes).cmp(&le::<8>(b).map(i64::from_le_bytes)),
-        PhysicalType::FLOAT => {
-            let (x, y) = (le::<4>(a).map(f32::from_le_bytes), le::<4>(b).map(f32::from_le_bytes));
-            x.partial_cmp(&y).unwrap_or(Ordering::Equal)
-        }
-        PhysicalType::DOUBLE => {
-            let (x, y) = (le::<8>(a).map(f64::from_le_bytes), le::<8>(b).map(f64::from_le_bytes));
-            x.partial_cmp(&y).unwrap_or(Ordering::Equal)
-        }
-        PhysicalType::BOOLEAN | PhysicalType::INT96 | PhysicalType::BYTE_ARRAY | PhysicalType::FIXED_LEN_BYTE_ARRAY => {
-            a.cmp(b)
-        }
-    }
-}
-
-fn le<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
-    bytes.try_into().ok()
-}
-
-/// A big-endian two's complement value (decimals), as an integer.
-fn be_value(bytes: &[u8]) -> i128 {
-    let negative = bytes.first().is_some_and(|b| b & 0x80 != 0);
-    let mut v: i128 = if negative { -1 } else { 0 };
-    for &b in &bytes[bytes.len().saturating_sub(16)..] {
-        v = (v << 8) | i128::from(b);
-    }
-    v
 }
 
 #[cfg(test)]
@@ -576,38 +440,30 @@ mod tests {
     #[test]
     fn files_read_back_with_their_statistics() {
         let (bytes, stats) = write(true, 40_000);
-        assert_eq!((stats.record_count, stats.file_size), (90_000, bytes.len() as u64));
-        assert_eq!(stats.split_offsets.len(), 3, "row groups of 40,000 rows");
+        assert_eq!((stats.iceberg.record_count, stats.iceberg.file_size), (90_000, bytes.len() as u64));
+        assert_eq!(stats.iceberg.split_offsets.len(), 3, "row groups of 40,000 rows");
         let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes)).unwrap().build().unwrap();
         let rows: usize = reader.map(|b| b.unwrap().num_rows()).sum();
         assert_eq!(rows, 90_000);
-        assert_eq!(stats.lower_bounds[&1], 0i64.to_le_bytes());
-        assert_eq!(stats.upper_bounds[&1], 89_999i64.to_le_bytes());
+        assert_eq!(stats.iceberg.lower_bounds[&1], 0i64.to_le_bytes());
+        assert_eq!(stats.iceberg.upper_bounds[&1], 89_999i64.to_le_bytes());
         assert_eq!(
-            (stats.lower_bounds[&2].as_slice(), stats.upper_bounds[&2].as_slice()),
+            (stats.iceberg.lower_bounds[&2].as_slice(), stats.iceberg.upper_bounds[&2].as_slice()),
             (&(-3i32).to_le_bytes()[..], &3i32.to_le_bytes()[..])
         );
-        assert_eq!(stats.nan_counts[&3], 18_000);
-        assert_eq!(stats.null_counts[&4], 30_000);
-        assert_eq!((stats.lower_bounds[&4].as_slice(), stats.upper_bounds[&4].as_slice()), (&b"n0"[..], &b"n9"[..]));
-        assert_eq!(stats.value_counts[&4], 90_000);
+        assert_eq!(stats.iceberg.nan_counts[&3], 18_000);
+        assert_eq!(stats.iceberg.null_counts[&4], 30_000);
+        assert_eq!(
+            (stats.iceberg.lower_bounds[&4].as_slice(), stats.iceberg.upper_bounds[&4].as_slice()),
+            (&b"n0"[..], &b"n9"[..])
+        );
+        assert_eq!(stats.iceberg.value_counts[&4], 90_000);
     }
 
     /// Parallel and sequential encoding write the same bytes.
     #[test]
     fn parallel_encoding_writes_the_same_file() {
         assert_eq!(write(true, 40_000).0, write(false, 40_000).0);
-    }
-
-    #[test]
-    fn decimal_bounds_are_minimal_big_endian() {
-        assert_eq!(minimal_be(0), [0]);
-        assert_eq!(minimal_be(127), [0x7f]);
-        assert_eq!(minimal_be(128), [0x00, 0x80]);
-        assert_eq!(minimal_be(-1), [0xff]);
-        assert_eq!(minimal_be(-129), [0xff, 0x7f]);
-        assert_eq!(be_value(&minimal_be(-129)), -129);
-        assert_eq!(be_value(&minimal_be(1 << 40)), 1 << 40);
     }
 
     /// Floats get a dictionary falling back to byte-stream-split, or byte-stream-split alone.
