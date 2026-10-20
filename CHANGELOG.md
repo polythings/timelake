@@ -96,6 +96,17 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Snapshot expiry treated a kept snapshot whose manifest list was missing as using no files, and deleted every file it
   shared with the expired snapshots. It now reads what the kept snapshots use before changing anything, and stops with
   an error that names the broken snapshot.
+- Benchmarks: ingest request counts and costs cover only the writes; they included the checkpoint queries and the
+  live probes, which now go through an uncounted proxy listener (`-listen-uncounted`). Ingest seconds no longer
+  include deleting the previous run's tables, and every S3 run sets and records the proxy's latency and throughput
+  cap instead of keeping the last run's.
+- Benchmarks: concurrent dashboard clients start together once all have opened their readers, so queries per second
+  counts clients that overlap. A/B reader settings apply to probes and dashboard clients too, not only the measured
+  queries.
+- Benchmarks: ClickHouse's answer to TSBS IoT `avg-daily-driving-session` is right; the query relied on `lead` giving
+  NULL at a series' edge, which ClickHouse doesn't. QuestDB commits reuse one client instead of connecting each time.
+  S3 Tables maintenance that never compacted is an error, not ok, and Lance maintenance with `BENCH_LANCE_DIRECT` is
+  marked as not counted.
 
 ### Changed
 
