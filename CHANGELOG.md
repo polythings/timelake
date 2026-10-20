@@ -75,6 +75,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   expression it used took quadratic time on a string with many slashes.
 - The TypeScript client's `TableWriter` writes `bigint` values beyond 2^53 exactly; it rounded them to the nearest
   float. Where `JSON.rawJSON` is missing (runtimes before ES2025), such a value is an error.
+- Settings given at creation by their short names (`--prop retention=90d`, `properties={"read-dedup": "false"}`) were
+  stored under that name and ignored. They are now read as `alter` reads them, and an unknown setting is an error.
 
 ### Changed
 

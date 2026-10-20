@@ -29,6 +29,7 @@ use iceberg::spec::{
     SortOrder, TableMetadata, TableMetadataBuilder, Transform, UnboundPartitionSpec,
 };
 
+use crate::alter::property_key;
 use crate::cache::Caches;
 use crate::contract::{Chunk, Contract, TableOptions, format_duration};
 use crate::error::{Error, Result};
@@ -504,7 +505,10 @@ fn new_table_metadata(
     if let Some(retention) = opts.retention {
         props.insert(property::RETENTION.into(), format_duration(retention));
     }
-    props.extend(settings::check_properties(&opts.properties, Level::Table)?);
+    // Settings in any spelling, as `alter` takes them (`retention`, `timelake.read_dedup`).
+    let named =
+        opts.properties.iter().map(|(k, v)| Ok((property_key(k)?, v.clone()))).collect::<Result<HashMap<_, _>>>()?;
+    props.extend(settings::check_properties(&named, Level::Table)?);
     props.extend(managed);
     Contract::from_properties(&props)?; // validate
     creation.properties = props;

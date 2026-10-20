@@ -123,4 +123,25 @@ mod tests {
             assert!(err.contains(msg), "{change:?}: {err}");
         }
     }
+
+    #[tokio::test]
+    async fn settings_at_creation_take_any_spelling() {
+        let (lake, _store) = faulty_lake();
+        let mut o = opts();
+        o.properties = [("retention", "12h"), ("read_dedup", "false"), ("write.parquet.row-group-limit", "100")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+        assert_eq!(t.contract().retention, Some(std::time::Duration::from_secs(12 * 3600)));
+        assert!(!t.contract().read_dedup);
+        let props = t.metadata().properties();
+        assert!(!props.contains_key("retention"), "{props:?}");
+        assert_eq!(props.get("write.parquet.row-group-limit").map(String::as_str), Some("100"));
+
+        let mut o = opts();
+        o.properties.insert("no-such-setting".into(), "1".into());
+        let err = lake.create_table("iot.s", &schema(), o).await.unwrap_err().to_string();
+        assert!(err.contains("unknown setting"), "{err}");
+    }
 }
