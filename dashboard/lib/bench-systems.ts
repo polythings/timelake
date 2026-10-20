@@ -45,6 +45,12 @@ export const SYSTEM_COLORS: Record<string, string> = {
 
 export const engineLabel = (engine: string) => ENGINES[engine] ?? engine
 
+/** Whether `engine` is its system's own reader: the first of the system's engines above. */
+export const isOwnReader = (engine: string) => {
+  const system = engine.split("+", 1)[0] ?? engine
+  return Object.keys(ENGINES).find((e) => e.startsWith(`${system}+`)) === engine
+}
+
 export type Rank = {
   key: string
   label: string

@@ -6,8 +6,11 @@ import { ChartTooltipCard } from "@/components/chart-tooltip-card"
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
 import { formatTime } from "@/lib/format"
 
-/** One line per system; its color is the system's (lib/benchmarks.ts, SYSTEM_COLORS), whatever else is shown. */
-export type HistoryLine = { engine: string; label: string; color: string }
+/**
+ * One line per engine; its color is its system's (lib/bench-systems.ts, SYSTEM_COLORS), whatever else is shown, and a
+ * system's other readers are dashed.
+ */
+export type HistoryLine = { engine: string; label: string; color: string; dashed?: boolean }
 export type HistoryRow = { date: string; commit: string } & Record<string, number | string | undefined>
 
 type Point = { date: string; commit: string; tooltip: [string, string][] }
@@ -45,16 +48,17 @@ export function BenchHistory({ lines, rows }: { lines: HistoryLine[]; rows: Hist
           tickFormatter={(v: number) => formatTime(v)}
           tickLine={false}
           axisLine={false}
-          width={56}
+          width={64}
         />
         <ChartTooltip content={HistoryTooltip} />
         <ChartLegend content={<ChartLegendContent className="flex-wrap" />} />
-        {keys.map((k) => (
+        {keys.map((k, i) => (
           <Line
             key={k}
             dataKey={k}
             stroke={`var(--color-${k})`}
             strokeWidth={2}
+            strokeDasharray={lines[i]?.dashed ? "5 4" : undefined}
             dot={{ r: 4, fill: `var(--color-${k})`, strokeWidth: 0 }}
             connectNulls
             isAnimationActive={false}

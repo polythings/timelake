@@ -12,11 +12,15 @@ uv run timebench history --workload tsbs-iot
 from __future__ import annotations
 
 import argparse
+import json
+import sys
+from pathlib import Path
 
 import tomllib
 
 from timebench import BENCH, RUNS
 from timebench.harness import RunSpec, run
+from timebench.queries import SITE_SUITES, described_queries, site_sql
 from timebench.report import Run, history, markdown, runs
 from timebench.systems import systems
 from timebench.targets import Target
@@ -137,6 +141,24 @@ def cmd_history(args: argparse.Namespace) -> None:
     print(history(runs(args.workload, args.label), args.checkpoint))
 
 
+def cmd_queries(args: argparse.Namespace) -> None:
+    """Writes the website's query descriptions and SQL (or with ``--check`` fails if the file is out of date)."""
+    site = {
+        suite: [{"name": n, "description": d, "sql": site_sql(sql)} for n, d, sql in described_queries(suite)]
+        for suite in SITE_SUITES
+    }
+    missing = [f"{s}/{q['name']}" for s, qs in site.items() for q in qs if not q["description"]]
+    if missing:
+        sys.exit(f"queries without a description (a comment line after -- name:): {', '.join(missing)}")
+    text = json.dumps(site, indent=2, ensure_ascii=False) + "\n"
+    path = Path(args.site)
+    if args.check:
+        if not path.exists() or path.read_text() != text:
+            sys.exit(f"{path} is out of date: uv run timebench queries --site {path}")
+        return
+    path.write_text(text)
+
+
 def main() -> None:
     """Parses the command line and runs the command."""
     p = argparse.ArgumentParser(
@@ -195,6 +217,11 @@ def main() -> None:
     h.add_argument("--label")
     h.add_argument("--checkpoint", default="maintained")
     h.set_defaults(func=cmd_history)
+
+    q = commands.add_parser("queries", help="the website's query descriptions and SQL, as JSON")
+    q.add_argument("--site", required=True, help="the JSON file to write, e.g. dashboard/lib/bench-queries.json")
+    q.add_argument("--check", action="store_true", help="fail if the file is out of date instead of writing it")
+    q.set_defaults(func=cmd_queries)
 
     args = p.parse_args()
     args.func(args)

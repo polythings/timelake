@@ -103,6 +103,34 @@ def raw_queries(suite: str) -> Iterator[tuple[str, str]]:
         yield name.strip(), body.strip().rstrip(";")
 
 
+SITE_SUITES = ("tsbs_iot", "iot_point", "tsbs_devops", "iiot")
+"""Suites whose queries the website describes (``timebench queries --site``)."""
+
+
+def described_queries(suite: str) -> Iterator[tuple[str, str, str]]:
+    """``(name, description, sql)`` of a suite: the description is the comment lines right after ``-- name:``."""
+    text = (QUERIES / suite / "queries.sql").read_text()
+    for block in re.split(r"^-- name: ", text, flags=re.MULTILINE)[1:]:
+        name, _, rest = block.partition("\n")
+        lines = rest.splitlines()
+        described = [line.removeprefix("--").strip() for line in _leading_comments(lines)]
+        sql = "\n".join(line for line in lines if not line.startswith("--")).strip().rstrip(";")
+        yield name.strip(), " ".join(described), sql
+
+
+def _leading_comments(lines: list[str]) -> Iterator[str]:
+    for line in lines:
+        if not line.startswith("--"):
+            return
+        yield line
+
+
+def site_sql(sql: str) -> str:
+    """A query as the website shows it: in the Timelake reader's dialect, times relative to the data's present."""
+    sql = _AGO.sub(lambda m: f"now() - INTERVAL '{m.group(1)} {m.group(2)}s'", sql)
+    return _PLACEHOLDER.sub(lambda m: DATAFUSION[m.group(1)].format(m.group(2)), sql)
+
+
 CLICKBENCH_COMMIT = "f02259ad000e6a7963366fd262fccfa466fd3173"
 """ClickBench revision the SQL comes from. Its license (CC BY-NC-SA 4.0) doesn't fit this repository, so the files are
 downloaded, not committed."""

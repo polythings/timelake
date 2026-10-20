@@ -12,6 +12,7 @@
 --   * Names follow TSBS: single-groupby-<metrics>-<hosts>-<hours>, cpu-max-all-<hosts>, double-groupby-<metrics>.
 
 -- name: single-groupby-1-1-1
+-- One host's highest user CPU per minute over an hour.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user
 FROM cpu
 WHERE hostname IN ('host_9') AND time >= @TS('2026-01-03 22:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -19,6 +20,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: single-groupby-1-1-12
+-- One host's highest user CPU per minute over 12 hours.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user
 FROM cpu
 WHERE hostname IN ('host_9') AND time >= @TS('2026-01-03 11:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -26,6 +28,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: single-groupby-1-8-1
+-- The highest user CPU per minute across 8 hosts over an hour.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user
 FROM cpu
 WHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND time >= @TS('2026-01-03 22:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -33,6 +36,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: single-groupby-5-1-1
+-- One host's highest value of 5 CPU metrics per minute over an hour.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait
 FROM cpu
 WHERE hostname IN ('host_9') AND time >= @TS('2026-01-03 22:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -40,6 +44,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: single-groupby-5-1-12
+-- One host's highest value of 5 CPU metrics per minute over 12 hours.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait
 FROM cpu
 WHERE hostname IN ('host_9') AND time >= @TS('2026-01-03 11:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -47,6 +52,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: single-groupby-5-8-1
+-- The highest value of 5 CPU metrics per minute across 8 hosts over an hour.
 SELECT @B1M(time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait
 FROM cpu
 WHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND time >= @TS('2026-01-03 22:00:00') AND time < @TS('2026-01-03 23:00:00')
@@ -54,6 +60,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: cpu-max-all-1
+-- One host's highest value of all 10 CPU metrics per hour over 8 hours.
 SELECT @B1H(time) AS hour,
        max(usage_user) AS max_usage_user,
        max(usage_system) AS max_usage_system,
@@ -71,6 +78,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: cpu-max-all-8
+-- The highest value of all 10 CPU metrics per hour across 8 hosts over 8 hours.
 SELECT @B1H(time) AS hour,
        max(usage_user) AS max_usage_user,
        max(usage_system) AS max_usage_system,
@@ -88,6 +96,7 @@ GROUP BY 1
 ORDER BY 1;
 
 -- name: double-groupby-1
+-- Every host's average user CPU per hour over 12 hours.
 WITH cpu_avg AS (
     SELECT @B1H(time) AS hour, hostname, avg(usage_user) AS mean_usage_user
     FROM cpu
@@ -99,6 +108,7 @@ FROM cpu_avg
 ORDER BY hour, hostname;
 
 -- name: double-groupby-5
+-- Every host's average of 5 CPU metrics per hour over 12 hours.
 WITH cpu_avg AS (
     SELECT @B1H(time) AS hour, hostname, avg(usage_user) AS mean_usage_user, avg(usage_system) AS mean_usage_system, avg(usage_idle) AS mean_usage_idle, avg(usage_nice) AS mean_usage_nice, avg(usage_iowait) AS mean_usage_iowait
     FROM cpu
@@ -110,6 +120,7 @@ FROM cpu_avg
 ORDER BY hour, hostname;
 
 -- name: double-groupby-all
+-- Every host's average of all 10 CPU metrics per hour over 12 hours.
 WITH cpu_avg AS (
     SELECT @B1H(time) AS hour, hostname, avg(usage_user) AS mean_usage_user, avg(usage_system) AS mean_usage_system, avg(usage_idle) AS mean_usage_idle, avg(usage_nice) AS mean_usage_nice, avg(usage_iowait) AS mean_usage_iowait, avg(usage_irq) AS mean_usage_irq, avg(usage_softirq) AS mean_usage_softirq, avg(usage_steal) AS mean_usage_steal, avg(usage_guest) AS mean_usage_guest, avg(usage_guest_nice) AS mean_usage_guest_nice
     FROM cpu
@@ -121,18 +132,22 @@ FROM cpu_avg
 ORDER BY hour, hostname;
 
 -- name: high-cpu-all
+-- Every reading over 12 hours where a host's user CPU was above 90%.
 SELECT * FROM cpu WHERE usage_user > 90.0 AND time >= @TS('2026-01-03 11:00:00') AND time < @TS('2026-01-03 23:00:00');
 
 -- name: high-cpu-1
+-- One host's readings over 12 hours where its user CPU was above 90%.
 SELECT * FROM cpu WHERE usage_user > 90.0 AND time >= @TS('2026-01-03 11:00:00') AND time < @TS('2026-01-03 23:00:00') AND hostname IN ('host_9');
 
 -- name: lastpoint
+-- The latest reading of every host.
 SELECT *
 FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY hostname ORDER BY time DESC) AS rn FROM cpu) AS c
 WHERE rn = 1
 ORDER BY hostname;
 
 -- name: groupby-orderby-limit
+-- The highest user CPU of the 5 most recent minutes before a time, across all hosts.
 SELECT @B1M(time) AS minute, max(usage_user)
 FROM cpu
 WHERE time < @TS('2026-01-03 23:00:00')

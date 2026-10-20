@@ -13,6 +13,7 @@
 --     always 1. We use the intended fraction of rows with status = 0.
 
 -- name: last-loc
+-- Fleet map: the latest position of every truck in one fleet.
 SELECT t.name, t.driver, r.longitude, r.latitude
 FROM tags t
 JOIN (SELECT tags_id, longitude, latitude,
@@ -21,6 +22,7 @@ JOIN (SELECT tags_id, longitude, latitude,
 WHERE t.name IS NOT NULL AND t.fleet = 'South';
 
 -- name: low-fuel
+-- Alert: trucks in one fleet whose latest fuel reading is below 10%.
 SELECT t.name, t.driver, d.fuel_state
 FROM tags t
 JOIN (SELECT tags_id, fuel_state,
@@ -29,6 +31,7 @@ JOIN (SELECT tags_id, fuel_state,
 WHERE t.name IS NOT NULL AND d.fuel_state < 0.1 AND t.fleet = 'South';
 
 -- name: high-load
+-- Alert: trucks in one fleet whose latest load is over 90% of their capacity.
 SELECT t.name, t.driver, d.current_load
 FROM tags t
 JOIN (SELECT tags_id, current_load,
@@ -37,6 +40,7 @@ JOIN (SELECT tags_id, current_load,
 WHERE t.name IS NOT NULL AND d.current_load / t.load_capacity > 0.9 AND t.fleet = 'South';
 
 -- name: stationary-trucks
+-- Trucks in one fleet that barely moved: an average speed under 1 over a 10-minute window.
 SELECT t.name, t.driver
 FROM tags t
 JOIN readings r ON r.tags_id = t.id
@@ -46,6 +50,7 @@ GROUP BY t.name, t.driver
 HAVING avg(r.velocity) < 1;
 
 -- name: long-driving-sessions
+-- Trucks in one fleet that drove in more than 22 of the 24 ten-minute windows of a 4-hour span.
 SELECT t.name, t.driver
 FROM tags t
 JOIN (SELECT @B10M(time) AS ten_minutes, tags_id
@@ -58,6 +63,7 @@ GROUP BY t.name, t.driver
 HAVING count(r.ten_minutes) > 22;
 
 -- name: long-daily-sessions
+-- Trucks in one fleet that drove in more than 60 ten-minute windows of a 24-hour span.
 SELECT t.name, t.driver
 FROM tags t
 JOIN (SELECT @B10M(time) AS ten_minutes, tags_id
@@ -70,6 +76,7 @@ GROUP BY t.name, t.driver
 HAVING count(r.ten_minutes) > 60;
 
 -- name: avg-vs-projected-fuel-consumption
+-- Per fleet, the average fuel consumption while moving against the trucks' nominal consumption.
 SELECT t.fleet, avg(r.fuel_consumption) AS avg_fuel_consumption,
        avg(t.nominal_fuel_consumption) AS projected_fuel_consumption
 FROM tags t
@@ -79,6 +86,7 @@ WHERE r.velocity > 1
 GROUP BY t.fleet;
 
 -- name: avg-daily-driving-duration
+-- Per truck, the average hours driven a day, counted in ten-minute windows.
 WITH ten_minute_driving_sessions AS (
     SELECT @B10M(time) AS ten_minutes, tags_id
     FROM readings
@@ -95,6 +103,7 @@ JOIN tags t ON t.id = d.tags_id
 GROUP BY t.fleet, t.name, t.driver;
 
 -- name: avg-daily-driving-session
+-- Per truck and day, the average length of a driving session, from when it starts driving to when it stops.
 WITH driver_status AS (
     SELECT tags_id, @B10M(time) AS ten_minutes, avg(velocity) > 5 AS driving
     FROM readings
@@ -115,6 +124,7 @@ GROUP BY 1, 2
 ORDER BY 1, 2;
 
 -- name: avg-load
+-- Per fleet, model and capacity, the average load as a share of capacity.
 SELECT t.fleet, t.model, t.load_capacity, avg(d.avg_load / t.load_capacity) AS avg_load_percentage
 FROM tags t
 JOIN (SELECT tags_id, avg(current_load) AS avg_load FROM diagnostics GROUP BY tags_id) d ON t.id = d.tags_id
@@ -122,6 +132,7 @@ WHERE t.name IS NOT NULL
 GROUP BY t.fleet, t.model, t.load_capacity;
 
 -- name: daily-activity
+-- Per fleet, model and day, the share of the day trucks were active.
 SELECT t.fleet, t.model, y.day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity
 FROM tags t
 JOIN (SELECT @B1D(time) AS day, @B10M(time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day
@@ -133,6 +144,7 @@ GROUP BY t.fleet, t.model, y.day
 ORDER BY y.day;
 
 -- name: breakdown-frequency
+-- Per model, how many times trucks broke down: ten-minute windows where most diagnostics report a fault after a window where they didn't.
 WITH breakdown_per_truck_per_ten_minutes AS (
     SELECT @B10M(time) AS ten_minutes, tags_id,
            sum(CASE WHEN status = 0 THEN 1 ELSE 0 END) * 1.0 / count(*) >= 0.5 AS broken_down

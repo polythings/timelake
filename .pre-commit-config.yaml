@@ -55,6 +55,14 @@ repos:
         files: ^(spec/|scripts/spec_index\.py|dashboard/lib/(spec|milestones|background))
         pass_filenames: false
 
+      # The website's benchmark query descriptions and SQL follow the query files.
+      - id: bench-queries
+        name: bench queries
+        entry: uv run --no-sync timebench queries --site dashboard/lib/bench-queries.json --check
+        language: system
+        files: ^(bench/queries/|bench/timebench/(queries|cli)\.py|dashboard/lib/bench-queries\.json)
+        pass_filenames: false
+
       # Python
       - id: ruff-format
         name: ruff format

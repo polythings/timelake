@@ -1,0 +1,225 @@
+{
+  "tsbs_iot": [
+    {
+      "name": "last-loc",
+      "description": "Fleet map: the latest position of every truck in one fleet.",
+      "sql": "SELECT t.name, t.driver, r.longitude, r.latitude\nFROM tags t\nJOIN (SELECT tags_id, longitude, latitude,\n             ROW_NUMBER() OVER (PARTITION BY tags_id ORDER BY time DESC) AS rn\n      FROM readings) r ON r.tags_id = t.id AND r.rn = 1\nWHERE t.name IS NOT NULL AND t.fleet = 'South'"
+    },
+    {
+      "name": "low-fuel",
+      "description": "Alert: trucks in one fleet whose latest fuel reading is below 10%.",
+      "sql": "SELECT t.name, t.driver, d.fuel_state\nFROM tags t\nJOIN (SELECT tags_id, fuel_state,\n             ROW_NUMBER() OVER (PARTITION BY tags_id ORDER BY time DESC) AS rn\n      FROM diagnostics) d ON d.tags_id = t.id AND d.rn = 1\nWHERE t.name IS NOT NULL AND d.fuel_state < 0.1 AND t.fleet = 'South'"
+    },
+    {
+      "name": "high-load",
+      "description": "Alert: trucks in one fleet whose latest load is over 90% of their capacity.",
+      "sql": "SELECT t.name, t.driver, d.current_load\nFROM tags t\nJOIN (SELECT tags_id, current_load,\n             ROW_NUMBER() OVER (PARTITION BY tags_id ORDER BY time DESC) AS rn\n      FROM diagnostics) d ON d.tags_id = t.id AND d.rn = 1\nWHERE t.name IS NOT NULL AND d.current_load / t.load_capacity > 0.9 AND t.fleet = 'South'"
+    },
+    {
+      "name": "stationary-trucks",
+      "description": "Trucks in one fleet that barely moved: an average speed under 1 over a 10-minute window.",
+      "sql": "SELECT t.name, t.driver\nFROM tags t\nJOIN readings r ON r.tags_id = t.id\nWHERE r.time >= CAST('2026-01-03 12:00:00' AS TIMESTAMP) AND r.time < CAST('2026-01-03 12:10:00' AS TIMESTAMP)\n  AND t.name IS NOT NULL AND t.fleet = 'South'\nGROUP BY t.name, t.driver\nHAVING avg(r.velocity) < 1"
+    },
+    {
+      "name": "long-driving-sessions",
+      "description": "Trucks in one fleet that drove in more than 22 of the 24 ten-minute windows of a 4-hour span.",
+      "sql": "SELECT t.name, t.driver\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id\n      FROM readings\n      WHERE time >= CAST('2026-01-03 08:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 12:00:00' AS TIMESTAMP)\n      GROUP BY 1, 2\n      HAVING avg(velocity) > 1) r ON t.id = r.tags_id\nWHERE t.name IS NOT NULL AND t.fleet = 'South'\nGROUP BY t.name, t.driver\nHAVING count(r.ten_minutes) > 22"
+    },
+    {
+      "name": "long-daily-sessions",
+      "description": "Trucks in one fleet that drove in more than 60 ten-minute windows of a 24-hour span.",
+      "sql": "SELECT t.name, t.driver\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id\n      FROM readings\n      WHERE time >= CAST('2026-01-02 12:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 12:00:00' AS TIMESTAMP)\n      GROUP BY 1, 2\n      HAVING avg(velocity) > 1) r ON t.id = r.tags_id\nWHERE t.name IS NOT NULL AND t.fleet = 'South'\nGROUP BY t.name, t.driver\nHAVING count(r.ten_minutes) > 60"
+    },
+    {
+      "name": "avg-vs-projected-fuel-consumption",
+      "description": "Per fleet, the average fuel consumption while moving against the trucks' nominal consumption.",
+      "sql": "SELECT t.fleet, avg(r.fuel_consumption) AS avg_fuel_consumption,\n       avg(t.nominal_fuel_consumption) AS projected_fuel_consumption\nFROM tags t\nJOIN readings r ON r.tags_id = t.id\nWHERE r.velocity > 1\n  AND t.fleet IS NOT NULL AND t.nominal_fuel_consumption IS NOT NULL AND t.name IS NOT NULL\nGROUP BY t.fleet"
+    },
+    {
+      "name": "avg-daily-driving-duration",
+      "description": "Per truck, the average hours driven a day, counted in ten-minute windows.",
+      "sql": "WITH ten_minute_driving_sessions AS (\n    SELECT date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id\n    FROM readings\n    GROUP BY 1, 2\n    HAVING avg(velocity) > 1\n), daily_total_session AS (\n    SELECT date_bin(INTERVAL '24 hours', ten_minutes) AS day, tags_id, count(*) / 6.0 AS hours\n    FROM ten_minute_driving_sessions\n    GROUP BY 1, 2\n)\nSELECT t.fleet, t.name, t.driver, avg(d.hours) AS avg_daily_hours\nFROM daily_total_session d\nJOIN tags t ON t.id = d.tags_id\nGROUP BY t.fleet, t.name, t.driver"
+    },
+    {
+      "name": "avg-daily-driving-session",
+      "description": "Per truck and day, the average length of a driving session, from when it starts driving to when it stops.",
+      "sql": "WITH driver_status AS (\n    SELECT tags_id, date_bin(INTERVAL '10 minutes', time) AS ten_minutes, avg(velocity) > 5 AS driving\n    FROM readings\n    GROUP BY 1, 2\n), driver_status_change AS (\n    SELECT tags_id, ten_minutes AS start_ts,\n           lead(ten_minutes) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS stop_ts, driving\n    FROM (SELECT tags_id, ten_minutes, driving,\n                 lag(driving) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS prev_driving\n          FROM driver_status) x\n    WHERE x.driving <> x.prev_driving\n)\nSELECT t.name, date_bin(INTERVAL '24 hours', d.start_ts) AS day, avg(date_part('epoch', d.stop_ts) - date_part('epoch', d.start_ts)) AS duration_s\nFROM tags t\nJOIN driver_status_change d ON t.id = d.tags_id\nWHERE t.name IS NOT NULL AND d.driving = true\nGROUP BY 1, 2\nORDER BY 1, 2"
+    },
+    {
+      "name": "avg-load",
+      "description": "Per fleet, model and capacity, the average load as a share of capacity.",
+      "sql": "SELECT t.fleet, t.model, t.load_capacity, avg(d.avg_load / t.load_capacity) AS avg_load_percentage\nFROM tags t\nJOIN (SELECT tags_id, avg(current_load) AS avg_load FROM diagnostics GROUP BY tags_id) d ON t.id = d.tags_id\nWHERE t.name IS NOT NULL\nGROUP BY t.fleet, t.model, t.load_capacity"
+    },
+    {
+      "name": "daily-activity",
+      "description": "Per fleet, model and day, the share of the day trucks were active.",
+      "sql": "SELECT t.fleet, t.model, y.day, sum(y.ten_mins_per_day) / 144.0 AS daily_activity\nFROM tags t\nJOIN (SELECT date_bin(INTERVAL '24 hours', time) AS day, date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id, count(*) AS ten_mins_per_day\n      FROM diagnostics\n      GROUP BY 1, 2, 3\n      HAVING avg(status) < 1) y ON y.tags_id = t.id\nWHERE t.name IS NOT NULL\nGROUP BY t.fleet, t.model, y.day\nORDER BY y.day"
+    },
+    {
+      "name": "breakdown-frequency",
+      "description": "Per model, how many times trucks broke down: ten-minute windows where most diagnostics report a fault after a window where they didn't.",
+      "sql": "WITH breakdown_per_truck_per_ten_minutes AS (\n    SELECT date_bin(INTERVAL '10 minutes', time) AS ten_minutes, tags_id,\n           sum(CASE WHEN status = 0 THEN 1 ELSE 0 END) * 1.0 / count(*) >= 0.5 AS broken_down\n    FROM diagnostics\n    GROUP BY 1, 2\n), breakdowns_per_truck AS (\n    SELECT ten_minutes, tags_id, broken_down,\n           lead(broken_down) OVER (PARTITION BY tags_id ORDER BY ten_minutes) AS next_broken_down\n    FROM breakdown_per_truck_per_ten_minutes\n)\nSELECT t.model, count(*)\nFROM tags t\nJOIN breakdowns_per_truck b ON t.id = b.tags_id\nWHERE t.name IS NOT NULL AND b.broken_down = false AND b.next_broken_down = true\nGROUP BY t.model"
+    }
+  ],
+  "iot_point": [
+    {
+      "name": "one-truck-last-hour",
+      "description": "One truck's raw readings of the last hour.",
+      "sql": "SELECT time, latitude, longitude, velocity, fuel_consumption\nFROM readings\nWHERE tags_id = 1 AND time >= CAST('2026-01-03 23:00:00' AS TIMESTAMP) AND time < CAST('2026-01-04 00:00:00' AS TIMESTAMP)\nORDER BY time"
+    },
+    {
+      "name": "one-truck-all-history",
+      "description": "One truck's every reading, in time order.",
+      "sql": "SELECT time, latitude, longitude, velocity, fuel_consumption\nFROM readings\nWHERE tags_id = 1\nORDER BY time"
+    },
+    {
+      "name": "one-truck-latest",
+      "description": "One truck's latest position.",
+      "sql": "SELECT time, latitude, longitude\nFROM readings\nWHERE tags_id = 1\nORDER BY time DESC\nLIMIT 1"
+    },
+    {
+      "name": "one-truck-hourly-avg",
+      "description": "One truck's average speed and highest fuel consumption per hour over all its history.",
+      "sql": "SELECT date_bin(INTERVAL '1 hour', time) AS hour, avg(velocity) AS avg_velocity, max(fuel_consumption) AS max_fuel\nFROM readings\nWHERE tags_id = 1\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "fleet-last-hour-avg",
+      "description": "Every truck's average speed over the last hour.",
+      "sql": "SELECT r.tags_id, avg(r.velocity) AS avg_velocity\nFROM readings r\nWHERE r.time >= CAST('2026-01-03 23:00:00' AS TIMESTAMP) AND r.time < CAST('2026-01-04 00:00:00' AS TIMESTAMP)\nGROUP BY r.tags_id"
+    }
+  ],
+  "tsbs_devops": [
+    {
+      "name": "single-groupby-1-1-1",
+      "description": "One host's highest user CPU per minute over an hour.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user\nFROM cpu\nWHERE hostname IN ('host_9') AND time >= CAST('2026-01-03 22:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "single-groupby-1-1-12",
+      "description": "One host's highest user CPU per minute over 12 hours.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user\nFROM cpu\nWHERE hostname IN ('host_9') AND time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "single-groupby-1-8-1",
+      "description": "The highest user CPU per minute across 8 hosts over an hour.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user\nFROM cpu\nWHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND time >= CAST('2026-01-03 22:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "single-groupby-5-1-1",
+      "description": "One host's highest value of 5 CPU metrics per minute over an hour.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait\nFROM cpu\nWHERE hostname IN ('host_9') AND time >= CAST('2026-01-03 22:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "single-groupby-5-1-12",
+      "description": "One host's highest value of 5 CPU metrics per minute over 12 hours.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait\nFROM cpu\nWHERE hostname IN ('host_9') AND time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "single-groupby-5-8-1",
+      "description": "The highest value of 5 CPU metrics per minute across 8 hosts over an hour.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user) AS max_usage_user, max(usage_system) AS max_usage_system, max(usage_idle) AS max_usage_idle, max(usage_nice) AS max_usage_nice, max(usage_iowait) AS max_usage_iowait\nFROM cpu\nWHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND time >= CAST('2026-01-03 22:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "cpu-max-all-1",
+      "description": "One host's highest value of all 10 CPU metrics per hour over 8 hours.",
+      "sql": "SELECT date_bin(INTERVAL '1 hour', time) AS hour,\n       max(usage_user) AS max_usage_user,\n       max(usage_system) AS max_usage_system,\n       max(usage_idle) AS max_usage_idle,\n       max(usage_nice) AS max_usage_nice,\n       max(usage_iowait) AS max_usage_iowait,\n       max(usage_irq) AS max_usage_irq,\n       max(usage_softirq) AS max_usage_softirq,\n       max(usage_steal) AS max_usage_steal,\n       max(usage_guest) AS max_usage_guest,\n       max(usage_guest_nice) AS max_usage_guest_nice\nFROM cpu\nWHERE hostname IN ('host_9') AND time >= CAST('2026-01-03 15:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "cpu-max-all-8",
+      "description": "The highest value of all 10 CPU metrics per hour across 8 hosts over 8 hours.",
+      "sql": "SELECT date_bin(INTERVAL '1 hour', time) AS hour,\n       max(usage_user) AS max_usage_user,\n       max(usage_system) AS max_usage_system,\n       max(usage_idle) AS max_usage_idle,\n       max(usage_nice) AS max_usage_nice,\n       max(usage_iowait) AS max_usage_iowait,\n       max(usage_irq) AS max_usage_irq,\n       max(usage_softirq) AS max_usage_softirq,\n       max(usage_steal) AS max_usage_steal,\n       max(usage_guest) AS max_usage_guest,\n       max(usage_guest_nice) AS max_usage_guest_nice\nFROM cpu\nWHERE hostname IN ('host_9', 'host_42', 'host_17', 'host_88', 'host_3', 'host_61', 'host_25', 'host_70') AND time >= CAST('2026-01-03 15:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "double-groupby-1",
+      "description": "Every host's average user CPU per hour over 12 hours.",
+      "sql": "WITH cpu_avg AS (\n    SELECT date_bin(INTERVAL '1 hour', time) AS hour, hostname, avg(usage_user) AS mean_usage_user\n    FROM cpu\n    WHERE time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\n    GROUP BY 1, 2\n)\nSELECT hour, hostname, mean_usage_user\nFROM cpu_avg\nORDER BY hour, hostname"
+    },
+    {
+      "name": "double-groupby-5",
+      "description": "Every host's average of 5 CPU metrics per hour over 12 hours.",
+      "sql": "WITH cpu_avg AS (\n    SELECT date_bin(INTERVAL '1 hour', time) AS hour, hostname, avg(usage_user) AS mean_usage_user, avg(usage_system) AS mean_usage_system, avg(usage_idle) AS mean_usage_idle, avg(usage_nice) AS mean_usage_nice, avg(usage_iowait) AS mean_usage_iowait\n    FROM cpu\n    WHERE time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\n    GROUP BY 1, 2\n)\nSELECT hour, hostname, mean_usage_user, mean_usage_system, mean_usage_idle, mean_usage_nice, mean_usage_iowait\nFROM cpu_avg\nORDER BY hour, hostname"
+    },
+    {
+      "name": "double-groupby-all",
+      "description": "Every host's average of all 10 CPU metrics per hour over 12 hours.",
+      "sql": "WITH cpu_avg AS (\n    SELECT date_bin(INTERVAL '1 hour', time) AS hour, hostname, avg(usage_user) AS mean_usage_user, avg(usage_system) AS mean_usage_system, avg(usage_idle) AS mean_usage_idle, avg(usage_nice) AS mean_usage_nice, avg(usage_iowait) AS mean_usage_iowait, avg(usage_irq) AS mean_usage_irq, avg(usage_softirq) AS mean_usage_softirq, avg(usage_steal) AS mean_usage_steal, avg(usage_guest) AS mean_usage_guest, avg(usage_guest_nice) AS mean_usage_guest_nice\n    FROM cpu\n    WHERE time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\n    GROUP BY 1, 2\n)\nSELECT hour, hostname, mean_usage_user, mean_usage_system, mean_usage_idle, mean_usage_nice, mean_usage_iowait, mean_usage_irq, mean_usage_softirq, mean_usage_steal, mean_usage_guest, mean_usage_guest_nice\nFROM cpu_avg\nORDER BY hour, hostname"
+    },
+    {
+      "name": "high-cpu-all",
+      "description": "Every reading over 12 hours where a host's user CPU was above 90%.",
+      "sql": "SELECT * FROM cpu WHERE usage_user > 90.0 AND time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)"
+    },
+    {
+      "name": "high-cpu-1",
+      "description": "One host's readings over 12 hours where its user CPU was above 90%.",
+      "sql": "SELECT * FROM cpu WHERE usage_user > 90.0 AND time >= CAST('2026-01-03 11:00:00' AS TIMESTAMP) AND time < CAST('2026-01-03 23:00:00' AS TIMESTAMP) AND hostname IN ('host_9')"
+    },
+    {
+      "name": "lastpoint",
+      "description": "The latest reading of every host.",
+      "sql": "SELECT *\nFROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY hostname ORDER BY time DESC) AS rn FROM cpu) AS c\nWHERE rn = 1\nORDER BY hostname"
+    },
+    {
+      "name": "groupby-orderby-limit",
+      "description": "The highest user CPU of the 5 most recent minutes before a time, across all hosts.",
+      "sql": "SELECT date_bin(INTERVAL '1 minute', time) AS minute, max(usage_user)\nFROM cpu\nWHERE time < CAST('2026-01-03 23:00:00' AS TIMESTAMP)\nGROUP BY 1\nORDER BY 1 DESC\nLIMIT 5"
+    }
+  ],
+  "iiot": [
+    {
+      "name": "latest-area",
+      "description": "Dashboard: the latest value and quality of every tag in an area (1,000 tags).",
+      "sql": "SELECT r.tag, r.time, r.value, r.quality\nFROM readings r\nJOIN (\n    SELECT r2.tag AS tag, max(r2.time) AS last\n    FROM readings r2 JOIN tags t ON r2.tag = t.tag\n    WHERE t.area = 'A000' AND r2.time >= now() - INTERVAL '2 hours'\n    GROUP BY r2.tag\n) m ON r.tag = m.tag AND r.time = m.last\nWHERE r.time >= now() - INTERVAL '2 hours'"
+    },
+    {
+      "name": "recent-machines",
+      "description": "Dashboard: the last 15 minutes of two machines' tags, raw.",
+      "sql": "SELECT tag, time, value\nFROM readings\nWHERE (tag LIKE 'M00001.%' OR tag LIKE 'M00002.%') AND time >= now() - INTERVAL '15 minutes'\nORDER BY tag, time"
+    },
+    {
+      "name": "trend-30d",
+      "description": "Trend chart: one 1-second tag over 30 days, as hourly min, max and mean (720 points).",
+      "sql": "SELECT date_bin(INTERVAL '1 hour', time) AS hour, min(value) AS lo, max(value) AS hi, avg(value) AS mean, count(*) AS samples\nFROM readings\nWHERE tag = 'M00007.pressure' AND time >= now() - INTERVAL '30 days'\nGROUP BY date_bin(INTERVAL '1 hour', time)\nORDER BY hour"
+    },
+    {
+      "name": "alarm-window",
+      "description": "Investigation: every tag of five machines, raw, 10 minutes either side of an alarm two hours ago.",
+      "sql": "SELECT r.tag, r.time, r.value, r.quality\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.machine >= 'M00010' AND t.machine <= 'M00014'\n  AND r.time >= now() - INTERVAL '130 minutes' AND r.time < now() - INTERVAL '110 minutes'"
+    },
+    {
+      "name": "shift-report",
+      "description": "Report: per machine of a line and analog signal, the hourly mean and peak over the last 8 hours (one shift).",
+      "sql": "SELECT t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time) AS hour, avg(r.value) AS mean, max(r.value) AS peak\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0003' AND t.kind = 'analog' AND r.time >= now() - INTERVAL '8 hours'\nGROUP BY t.machine, t.signal, date_bin(INTERVAL '1 hour', r.time)"
+    },
+    {
+      "name": "daily-stats",
+      "description": "Report: per tag of a line and day, the sample count and mean over 30 days.",
+      "sql": "SELECT r.tag, date_bin(INTERVAL '24 hours', r.time) AS day, count(*) AS samples, avg(r.value) AS mean\nFROM readings r JOIN tags t ON r.tag = t.tag\nWHERE t.line = 'L0002' AND r.time >= now() - INTERVAL '30 days'\nGROUP BY r.tag, date_bin(INTERVAL '24 hours', r.time)"
+    },
+    {
+      "name": "time-above-limit",
+      "description": "Process: per pressure tag in the area, seconds above its alarm limit in the last 24 hours.",
+      "sql": "SELECT tag, sum(CASE WHEN value > hi THEN next_t - t ELSE 0 END) AS seconds_above\nFROM (\n    SELECT r.tag AS tag, r.value AS value, t.hi_limit AS hi, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'pressure' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag"
+    },
+    {
+      "name": "time-weighted-avg",
+      "description": "Process: per temperature tag of a line, the time-weighted mean over the last 24 hours (samples weighted by how long they held).",
+      "sql": "SELECT tag, sum(value * (next_t - t)) / sum(next_t - t) AS twa\nFROM (\n    SELECT r.tag AS tag, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0004' AND t.signal = 'temperature' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t >= t\nGROUP BY tag"
+    },
+    {
+      "name": "uptime",
+      "description": "OEE: per machine of a line, the share of the last 7 days it was running (an on-change state tag).",
+      "sql": "SELECT machine, sum(CASE WHEN value = 1 THEN next_t - t ELSE 0 END) / sum(next_t - t) AS running_share\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lead(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS next_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.line = 'L0000' AND t.signal = 'state' AND r.time >= now() - INTERVAL '7 days'\n) AS s\nWHERE next_t >= t\nGROUP BY machine"
+    },
+    {
+      "name": "energy",
+      "description": "Energy: per machine in the area, kWh used in the last 24 hours, from cumulative counters that may reset.",
+      "sql": "SELECT machine, sum(CASE WHEN value >= prev THEN value - prev ELSE value END) AS kwh\nFROM (\n    SELECT t.machine AS machine, r.value AS value, date_part('epoch', r.time) AS t,\n           lag(r.value) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev,\n           lag(date_part('epoch', r.time)) OVER (PARTITION BY r.tag ORDER BY r.time) AS prev_t\n    FROM readings r JOIN tags t ON r.tag = t.tag\n    WHERE t.area = 'A000' AND t.signal = 'energy' AND r.time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE prev_t > 0\nGROUP BY machine"
+    },
+    {
+      "name": "gaps",
+      "description": "Data quality: per 1-second pressure tag, gaps over 5 minutes in the last 24 hours (sensor or gateway down).",
+      "sql": "SELECT tag, count(*) AS gaps, sum(next_t - t) AS gap_seconds\nFROM (\n    SELECT tag, date_part('epoch', time) AS t, lead(date_part('epoch', time)) OVER (PARTITION BY tag ORDER BY time) AS next_t\n    FROM readings\n    WHERE tag LIKE '%.pressure' AND time >= now() - INTERVAL '24 hours'\n) AS s\nWHERE next_t - t > 300\nGROUP BY tag"
+    }
+  ]
+}

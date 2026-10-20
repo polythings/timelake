@@ -108,13 +108,9 @@ async function Results({ workload }: { workload: Workload }) {
     for (const s of sections(r, workload)) {
       const key = `${s.suite}|${s.checkpoint}`
       const entry = querySections.get(key) ?? { section: s, variants: [] }
-      const lines = Object.entries(r.header.readers).map(([system, readers]) => {
-        const engine = `${system}+${readers[0]}`
-        return { engine, label: engineLabel(engine), color: SYSTEM_COLORS[system] ?? "var(--chart-2)" }
-      })
       entry.variants.push({
         run: r,
-        node: <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} lines={lines} />,
+        node: <SectionResults section={s} history={queryHistory(runs, r, s.suite, s.checkpoint)} />,
       })
       querySections.set(key, entry)
     }
