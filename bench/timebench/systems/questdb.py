@@ -119,7 +119,10 @@ class QuestDB(System):
         import questdb
 
         with questdb.connect(f"ws::addr={http_addr()};") as db:
-            db.dataframe(data.to_pandas(), table_name=table, symbols=list(spec.series_key), at=spec.time_column)
+            # The client's columnar path takes each column as one buffer: a batch made of several chunks (IIoT's
+            # arrivals) has its string columns in pieces, which it rejects (#154).
+            frame = data.combine_chunks().to_pandas()
+            db.dataframe(frame, table_name=table, symbols=list(spec.series_key), at=spec.time_column)
 
     @override
     def settle(self) -> float:
