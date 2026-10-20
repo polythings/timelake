@@ -35,4 +35,6 @@ cache-keys = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["network: needs internet access (deselect with -m 'not network')"]
+# Tests run offline: `-m network` runs the ones that need internet access.
+addopts = ["-m", "not network"]
+markers = ["network: needs internet access; deselected unless -m network"]
