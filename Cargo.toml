@@ -45,10 +45,10 @@ chrono = "0.4"
 rand = "0.10"
 tempfile = "3"
 
-# Until lakebed 0.1.0 is on crates.io: the checkout next to this one.
+# Until lakebed 0.1.0 is on crates.io (polythings/lakebed#7). To work on both, point these at a local checkout.
 [patch.crates-io]
-lakebed-core = { path = "../../../../lakebed/crates/lakebed-core" }
-lakebed-iceberg = { path = "../../../../lakebed/crates/lakebed-iceberg" }
+lakebed-core = { git = "https://github.com/polythings/lakebed", rev = "316c89b54aa3f1bb7fd2b35460b89ef624b22933" }
+lakebed-iceberg = { git = "https://github.com/polythings/lakebed", rev = "316c89b54aa3f1bb7fd2b35460b89ef624b22933" }
 
 [profile.release]
 debug = "line-tables-only"

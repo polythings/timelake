@@ -2731,6 +2731,7 @@ dependencies = [
 [[package]]
 name = "lakebed-core"
 version = "0.1.0"
+source = "git+https://github.com/polythings/lakebed?rev=316c89b54aa3f1bb7fd2b35460b89ef624b22933#316c89b54aa3f1bb7fd2b35460b89ef624b22933"
 dependencies = [
  "thiserror",
 ]
@@ -2738,6 +2739,7 @@ dependencies = [
 [[package]]
 name = "lakebed-iceberg"
 version = "0.1.0"
+source = "git+https://github.com/polythings/lakebed?rev=316c89b54aa3f1bb7fd2b35460b89ef624b22933#316c89b54aa3f1bb7fd2b35460b89ef624b22933"
 dependencies = [
  "apache-avro 0.22.0",
  "arrow-schema",

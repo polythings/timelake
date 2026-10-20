@@ -44,10 +44,10 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
-# Until lakebed 0.1.0 is on crates.io: the checkout next to Timelake's.
+# Until lakebed 0.1.0 is on crates.io (polythings/lakebed#7), as in the root Cargo.toml.
 [patch.crates-io]
-lakebed-core = { path = "../../../../../../lakebed/crates/lakebed-core" }
-lakebed-iceberg = { path = "../../../../../../lakebed/crates/lakebed-iceberg" }
+lakebed-core = { git = "https://github.com/polythings/lakebed", rev = "316c89b54aa3f1bb7fd2b35460b89ef624b22933" }
+lakebed-iceberg = { git = "https://github.com/polythings/lakebed", rev = "316c89b54aa3f1bb7fd2b35460b89ef624b22933" }
 
 [profile.release]
 opt-level = "s"
