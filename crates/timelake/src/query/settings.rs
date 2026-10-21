@@ -5,10 +5,15 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
-use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
+use datafusion::common::config::{ConfigEntry, ConfigExtension, ConfigOptions, ExtensionOptions};
 use datafusion::error::{DataFusionError, Result as DfResult};
 use timelake_format::settings::{self, Level, SETTINGS};
+use timelake_format::value::SettingValue;
+use timelake_format::{AutoBool, Contract, ReadDedupStrategy, SeriesOrder};
+
+use crate::property;
 
 /// A session setting's key as the session's configuration takes it: a name without a prefix
 /// (`read_dedup`, `read-dedup`) is Timelake's (`timelake.read_dedup`); prefixed keys
@@ -31,22 +36,73 @@ impl SessionSettings {
         settings::find(name).and_then(|s| self.values.get(s.name)).map(String::as_str)
     }
 
-    /// The session's value of a boolean setting.
-    pub fn flag(&self, name: &str) -> Option<bool> {
-        self.get(name).map(|v| v.eq_ignore_ascii_case("true"))
+    /// The session's value of a setting, typed ([`timelake_format::value`]); values are checked
+    /// when set, so they parse.
+    pub fn value<T: SettingValue>(&self, name: &str) -> Option<T> {
+        self.get(name).and_then(|v| T::parse_setting(v).ok())
     }
 
-    /// The session's value of a setting with a typed value ([`timelake_format::value`]); values
-    /// are checked when set, so they parse.
-    pub fn value<T: std::str::FromStr>(&self, name: &str) -> Option<T> {
-        self.get(name).and_then(|v| v.parse().ok())
+    /// The session's value of a boolean setting.
+    pub fn flag(&self, name: &str) -> Option<bool> {
+        self.value(name)
     }
 
     /// The session's value of a duration setting.
-    pub fn duration(&self, name: &str) -> Option<std::time::Duration> {
-        self.get(name).and_then(|v| timelake_format::parse_duration(v).ok())
+    pub fn duration(&self, name: &str) -> Option<Duration> {
+        self.value(name)
     }
 }
+
+/// The session's value of a setting, if it sets one.
+pub(crate) fn session<T: SettingValue>(options: &ConfigOptions, name: &str) -> Option<T> {
+    options.extensions.get::<SessionSettings>()?.value(name)
+}
+
+/// A setting a session can override for the tables it reads: its property, and the table's value
+/// in the contract.
+pub(crate) struct Override<T> {
+    property: &'static str,
+    table: fn(&Contract) -> T,
+}
+
+impl<T: SettingValue> Override<T> {
+    /// The session's value, if it sets one.
+    pub(crate) fn session(&self, options: &ConfigOptions) -> Option<T> {
+        session(options, self.property)
+    }
+
+    /// The session's value, else the table's (its property, or the default).
+    pub(crate) fn of(&self, options: &ConfigOptions, contract: &Contract) -> T {
+        self.session(options).unwrap_or_else(|| (self.table)(contract))
+    }
+}
+
+/// `read-dedup` (applies only to tables with `dedup` on).
+pub(crate) const READ_DEDUP: Override<bool> = Override { property: property::READ_DEDUP, table: |c| c.read_dedup };
+/// `read-dedup-strategy`.
+pub(crate) const READ_DEDUP_STRATEGY: Override<ReadDedupStrategy> =
+    Override { property: property::READ_DEDUP_STRATEGY, table: |c| c.read_dedup_strategy };
+/// `filter-pushdown`.
+pub(crate) const FILTER_PUSHDOWN: Override<AutoBool> =
+    Override { property: property::FILTER_PUSHDOWN, table: |c| c.filter_pushdown };
+/// `in-list-pruning`.
+pub(crate) const IN_LIST_PRUNING: Override<bool> =
+    Override { property: property::IN_LIST_PRUNING, table: |c| c.in_list_pruning };
+/// `newest-first`.
+pub(crate) const NEWEST_FIRST: Override<bool> =
+    Override { property: property::NEWEST_FIRST, table: |c| c.newest_first };
+/// `series-order`.
+pub(crate) const SERIES_ORDER: Override<SeriesOrder> =
+    Override { property: property::SERIES_ORDER, table: |c| c.series_order };
+/// `window-series-order`.
+pub(crate) const WINDOW_SERIES_ORDER: Override<AutoBool> =
+    Override { property: property::WINDOW_SERIES_ORDER, table: |c| c.window_series_order };
+/// `rollup-routing`.
+pub(crate) const ROLLUP_ROUTING: Override<bool> =
+    Override { property: property::ROLLUP_ROUTING, table: |c| c.rollup_routing };
+/// `version-check-interval`.
+pub(crate) const VERSION_CHECK_INTERVAL: Override<Duration> =
+    Override { property: property::VERSION_CHECK_INTERVAL, table: |c| c.version_check_interval };
 
 impl ConfigExtension for SessionSettings {
     const PREFIX: &'static str = "timelake";
@@ -117,6 +173,25 @@ mod tests {
             let err = options.set(key, "maybe").unwrap_err().to_string();
             assert!(err.contains(msg), "{key}: {err}");
         }
+    }
+
+    /// A session's value overrides the table's; unset, the table's applies.
+    #[test]
+    fn overrides_resolve_to_the_session_then_the_table() {
+        use std::collections::HashMap;
+
+        let table = Contract::from_properties(&HashMap::from([
+            (property::SERIES_ORDER.to_string(), "merge".to_string()),
+            (property::NEWEST_FIRST.to_string(), "false".to_string()),
+        ]))
+        .unwrap();
+        let mut config = config();
+        config.options_mut().set("timelake.series_order", "Segments").unwrap();
+        let options = config.options();
+        assert_eq!(SERIES_ORDER.of(options, &table), SeriesOrder::Segments);
+        assert!(!NEWEST_FIRST.of(options, &table));
+        assert_eq!(NEWEST_FIRST.session(options), None);
+        assert_eq!(FILTER_PUSHDOWN.of(options, &table), AutoBool::Auto);
     }
 
     #[test]

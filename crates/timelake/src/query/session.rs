@@ -17,7 +17,7 @@ use super::provider::TimelakeProvider;
 use super::rewrite::LatestRewrite;
 use super::rollup::{definition_of, refresh_session, rollup_frame};
 use super::route::{RollupRewrite, RouteMap, prepare};
-use super::settings::SessionSettings;
+use super::settings::{ROLLUP_ROUTING, SessionSettings, VERSION_CHECK_INTERVAL};
 use super::statement::{self, RollupStatement, Statement};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
@@ -279,15 +279,12 @@ impl Session {
     /// Whether the session lets queries be routed to rollups (`timelake.rollup_routing`, on unless
     /// set off).
     fn rollup_routing(&self) -> bool {
-        let state = self.ctx.state();
-        let settings = state.config().options().extensions.get::<SessionSettings>();
-        settings.and_then(|s| s.flag(property::ROLLUP_ROUTING)) != Some(false)
+        ROLLUP_ROUTING.session(self.ctx.state().config().options()) != Some(false)
     }
 
     /// The session's `version-check-interval`, if it sets one.
     fn version_check_interval(&self) -> Option<Duration> {
-        let state = self.ctx.state();
-        state.config().options().extensions.get::<SessionSettings>()?.duration(property::VERSION_CHECK_INTERVAL)
+        VERSION_CHECK_INTERVAL.session(self.ctx.state().config().options())
     }
 
     /// Loads a table's metadata, file list and last-value index into the lake's caches: the

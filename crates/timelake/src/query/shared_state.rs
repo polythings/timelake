@@ -22,7 +22,7 @@ use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{Expr, lit};
 
 use super::rollup::unalias;
-use super::settings::SessionSettings;
+use super::settings::session;
 use super::signal::{Method, Output, of_state_udf, udaf};
 use crate::property;
 
@@ -37,8 +37,7 @@ impl OptimizerRule for SharedState {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        let settings = options.extensions.get::<SessionSettings>();
-        if settings.and_then(|s| s.flag(property::SHARED_SIGNAL_STATE)) == Some(false) {
+        if session::<bool>(&options, property::SHARED_SIGNAL_STATE) == Some(false) {
             return Ok(Transformed::no(plan));
         }
         plan.transform_up(share)

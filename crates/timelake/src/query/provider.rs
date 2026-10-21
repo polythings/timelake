@@ -36,15 +36,14 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use parquet::file::metadata::PageIndexPolicy;
 use timelake_format::rows::ASCENDING;
-use timelake_format::{AutoBool, ReadDedupStrategy, footer};
+use timelake_format::{ReadDedupStrategy, footer};
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
 use super::newest::{Newest, NewestFirstExec};
 use super::series_order::Order;
-use super::settings::SessionSettings;
+use super::settings::{FILTER_PUSHDOWN, IN_LIST_PRUNING, READ_DEDUP, READ_DEDUP_STRATEGY};
 use super::stats::{FileStats, file_statistics};
-use crate::property;
 use crate::summary;
 use crate::table::{LiveEntry, Table};
 
@@ -202,7 +201,10 @@ async fn scan_data(
     }
     if !merged.is_empty() {
         // Keys-first doesn't read each series in order.
-        let strategy = if series_order.is_some() { ReadDedupStrategy::Merge } else { strategy(table, state) };
+        let strategy = match series_order {
+            Some(_) => ReadDedupStrategy::Merge,
+            None => READ_DEDUP_STRATEGY.of(state.config().options(), table.contract()),
+        };
         plans.push(match strategy {
             ReadDedupStrategy::Merge => scan_deduplicated(table, state, &url, merged, projection, &key_filters).await?,
             ReadDedupStrategy::KeysFirst => {
@@ -350,9 +352,7 @@ type Selection = (Vec<LiveEntry>, Vec<Vec<LiveEntry>>, Vec<Expr>);
 fn select_files(table: &Table, state: &dyn DfSession, filters: &[Expr], files: Vec<LiveEntry>) -> DfResult<Selection> {
     let contract = table.contract();
     let keys = contract.sort_columns();
-    let session =
-        state.config().options().extensions.get::<SessionSettings>().and_then(|s| s.flag(property::READ_DEDUP));
-    let read_dedup = contract.dedup && session.unwrap_or(contract.read_dedup);
+    let read_dedup = contract.dedup && READ_DEDUP.of(state.config().options(), contract);
     if !read_dedup || keys.is_empty() {
         let keep = prune(table, state, &files, filters)?;
         return Ok((files.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect(), vec![], vec![]));
@@ -465,10 +465,9 @@ async fn scan_files(
     format.create_physical_plan(state, builder.build()).await
 }
 
-/// The session's `timelake.in_list_pruning`, else the table's `timelake.in-list-pruning`.
+/// Whether the scan prunes with long `IN` lists itself (setting `in-list-pruning`).
 fn in_list_pruning(table: &Table, state: &dyn DfSession) -> bool {
-    let settings = state.config().options().extensions.get::<SessionSettings>();
-    settings.and_then(|s| s.flag(property::IN_LIST_PRUNING)).unwrap_or(table.contract().in_list_pruning)
+    IN_LIST_PRUNING.of(state.config().options(), table.contract())
 }
 
 /// The long `IN` lists among `filters` that the scan prunes with itself, if the setting is on.
@@ -504,12 +503,10 @@ fn with_access_plan(
     }
 }
 
-/// The session's `timelake.filter_pushdown`, else the table's `timelake.filter-pushdown`; `auto`
-/// is on for local files and off on object storage.
+/// Whether the scan filters rows while decoding (setting `filter-pushdown`); `auto` is on for
+/// local files and off on object storage.
 fn filter_pushdown(table: &Table, state: &dyn DfSession) -> bool {
-    let settings = state.config().options().extensions.get::<SessionSettings>();
-    let session = settings.and_then(|s| s.value::<AutoBool>(property::FILTER_PUSHDOWN));
-    session.unwrap_or(table.contract().filter_pushdown).is_on(|| !table.lake().storage().is_remote())
+    FILTER_PUSHDOWN.of(state.config().options(), table.contract()).is_on(|| !table.lake().storage().is_remote())
 }
 
 /// Scans files that may share keys, strategy merge: each file's rows with its commit rank, split
@@ -705,14 +702,6 @@ impl Ranked {
         }
         Ok(plan)
     }
-}
-
-/// How copies are removed on read (spec 12): the session's `timelake.read_dedup_strategy`, else
-/// the table's `timelake.read-dedup-strategy`.
-fn strategy(table: &Table, state: &dyn DfSession) -> ReadDedupStrategy {
-    let settings = state.config().options().extensions.get::<SessionSettings>();
-    let session = settings.and_then(|s| s.value(property::READ_DEDUP_STRATEGY));
-    session.unwrap_or(table.contract().read_dedup_strategy)
 }
 
 /// The table's sort order id, as data files written by Timelake carry it.

@@ -5,8 +5,31 @@
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
+use std::time::Duration;
 
-use crate::{FormatError, Result};
+use crate::{FormatError, Result, parse_duration};
+
+/// A setting's value, parsed from the text a table property or a session setting holds.
+pub trait SettingValue: Sized {
+    /// Parses `s` (trimmed, in any case); errors say `must be …, got …`.
+    fn parse_setting(s: &str) -> Result<Self>;
+}
+
+impl SettingValue for bool {
+    fn parse_setting(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(FormatError::new(format!("must be true or false, got {:?}", s.trim()))),
+        }
+    }
+}
+
+impl SettingValue for Duration {
+    fn parse_setting(s: &str) -> Result<Self> {
+        parse_duration(s)
+    }
+}
 
 /// A setting value that is one of a fixed set of names.
 pub trait Choice: Copy + Sized + 'static {
@@ -83,6 +106,12 @@ macro_rules! choice {
             type Err = FormatError;
 
             fn from_str(s: &str) -> Result<Self> {
+                parse_choice(s)
+            }
+        }
+
+        impl SettingValue for $name {
+            fn parse_setting(s: &str) -> Result<Self> {
                 parse_choice(s)
             }
         }

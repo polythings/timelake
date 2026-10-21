@@ -31,11 +31,10 @@ use super::PLANNING_REUSE;
 use super::gaps;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
-use super::settings::SessionSettings;
+use super::settings::{READ_DEDUP, ROLLUP_ROUTING};
 use super::signal::{Method, Output, of_rollup, state_type, udaf};
 use crate::TableName;
 use crate::lake::Lake;
-use crate::property;
 use crate::rollup::{Definition, Ranges, changed, floor, in_history, layout, recorded_sequence};
 use crate::table::Table;
 
@@ -174,11 +173,11 @@ impl OptimizerRule for RollupRewrite {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        let settings = options.extensions.get::<SessionSettings>();
-        if settings.and_then(|s| s.flag(property::ROLLUP_ROUTING)) == Some(false) {
+        // The session can turn routing off; a table turns it off for itself in `prepare`.
+        if ROLLUP_ROUTING.session(&options) == Some(false) {
             return Ok(Transformed::no(plan));
         }
-        let read_dedup = settings.and_then(|s| s.flag(property::READ_DEDUP));
+        let read_dedup = READ_DEDUP.session(&options);
         plan.transform_down(|node| {
             let LogicalPlan::Aggregate(a) = &node else { return Ok(Transformed::no(node)) };
             match self.route(a, read_dedup)? {

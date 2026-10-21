@@ -36,8 +36,7 @@ use datafusion::prelude::Expr;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::unalias;
 use super::runs::over_readings;
-use super::settings::SessionSettings;
-use crate::property;
+use super::settings::{SERIES_ORDER, WINDOW_SERIES_ORDER};
 use timelake_format::{AutoBool, SeriesOrder as Setting};
 
 /// How a scan under a signal aggregate reads each series in time order (setting `series-order`).
@@ -76,13 +75,11 @@ impl OptimizerRule for SeriesOrder {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        let settings = options.extensions.get::<SessionSettings>();
-        let session = settings.and_then(|s| s.value::<Setting>(property::SERIES_ORDER));
-        let windows_session = settings.and_then(|s| s.value::<AutoBool>(property::WINDOW_SERIES_ORDER));
+        let options = options.as_ref();
         plan.transform_down(|node| {
-            let wants: Box<Wants> = match &node {
+            let wants: Box<Wants<'_>> = match &node {
                 LogicalPlan::Aggregate(a) if a.aggr_expr.iter().any(|e| over_readings(e, a.input.schema())) => {
-                    Box::new(move |p| Some(session.unwrap_or(p.table().contract().series_order).into()))
+                    Box::new(|p| Some(SERIES_ORDER.of(options, p.table().contract()).into()))
                 }
                 LogicalPlan::Window(w) => {
                     let windows: Vec<(HashSet<String>, String)> =
@@ -90,14 +87,13 @@ impl OptimizerRule for SeriesOrder {
                     if windows.is_empty() {
                         return Ok(Transformed::no(node));
                     }
-                    let session = windows_session;
                     Box::new(move |p| {
                         let contract = p.table().contract();
                         let keys: HashSet<String> = contract.series_key.iter().cloned().collect();
                         let fits = windows
                             .iter()
                             .any(|(by, order)| *by == keys && contract.time_column.as_ref() == Some(order));
-                        match session.unwrap_or(contract.window_series_order) {
+                        match WINDOW_SERIES_ORDER.of(options, contract) {
                             AutoBool::False => None,
                             AutoBool::True => fits.then_some(Order::Merge),
                             AutoBool::Auto => fits.then_some(Order::MergeOnePartition),
@@ -113,10 +109,10 @@ impl OptimizerRule for SeriesOrder {
 }
 
 /// How a node needs a Timelake scan read, if it does.
-type Wants = dyn Fn(&TimelakeProvider) -> Option<Order>;
+type Wants<'a> = dyn Fn(&TimelakeProvider) -> Option<Order> + 'a;
 
 /// `node` with its Timelake scan reading in series order, if `wants` says so.
-fn mark(node: LogicalPlan, wants: &Wants) -> DfResult<Transformed<LogicalPlan>> {
+fn mark(node: LogicalPlan, wants: &Wants<'_>) -> DfResult<Transformed<LogicalPlan>> {
     let LogicalPlan::TableScan(scan) = &node else { return Ok(Transformed::no(node)) };
     let provider = source_as_provider(&scan.source)?;
     let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else {

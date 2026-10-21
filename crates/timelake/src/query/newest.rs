@@ -44,8 +44,7 @@ use futures::StreamExt;
 
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{bucket_width, unalias};
-use super::settings::SessionSettings;
-use crate::property;
+use super::settings::NEWEST_FIRST;
 
 /// The optimizer rule: a sort by the time column, descending, with a limit, over a scan of a
 /// time-partitioned Timelake table (through filters and plain projections) makes the scan
@@ -60,10 +59,9 @@ impl OptimizerRule for NewestFirst {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        let session = options.extensions.get::<SessionSettings>().and_then(|s| s.flag(property::NEWEST_FIRST));
         plan.transform_down(|node| {
             let LogicalPlan::Sort(sort) = &node else { return Ok(Transformed::no(node)) };
-            match newest_first(sort, session)? {
+            match newest_first(sort, &options)? {
                 Some(input) => Ok(Transformed::yes(LogicalPlan::Sort(Sort { input: Arc::new(input), ..sort.clone() }))),
                 None => Ok(Transformed::no(node)),
             }
@@ -72,8 +70,8 @@ impl OptimizerRule for NewestFirst {
 }
 
 /// The sort's input with its scan made newest-first, if the sort qualifies.
-/// `session` is the session's `timelake.newest_first`, else the table's setting applies.
-fn newest_first(sort: &Sort, session: Option<bool>) -> DfResult<Option<LogicalPlan>> {
+/// The setting `newest-first` (the session's, else the table's) can turn it off.
+fn newest_first(sort: &Sort, options: &ConfigOptions) -> DfResult<Option<LogicalPlan>> {
     let (Some(k), [by]) = (sort.fetch, sort.expr.as_slice()) else { return Ok(None) };
     let Expr::Column(column) = &by.expr else { return Ok(None) };
     if by.asc {
@@ -118,7 +116,7 @@ fn newest_first(sort: &Sort, session: Option<bool>) -> DfResult<Option<LogicalPl
     let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else { return Ok(None) };
     let contract = p.table().contract();
     let partitioned = contract.chunk.is_some();
-    if !session.unwrap_or(contract.newest_first) {
+    if !NEWEST_FIRST.of(options, contract) {
         return Ok(None);
     }
     let Some(time) = contract.time_column.as_deref() else { return Ok(None) };

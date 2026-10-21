@@ -20,7 +20,8 @@ use std::str::FromStr;
 
 use crate::name::TableName;
 use crate::value::{
-    AutoBool, Choice, Compression, CompressionError, FloatEncoding, ReadDedupStrategy, SeriesOrder, describe,
+    AutoBool, Choice, Compression, CompressionError, FloatEncoding, ReadDedupStrategy, SeriesOrder, SettingValue,
+    describe,
 };
 use crate::{Chunk, FormatError, FormatVersion, Result, parse_duration, parse_duration_or_off};
 
@@ -133,10 +134,7 @@ impl Kind {
             Self::Columns => list(s, non_empty, "must name a column"),
             Self::TableName => parses::<TableName>(s),
             Self::TableNames => list(s, parses::<TableName>, "must name a table"),
-            Self::Boolean => match s.to_ascii_lowercase().as_str() {
-                "true" | "false" => Ok(()),
-                _ => Err(FormatError::new(format!("must be true or false, got {s:?}"))),
-            },
+            Self::Boolean => bool::parse_setting(s).map(drop),
             Self::Count | Self::Bytes | Self::EpochMillis => s
                 .parse::<u64>()
                 .map(drop)
