@@ -326,11 +326,10 @@ impl Session {
 /// The rollup table's options: bucket and keys from the definition, dedup on, no insertion time,
 /// and the `WITH` options (`chunk_interval`, `retention`, `refresh_interval`, or any table setting).
 fn rollup_options(def: &Definition, options: Vec<(String, String)>) -> Result<TableOptions> {
-    const HOUR_MICROS: i64 = 3_600_000_000;
     let mut opts = TableOptions {
         time_column: Some(def.bucket.clone()),
         series_key: def.keys.clone(),
-        chunk: Some(if def.width < HOUR_MICROS { Chunk::Day } else { Chunk::Month }),
+        chunk: Some(if def.width < super::time::HOUR_MICROS { Chunk::Day } else { Chunk::Month }),
         dedup: Some(true),
         ingest_time: Some(false),
         ..Default::default()

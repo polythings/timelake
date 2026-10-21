@@ -30,7 +30,7 @@ use crate::{format_duration, parse_duration, property, summary};
 /// Rows a refresh appends per commit, at most about.
 const ROWS_PER_COMMIT: usize = 1 << 20;
 /// A refresh recomputes at least this much time per query (a window of whole buckets).
-const MIN_WINDOW_MICROS: i64 = 86_400_000_000;
+const MIN_WINDOW_MICROS: i64 = crate::query::time::DAY_MICROS;
 
 /// Half-open ranges of time, in microseconds since the epoch.
 pub(crate) type Ranges = Vec<Range<i64>>;

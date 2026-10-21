@@ -44,6 +44,7 @@ mod shared_state;
 mod signal;
 mod statement;
 mod stats;
+pub(crate) mod time;
 
 pub(crate) use rollup::{refresh_session, rollup_frame};
 pub use session::Session;

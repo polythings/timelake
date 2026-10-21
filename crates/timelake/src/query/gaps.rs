@@ -16,8 +16,7 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{
-    DataType, Field, FieldRef, Fields, Int64Type, IntervalMonthDayNano, IntervalUnit, TimeUnit,
-    TimestampMicrosecondType,
+    DataType, Field, FieldRef, Fields, Int64Type, IntervalUnit, TimeUnit, TimestampMicrosecondType,
 };
 use datafusion::common::{ScalarValue, exec_err, plan_err};
 use datafusion::error::Result as DfResult;
@@ -27,8 +26,8 @@ use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Grou
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::prelude::{Expr, lit};
 
-use super::rollup::{DAY_MICROS, day_time_micros};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
+use super::time;
 
 /// What a gap aggregate returns from a group's joined run: timelake-format's, as rollups name it.
 pub(crate) use timelake_format::rollup::GapFunction as Output;
@@ -40,20 +39,13 @@ pub(crate) fn udaf(output: Output) -> AggregateUDF {
 
 /// A threshold (µs) as the interval literal the aggregates take.
 pub(crate) fn threshold_literal(threshold: i64) -> Expr {
-    // Whole days apart, so the nanoseconds can't overflow.
-    let (days, micros) = (threshold.div_euclid(DAY_MICROS), threshold.rem_euclid(DAY_MICROS));
-    let days = i32::try_from(days).expect("i64 microseconds are fewer than i32::MAX days");
-    lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, days, micros * 1_000))))
+    lit(time::micros_interval(threshold))
 }
 
 /// The threshold (µs) of an interval literal without months, as the aggregates take it.
 pub(crate) fn threshold_of_literal(value: &ScalarValue) -> Option<i64> {
-    match value {
-        ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 && i.days >= 0 && i.nanoseconds >= 0 => {
-            day_time_micros(i.days, i.nanoseconds / 1_000)
-        }
-        _ => None,
-    }
+    let positive = matches!(value, ScalarValue::IntervalMonthDayNano(Some(i)) if i.days >= 0 && i.nanoseconds >= 0);
+    positive.then(|| time::interval_micros(value)).flatten()
 }
 
 /// The type of one run.
@@ -264,7 +256,7 @@ impl RunAggregate for Gaps {
         Ok(match self.output {
             Output::Count => Arc::new(Int64Array::from_iter(joined.iter().map(|r| r.map(|r| r.gaps)))),
             Output::Seconds => {
-                Arc::new(Float64Array::from_iter(joined.iter().map(|r| r.map(|r| r.micros as f64 / 1e6))))
+                Arc::new(Float64Array::from_iter(joined.iter().map(|r| r.map(|r| time::seconds(r.micros)))))
             }
             Output::State => {
                 let runs: Vec<Runs<GapRun>> = joined.into_iter().map(|r| Runs(r.into_iter().collect())).collect();
@@ -359,7 +351,7 @@ mod tests {
             }
             let (gaps, micros) = reference(&times);
             assert_eq!(value(&mut merged[0]), ScalarValue::Int64(Some(gaps)), "case {case}");
-            assert_eq!(value(&mut merged[1]), ScalarValue::Float64(Some(micros as f64 / 1e6)), "case {case}");
+            assert_eq!(value(&mut merged[1]), ScalarValue::Float64(Some(time::seconds(micros))), "case {case}");
         }
     }
 

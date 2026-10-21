@@ -15,11 +15,13 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, Float64Array};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int64Type, TimeUnit};
+use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{PartitionEvaluatorArgs, WindowUDFFieldArgs};
 use datafusion::logical_expr::{PartitionEvaluator, Signature, Volatility, WindowUDF, WindowUDFImpl};
+
+use super::time;
 
 /// Which change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,7 +94,7 @@ struct ChangeEvaluator(Change);
 impl PartitionEvaluator for ChangeEvaluator {
     fn evaluate_all(&mut self, values: &[ArrayRef], num_rows: usize) -> DfResult<ArrayRef> {
         let (time, x) = match (self.0, values) {
-            (Change::Rate, [t, x]) => (Some(seconds(t)?), x),
+            (Change::Rate, [t, x]) => (Some(time::seconds_array(t)?), x),
             (_, [x]) => (None, x),
             _ => return exec_err!("a change takes its column"),
         };
@@ -118,14 +120,6 @@ impl PartitionEvaluator for ChangeEvaluator {
             .collect();
         Ok(Arc::new(out))
     }
-}
-
-/// A timestamp column as seconds since the epoch.
-fn seconds(t: &ArrayRef) -> DfResult<Vec<Option<f64>>> {
-    let micros = cast(t, &DataType::Timestamp(TimeUnit::Microsecond, None))?;
-    let micros = cast(&micros, &DataType::Int64)?;
-    #[expect(clippy::cast_precision_loss, reason = "microseconds since the epoch fit a double's 53 bits until 2255")]
-    Ok(micros.as_primitive::<Int64Type>().iter().map(|v| v.map(|v| v as f64 / 1e6)).collect())
 }
 
 #[cfg(test)]

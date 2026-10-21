@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
+use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::ScalarValue;
 use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::expr::{AggregateFunction, Sort};
@@ -14,14 +14,12 @@ use datafusion::prelude::{DataFrame, SessionContext, ident, lit};
 use super::provider::{Kind, TimelakeProvider, scan_under};
 use super::session::Session;
 use super::signal::{Method, Output, udaf};
+use super::time;
 use crate::error::{Error, Result};
 use crate::lake::Lake;
 use crate::rollup::{Aggregate, Definition, RollupFunction};
 use crate::table::Table;
 use timelake_format::rollup::GapFunction;
-
-pub(crate) const DAY_MICROS: i64 = 86_400_000_000;
-const SECOND_MICROS: i64 = 1_000_000;
 
 /// The width of `date_bin(width, <time>)` (`time_bucket` is its alias) in microseconds: a fixed
 /// width and the default origin. `None` for any other expression.
@@ -38,21 +36,13 @@ pub(crate) fn bucket_width(e: &Expr, time: &str) -> Option<i64> {
     if !is_time(column, time) {
         return None;
     }
-    let width = match stride {
-        Expr::Literal(ScalarValue::IntervalMonthDayNano(Some(v)), _) if v.months == 0 && v.nanoseconds % 1000 == 0 => {
-            day_time_micros(v.days, v.nanoseconds / 1000)?
-        }
-        Expr::Literal(ScalarValue::IntervalDayTime(Some(v)), _) => {
-            day_time_micros(v.days, i64::from(v.milliseconds) * 1000)?
-        }
-        _ => return None,
-    };
+    let Expr::Literal(stride, _) = stride else { return None };
+    // Microsecond times have no buckets of fractions of a microsecond.
+    if matches!(stride, ScalarValue::IntervalMonthDayNano(Some(v)) if v.nanoseconds % 1000 != 0) {
+        return None;
+    }
+    let width = time::interval_micros(stride)?;
     (width > 0).then_some(width)
-}
-
-/// `days` and `micros` as microseconds; `None` if that overflows.
-pub(crate) fn day_time_micros(days: i32, micros: i64) -> Option<i64> {
-    i64::from(days).checked_mul(DAY_MICROS)?.checked_add(micros)
 }
 
 /// `e` without the aliases around it.
@@ -77,17 +67,7 @@ pub(crate) fn is_time(e: &Expr, time: &str) -> bool {
 }
 
 fn is_epoch(e: &Expr) -> bool {
-    use ScalarValue as S;
-    matches!(
-        e,
-        Expr::Literal(
-            S::TimestampSecond(Some(0), _)
-                | S::TimestampMillisecond(Some(0), _)
-                | S::TimestampMicrosecond(Some(0), _)
-                | S::TimestampNanosecond(Some(0), _),
-            _
-        )
-    )
+    matches!(e, Expr::Literal(v, _) if time::timestamp_nanos(v) == Some(0))
 }
 
 /// The function and column of an aggregate a rollup can store (`None` column for `count(*)`).
@@ -194,7 +174,7 @@ pub(crate) fn rollup_frame(
     };
     let mut df = ctx.read_table(Arc::new(TimelakeProvider::data(raw.clone())))?;
     if let Some(ranges) = ranges {
-        let at = |t: i64| Expr::Literal(ScalarValue::TimestampMicrosecond(Some(t), tz.clone()), None);
+        let at = |t: i64| time::timestamp_literal(t, tz.clone());
         let predicate = ranges
             .iter()
             .map(|r| ident(&time).gt_eq(at(r.start)).and(ident(&time).lt(at(r.end))))
@@ -202,10 +182,8 @@ pub(crate) fn rollup_frame(
             .unwrap_or_else(|| lit(false));
         df = df.filter(predicate)?;
     }
-    let stride =
-        ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 0, def.width.saturating_mul(1000))));
     let bucket = datafusion::functions::datetime::date_bin()
-        .call(vec![Expr::Literal(stride, None), ident(&time)])
+        .call(vec![lit(time::micros_interval(def.width)), ident(&time)])
         .alias(&def.bucket);
     let group = std::iter::once(bucket).chain(def.keys.iter().map(ident)).collect();
     let aggregates =
@@ -245,7 +223,7 @@ pub(crate) fn definition_of(plan: &LogicalPlan, name: &crate::TableName) -> Resu
         }
     }
     let Some(width) = width else { return Err(fail(&format!("group by time_bucket(<width>, {time})"))) };
-    if width % SECOND_MICROS != 0 {
+    if width % time::SECOND_MICROS != 0 {
         return Err(fail("the bucket width must be whole seconds"));
     }
 

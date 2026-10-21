@@ -471,7 +471,7 @@ mod tests {
         let day =
             timelake_format::rows::sort_and_split(&t.schema(), t.contract(), &[rows(&[(T0, 1, 0.0)])], 0).unwrap()[0].0;
         let t = append_unsorted(&t, day, rows(&[(T0 + 5, 2, 1.0), (T0, 1, 2.0), (T0 + 5, 2, 3.0)])).await;
-        let later = T0 + 2 * 86_400_000_000;
+        let later = T0 + 2 * crate::query::time::DAY_MICROS;
         t.append(&[rows(&[(later, 1, 4.0)])], crate::append::AppendOptions::default()).await.unwrap();
         let session = crate::Session::new(lake.clone());
         let sql = "SELECT device, value FROM iot.r ORDER BY time, device";

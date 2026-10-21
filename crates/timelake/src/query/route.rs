@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
+use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, ScalarValue, TableReference};
@@ -33,6 +33,7 @@ use super::provider::{Kind, TimelakeProvider, scan_under};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
 use super::settings::{READ_DEDUP, ROLLUP_ROUTING, VERSION_CHECK_INTERVAL};
 use super::signal::{Method, Output, state_type, udaf};
+use super::time;
 use crate::TableName;
 use crate::lake::Lake;
 use crate::rollup::{Definition, Ranges, Reflects, RollupFunction, changed, floor, in_history, layout};
@@ -261,7 +262,7 @@ impl RollupRewrite {
             .map(|(i, e)| e.alias(format!("__part{i}")))
             .collect();
         for width in widths {
-            let stride = lit(ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 0, width * 1_000))));
+            let stride = lit(time::micros_interval(width));
             let bucket = date_bin().call(vec![stride, time.clone()]).alias("__bucket");
             let groups = a.group_expr.iter().cloned().chain([bucket]).collect();
             let inner = Aggregate::try_new(input.clone(), groups, inputs.clone())?;
@@ -634,13 +635,7 @@ fn clamp(v: i128) -> i64 {
 /// A timestamp constant in nanoseconds.
 fn nanos(e: &Expr) -> Option<i128> {
     let Expr::Literal(v, _) = e else { return None };
-    Some(match v {
-        ScalarValue::TimestampSecond(Some(t), _) => i128::from(*t) * 1_000_000_000,
-        ScalarValue::TimestampMillisecond(Some(t), _) => i128::from(*t) * 1_000_000,
-        ScalarValue::TimestampMicrosecond(Some(t), _) => i128::from(*t) * 1_000,
-        ScalarValue::TimestampNanosecond(Some(t), _) => i128::from(*t),
-        _ => return None,
-    })
+    time::timestamp_nanos(v)
 }
 
 /// The buckets entirely within `[from, to]` (inclusive µs), as a half-open range of bucket starts.
@@ -667,8 +662,7 @@ fn rewrite(
         _ => return Ok(None),
     };
     let time = Expr::Column(Column::new(qualifier.cloned(), &q.time));
-    let at =
-        |t: i64, tz: &Option<Arc<str>>| Expr::Literal(ScalarValue::TimestampMicrosecond(Some(t), tz.clone()), None);
+    let at = |t: i64, tz: &Option<Arc<str>>| time::timestamp_literal(t, tz.clone());
     // Open ends (no time filter on that side) need no bound.
     let (open_from, open_to) = (FAR.saturating_neg(), FAR);
     let outside = from_rollup
@@ -749,8 +743,7 @@ fn rollup_rows(
     from_rollup: &[Range<i64>],
     tz: Option<&Arc<str>>,
 ) -> DfResult<LogicalPlanBuilder> {
-    let at =
-        |t: i64, tz: &Option<Arc<str>>| Expr::Literal(ScalarValue::TimestampMicrosecond(Some(t), tz.clone()), None);
+    let at = |t: i64, tz: &Option<Arc<str>>| time::timestamp_literal(t, tz.clone());
     let (open_from, open_to) = (FAR.saturating_neg(), FAR);
     let rollup = &candidate.rollup;
     let reference = TableReference::partial(rollup.name().namespace(), rollup.name().name());

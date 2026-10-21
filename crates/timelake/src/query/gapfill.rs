@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, Float64Array, TimestampMicrosecondArray, UInt32Array};
 use arrow::compute::{cast, take};
-use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Schema, TimeUnit};
+use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Schema};
 use datafusion::catalog::{MemTable, TableFunctionArgs, TableFunctionImpl, TableProvider};
 use datafusion::common::{ScalarValue, exec_err, plan_err};
 use datafusion::error::{DataFusionError, Result as DfResult};
@@ -27,7 +27,7 @@ use datafusion::logical_expr::{PartitionEvaluator, Signature, TypeSignature, Vol
 use datafusion::optimizer::simplify_expressions::ExprSimplifier;
 use datafusion::prelude::Expr;
 
-use super::rollup::day_time_micros;
+use super::time;
 
 /// The most buckets `time_buckets` makes: a guard against a width typed in the wrong unit.
 const MAX_BUCKETS: i64 = 10_000_000;
@@ -86,23 +86,18 @@ fn buckets(width: i64, start: i64, end: i64, origin: i64) -> Option<(i64, i64)> 
 
 fn micros_of_interval(v: &ScalarValue) -> DfResult<i64> {
     let micros = match v {
-        ScalarValue::IntervalMonthDayNano(Some(i)) if i.months == 0 => day_time_micros(i.days, i.nanoseconds / 1_000),
-        ScalarValue::IntervalDayTime(Some(i)) => day_time_micros(i.days, i64::from(i.milliseconds) * 1_000),
         ScalarValue::DurationMicrosecond(Some(d)) => Some(*d),
-        other => return plan_err!("time_buckets needs a fixed width (seconds to days, not months), not {other}"),
+        other => time::interval_micros(other),
     };
-    micros.ok_or_else(|| DataFusionError::Plan(format!("time_buckets: the width {v} overflows the microseconds")))
+    micros.ok_or_else(|| {
+        DataFusionError::Plan(format!("time_buckets needs a fixed width in microsecond range (not months), not {v}"))
+    })
 }
 
 fn micros_of_time(v: &ScalarValue) -> DfResult<i64> {
-    let micros = match v {
-        ScalarValue::TimestampSecond(Some(t), _) => t.checked_mul(1_000_000),
-        ScalarValue::TimestampMillisecond(Some(t), _) => t.checked_mul(1_000),
-        ScalarValue::TimestampMicrosecond(Some(t), _) => Some(*t),
-        ScalarValue::TimestampNanosecond(Some(t), _) => Some(t.div_euclid(1_000)),
-        other => return plan_err!("time_buckets needs timestamps, not {other}"),
-    };
-    micros.ok_or_else(|| DataFusionError::Plan(format!("time_buckets: {v} is outside the microsecond range")))
+    time::timestamp_micros(v).ok_or_else(|| {
+        DataFusionError::Plan(format!("time_buckets needs timestamps in the microsecond range, not {v}"))
+    })
 }
 
 /// How a gap is filled.
@@ -202,9 +197,7 @@ fn interpolate(x: &ArrayRef, t: Option<&ArrayRef>) -> DfResult<ArrayRef> {
     let t: Vec<f64> = match t {
         Some(t) => {
             let t = match t.data_type() {
-                DataType::Timestamp(_, _) => {
-                    cast(&cast(t, &DataType::Timestamp(TimeUnit::Microsecond, None))?, &DataType::Int64)?
-                }
+                DataType::Timestamp(_, _) => time::micros_array(t)?,
                 _ => t.clone(),
             };
             let t = cast(&t, &DataType::Float64)?;

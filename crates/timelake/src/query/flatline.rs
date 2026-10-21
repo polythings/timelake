@@ -28,6 +28,7 @@ use datafusion::physical_expr::expressions::Literal;
 
 use super::gaps::threshold_of_literal;
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
+use super::time;
 
 /// What a flatline aggregate returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -315,8 +316,7 @@ impl RunAggregate for Flatlines {
         let finished = joined.iter().map(|r| r.map(|r| r.finished(self.threshold)));
         Ok(match self.output {
             Output::Count => Arc::new(Int64Array::from_iter(finished.map(|r| r.map(|(n, _)| n)))),
-            #[expect(clippy::cast_precision_loss, reason = "microseconds of a flatline fit a double")]
-            Output::Seconds => Arc::new(Float64Array::from_iter(finished.map(|r| r.map(|(_, us)| us as f64 / 1e6)))),
+            Output::Seconds => Arc::new(Float64Array::from_iter(finished.map(|r| r.map(|(_, us)| time::seconds(us))))),
         })
     }
 }
@@ -433,7 +433,7 @@ mod tests {
             }
             let (count, micros) = reference(&readings);
             assert_eq!(merged[0].evaluate().unwrap(), ScalarValue::Int64(Some(count)), "case {case}: {readings:?}");
-            assert_eq!(merged[1].evaluate().unwrap(), ScalarValue::Float64(Some(micros as f64 / 1e6)), "case {case}");
+            assert_eq!(merged[1].evaluate().unwrap(), ScalarValue::Float64(Some(time::seconds(micros))), "case {case}");
         }
     }
 

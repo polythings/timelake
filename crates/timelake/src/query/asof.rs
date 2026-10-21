@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, UInt32Array};
 use arrow::compute::{cast, concat_batches, take};
-use arrow::datatypes::{DataType, Int64Type, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, Int64Type, SchemaRef};
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
 use datafusion::common::config::ConfigOptions;
@@ -57,6 +57,8 @@ use datafusion::sql::sqlparser::ast::{
 use datafusion::sql::sqlparser::tokenizer::Location;
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::OnceCell;
+
+use super::time;
 
 /// The marker the rewritten join condition wraps the match condition in.
 const MARKER: &str = "timelake_asof";
@@ -538,13 +540,11 @@ impl DisplayAs for AsofJoinExec {
 /// A time column as microseconds (timestamps) or as whole numbers.
 fn times(a: &ArrayRef) -> DfResult<ArrayRef> {
     let a = match a.data_type() {
-        DataType::Timestamp(..) | DataType::Date32 | DataType::Date64 => {
-            cast(a, &DataType::Timestamp(TimeUnit::Microsecond, None))?
-        }
-        t if t.is_integer() => Arc::clone(a),
+        DataType::Timestamp(..) | DataType::Date32 | DataType::Date64 => time::micros_array(a)?,
+        t if t.is_integer() => cast(a, &DataType::Int64)?,
         t => return plan_err!("ASOF JOIN compares times or whole numbers, not {t}"),
     };
-    Ok(cast(&a, &DataType::Int64)?)
+    Ok(a)
 }
 
 fn evaluate(exprs: &[Arc<dyn PhysicalExpr>], batch: &RecordBatch) -> DfResult<Vec<ArrayRef>> {
