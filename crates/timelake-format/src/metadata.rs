@@ -5,12 +5,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use serde_json::{Map, Value, json};
 
 use crate::error::{WriteError, WriteResult};
 use crate::iceberg::PartitionField;
-use crate::rows::UTC;
 use crate::{Chunk, Contract, IcebergType, property, summary};
 
 /// The Arrow metadata key carrying an Iceberg field id, as Parquet and iceberg-rust use it.
@@ -452,24 +451,5 @@ fn data_type(t: &Value) -> WriteResult<DataType> {
 }
 
 fn primitive(t: &IcebergType) -> WriteResult<DataType> {
-    use IcebergType as T;
-    Ok(match t {
-        T::Boolean => DataType::Boolean,
-        T::Int => DataType::Int32,
-        T::Long => DataType::Int64,
-        T::Float => DataType::Float32,
-        T::Double => DataType::Float64,
-        T::Decimal { precision, scale } => DataType::Decimal128(*precision, *scale),
-        T::Date => DataType::Date32,
-        T::Time => DataType::Time64(TimeUnit::Microsecond),
-        T::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
-        T::Timestamptz => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        T::TimestampNs => DataType::Timestamp(TimeUnit::Nanosecond, None),
-        T::TimestamptzNs => DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC.into())),
-        T::String => DataType::Utf8,
-        T::Uuid => DataType::FixedSizeBinary(16),
-        T::Fixed(length) => DataType::FixedSizeBinary(i32::try_from(*length).map_err(|_| corrupt("fixed length"))?),
-        T::Binary => DataType::LargeBinary,
-        T::Nested | T::Other(_) => return Err(corrupt(&format!("unknown type {t}"))),
-    })
+    t.arrow_type().ok_or_else(|| corrupt(&format!("unknown type {t}")))
 }

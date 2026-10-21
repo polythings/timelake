@@ -66,6 +66,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   of readings once. All four, hourly for 1,000 tags over 30 days: 3.5 → 2.1 s.
 - TypeScript client: `table.info()` has the table's `ingestTimeColumn` and `retention` (`90d`), as the CLI and Python
   give them.
+- `timelake create --schema` takes every Iceberg primitive type by name, such as `long`, `decimal(10,2)`,
+  `timestamptz_ns` and `uuid`, besides the SQL spellings it took (`bigint`, `text`, `bool`).
 
 ### Fixed
 

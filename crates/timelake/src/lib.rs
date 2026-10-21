@@ -59,7 +59,9 @@ pub use table::{LiveEntry, Table};
 pub use timelake_format::contract::{Chunk, Contract, TableOptions};
 pub use timelake_format::name::{DEFAULT_NAMESPACE, TableName};
 pub use timelake_format::rows::{align_batch, latest_per_series};
-pub use timelake_format::{bounds, contract, format_duration, parse_duration, property, settings, summary};
+pub use timelake_format::{
+    IcebergType, bounds, contract, format_duration, parse_duration, property, settings, summary,
+};
 pub use upgrade::{DEFAULT_KEEP_SNAPSHOTS, UpgradeOptions, UpgradeReport, UpgradeStep};
 pub use write::file_partition;
 pub use {arrow, datafusion};

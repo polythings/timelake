@@ -27,7 +27,7 @@ timelake create iot.devices --schema "device_id:string,site:string,installed:dat
 | Flag | Meaning |
 | --- | --- |
 | `--from <file>` | Take the schema from this Parquet or CSV file. |
-| `--schema <name:type,…>` | Schema inline. Types: int (int32), bigint (long, int64), double (float64), float (float32, real), string (text, varchar), bool, date, timestamp, timestamptz. |
+| `--schema <name:type,…>` | Schema inline, with [Iceberg's type names](https://iceberg.apache.org/spec/#primitive-types): boolean, int, long, float, double, decimal(P,S), date, time, timestamp, timestamptz, timestamp_ns, timestamptz_ns, string, uuid, fixed[L], binary. Also bool, integer (int32), bigint (int64), real (float32), float64, text and varchar. |
 | `--time-column <col>` | The time column; makes this a time-series table. |
 | `--series-key <a,b>` | Columns that identify a series, comma-separated. |
 | `--chunk <hour\|day\|month>` | Time partition size (default day). Also accepts 1h, 1d, 24h, 1 month. |

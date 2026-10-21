@@ -114,6 +114,36 @@ impl IcebergType {
     }
 }
 
+#[cfg(feature = "write")]
+impl IcebergType {
+    /// The Arrow type Timelake reads and writes columns of this type as: `timestamptz` in UTC, `binary` as
+    /// `LargeBinary`, `uuid` as 16 fixed bytes. `None` for nested and unknown types, and fixed lengths Arrow can't hold.
+    pub fn arrow_type(&self) -> Option<arrow_schema::DataType> {
+        use arrow_schema::{DataType, TimeUnit};
+
+        let utc = || Some(crate::rows::UTC.into());
+        Some(match self {
+            Self::Boolean => DataType::Boolean,
+            Self::Int => DataType::Int32,
+            Self::Long => DataType::Int64,
+            Self::Float => DataType::Float32,
+            Self::Double => DataType::Float64,
+            Self::Decimal { precision, scale } => DataType::Decimal128(*precision, *scale),
+            Self::Date => DataType::Date32,
+            Self::Time => DataType::Time64(TimeUnit::Microsecond),
+            Self::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+            Self::Timestamptz => DataType::Timestamp(TimeUnit::Microsecond, utc()),
+            Self::TimestampNs => DataType::Timestamp(TimeUnit::Nanosecond, None),
+            Self::TimestamptzNs => DataType::Timestamp(TimeUnit::Nanosecond, utc()),
+            Self::String => DataType::Utf8,
+            Self::Uuid => DataType::FixedSizeBinary(16),
+            Self::Fixed(length) => DataType::FixedSizeBinary(i32::try_from(*length).ok()?),
+            Self::Binary => DataType::LargeBinary,
+            Self::Nested | Self::Other(_) => return None,
+        })
+    }
+}
+
 /// As [`IcebergType::named`].
 impl FromStr for IcebergType {
     type Err = Infallible;

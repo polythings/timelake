@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use timelake::arrow::array::RecordBatch;
-use timelake::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use timelake::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use timelake::datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use timelake::datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOptions, SessionContext};
-use timelake::{AppendOptions, AppendResult, Chunk, Table, TableOptions};
+use timelake::{AppendOptions, AppendResult, Chunk, IcebergType, Table, TableOptions};
 
 use crate::info::megabytes;
 use crate::{parse_duration, parse_kv};
@@ -21,7 +21,8 @@ pub(crate) struct TableDef {
     /// Take the schema from this Parquet or CSV file.
     #[arg(long)]
     from: Option<String>,
-    /// Schema as "name:type,…" (types: int, bigint, double, float, string, bool, date, timestamp, timestamptz).
+    /// Schema as "name:type,…": Iceberg types (int, long, double, string, boolean, date, timestamptz, decimal(10,2), …),
+    /// also as bigint, text, bool.
     #[arg(long)]
     schema: Option<String>,
     /// The time column (makes this a time-series table).
@@ -86,26 +87,48 @@ pub(crate) struct LoadArgs {
 }
 
 fn parse_schema(s: &str) -> Result<SchemaRef> {
-    let fields = s
-        .split(',')
+    let fields = columns(s)
+        .into_iter()
         .map(|f| {
             let (name, ty) = f.trim().split_once(':').with_context(|| format!("expected name:type, got {f:?}"))?;
-            let dt = match ty.trim().to_ascii_lowercase().as_str() {
-                "int" | "int32" | "integer" => DataType::Int32,
-                "bigint" | "long" | "int64" => DataType::Int64,
-                "double" | "float64" => DataType::Float64,
-                "float" | "float32" | "real" => DataType::Float32,
-                "string" | "text" | "varchar" => DataType::Utf8,
-                "bool" | "boolean" => DataType::Boolean,
-                "date" => DataType::Date32,
-                "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
-                "timestamptz" => DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
-                other => bail!("unknown type {other:?}"),
-            };
-            Ok(Field::new(name.trim(), dt, true))
+            Ok(Field::new(name.trim(), column_type(ty)?, true))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// `s` split at the commas outside parentheses, so `decimal(10,2)` stays whole.
+fn columns(s: &str) -> Vec<&str> {
+    let (mut parts, mut start, mut depth) = (vec![], 0, 0_usize);
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// The Arrow type of a `--schema` type: an Iceberg type name (`long`, `timestamptz`, `decimal(10,2)`), or one of a few
+/// SQL spellings of them, in any case.
+fn column_type(name: &str) -> Result<DataType> {
+    let name = name.trim().to_ascii_lowercase();
+    let ty = match name.as_str() {
+        "integer" | "int32" => IcebergType::Int,
+        "bigint" | "int64" => IcebergType::Long,
+        "real" | "float32" => IcebergType::Float,
+        "float64" => IcebergType::Double,
+        "text" | "varchar" => IcebergType::String,
+        "bool" => IcebergType::Boolean,
+        other => IcebergType::named(other),
+    };
+    ty.arrow_type().with_context(|| format!("unknown type {name:?}"))
 }
 
 fn has_extension(path: &Path, extension: &str) -> bool {
@@ -269,18 +292,19 @@ mod tests {
 
     #[test]
     fn parses_schema_strings() {
-        let s = parse_schema("time:timestamptz, device:INT, value:double").unwrap();
+        let s = parse_schema("time:timestamptz, device:INT, value:double, price:decimal(10, 2), n:bigint").unwrap();
         let types: Vec<_> = s.fields().iter().map(|f| (f.name().as_str(), f.data_type().clone())).collect();
-        assert_eq!(
-            types,
-            [
-                ("time", DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))),
-                ("device", DataType::Int32),
-                ("value", DataType::Float64),
-            ]
-        );
+        let expected = [
+            ("time", IcebergType::Timestamptz),
+            ("device", IcebergType::Int),
+            ("value", IcebergType::Double),
+            ("price", IcebergType::Decimal { precision: 10, scale: 2 }),
+            ("n", IcebergType::Long),
+        ];
+        assert_eq!(types, expected.map(|(name, ty)| (name, ty.arrow_type().unwrap())));
         assert!(parse_schema("time").is_err());
         assert!(parse_schema("x:decimal").is_err());
+        assert!(parse_schema("x:list").is_err());
     }
 
     #[test]
