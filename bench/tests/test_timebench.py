@@ -174,4 +174,5 @@ def test_tsbs_iot_answers_hold_where_lag_and_lead_give_defaults_at_the_edges(que
     con.execute("CREATE TABLE diagnostics AS SELECT tags_id, time, status::INT AS status FROM readings")
     sql = apply_dialect(dict(raw_queries("tsbs_iot"))[query], DUCKDB)
     assert clickhouse_edges(sql) != sql
-    assert con.execute(clickhouse_edges(sql)).fetchall() == con.execute(sql).fetchall()
+    # The queries have no ORDER BY, as in TSBS: rows come back in any order.
+    assert sorted(con.execute(clickhouse_edges(sql)).fetchall()) == sorted(con.execute(sql).fetchall())
