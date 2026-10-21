@@ -164,6 +164,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   now also knows the tables the process has created or read.
 - A latest-row query written `WHERE code = 1 AND rn = 1` (another column compared with 1 before `rn`) read every row
   instead of the last-value index.
+- With `SET timelake.filter_pushdown = false`, a newest-first query (`ORDER BY time DESC LIMIT k`, or the newest `k`
+  buckets) with a filter that file statistics can't rule out returned too few rows, often none: it stopped after the
+  newest partition's unfiltered rows. Each partition's rows are now filtered before they count.
 
 ### Changed
 

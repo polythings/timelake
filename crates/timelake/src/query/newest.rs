@@ -28,10 +28,12 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, LogicalPlan, Sort};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::utils::conjunction_opt;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::filter_pushdown::{
-    ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
+    ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -233,13 +235,30 @@ impl ExecutionPlan for NewestFirstExec {
         FilterDescription::from_children(parent_filters, &self.children())
     }
 
+    // A scan that doesn't filter its rows (filter pushdown off) gets the filters it didn't take
+    // right above it, below this node: the rows counted toward k must be the ones the query keeps.
     fn handle_child_pushdown_result(
         &self,
         _phase: FilterPushdownPhase,
         child_pushdown_result: ChildPushdownResult,
         _config: &ConfigOptions,
     ) -> DfResult<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
-        Ok(FilterPushdownPropagation::if_all(child_pushdown_result))
+        let filters = &child_pushdown_result.parent_filters;
+        let mut waves = self.waves.clone();
+        let mut changed = false;
+        for (i, (scan, _)) in waves.iter_mut().enumerate() {
+            let missed = filters.iter().filter(|f| matches!(f.child_results.get(i), Some(PushedDown::No)));
+            if let Some(predicate) = conjunction_opt(missed.map(|f| Arc::clone(&f.filter))) {
+                *scan = Arc::new(FilterExec::try_new(predicate, Arc::clone(scan))?);
+                changed = true;
+            }
+        }
+        let propagation = FilterPushdownPropagation::with_parent_pushdown_result(vec![PushedDown::Yes; filters.len()]);
+        Ok(if changed {
+            propagation.with_updated_node(Arc::new(Self::with_waves(waves, self.newest, self.time)))
+        } else {
+            propagation
+        })
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DfResult<SendableRecordBatchStream> {
@@ -390,6 +409,38 @@ mod tests {
     use crate::{AppendOptions, Session};
 
     const MINUTE: i64 = 60_000_000;
+
+    /// With filter pushdown off, the scan returns rows the filter above drops: newest-first must
+    /// count only the rows that pass it, or it stops before reaching the older partitions that hold
+    /// them.
+    #[tokio::test]
+    async fn newest_first_counts_filtered_rows_without_pushdown() {
+        let (lake, _) = faulty_lake();
+        let t = lake.create_table("iot.r", &crate::testing::schema(), opts()).await.unwrap();
+        // Three days, one reading a minute; values grow with time, so `value % 10000 < 100` (which file
+        // statistics can't prune with) is in the first day.
+        let rows: Vec<(i64, i32, f64)> = (0..3 * 24 * 60).map(|i| (T0 + i * MINUTE, 1, i as f64)).collect();
+        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        for sql in [
+            "SELECT time, value FROM iot.r WHERE value % 10000 < 100 ORDER BY time DESC LIMIT 10",
+            "SELECT time_bucket(INTERVAL '10 minutes', time) AS b, count(*) AS n FROM iot.r WHERE value % 10000 < 100
+             GROUP BY 1 ORDER BY 1 DESC LIMIT 3",
+        ] {
+            let mut answers = vec![];
+            for on in ["true", "false"] {
+                let s = Session::new(lake.clone());
+                s.sql("SET timelake.filter_pushdown = false").await.unwrap();
+                s.sql(&format!("SET timelake.newest_first = {on}")).await.unwrap();
+                let plan = s.sql(&format!("EXPLAIN {sql}")).await.unwrap().collect().await.unwrap();
+                let plan = arrow::util::pretty::pretty_format_batches(&plan).unwrap().to_string();
+                assert_eq!(plan.contains("NewestFirstExec"), on == "true", "{sql}\n{plan}");
+                let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
+                answers.push(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string());
+            }
+            assert_eq!(answers[0], answers[1], "{sql}");
+            assert!(answers[0].contains("| 99.0  |") || answers[0].contains("| 10 |"), "{sql}\n{}", answers[0]);
+        }
+    }
 
     /// Planning a newest-first scan reads the partitions' footers at once, not one after another.
     #[tokio::test(start_paused = true)]
