@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::config::ConfigOptions;
@@ -38,7 +39,7 @@ use super::time;
 use crate::TableName;
 use crate::lake::Lake;
 use crate::rollup::{Definition, Ranges, Reflects, RollupFunction, changed, floor, in_history, layout};
-use crate::table::Table;
+use crate::table::{LiveEntry, Table};
 
 /// Stands for no bound: beyond any time a table holds (about ±73,000 years), with room to add a
 /// bucket width without overflow.
@@ -109,35 +110,49 @@ async fn routes_for(
         raw = lake.load(name).await.ok()?;
     }
     let files = raw.files().await.ok()?;
-    let rows = |files: &[crate::table::LiveEntry]| files.iter().map(|f| f.data_file.record_count()).sum::<u64>();
-    let raw_rows = rows(&files);
-    let now = chrono::Utc::now().timestamp_micros();
-    let mut rollups = vec![];
-    for rollup_name in &raw.contract().rollups {
-        let Ok(rollup_name) = rollup_name.parse::<TableName>() else { continue };
-        if Some(&rollup_name) == except {
-            continue;
-        }
-        let Ok(rollup) = lake.table_recent(&rollup_name, interval, PLANNING_REUSE).await else { continue };
-        let Ok(def) = Definition::of(&rollup) else { continue };
-        let Some(reflects) = Reflects::of(&rollup) else { continue };
-        if def.source != *name || !in_history(&raw, &rollup) {
-            continue;
-        }
-        let Some(dirty) = changed(&raw, &files, reflects.sequence(), def.width) else { continue };
-        // Retention drops whole partitions that end before now minus the retention: buckets from
-        // there on are complete in a table (and were when the rollup computed them).
-        let kept = |t: &Table| t.contract().retention_cutoff(now);
-        let from = [kept(&raw), kept(&rollup)].into_iter().flatten().max();
-        let from = from.map_or(-FAR, |t| ceil(t, def.width));
-        let clean = complement(&dirty, from, FAR);
-        let Ok(rollup_files) = rollup.files().await else { continue };
-        let raw_rows_per_row = raw_rows / rows(&rollup_files).max(1);
-        rollups.push(Candidate { def, rollup: rollup.without_check(), clean, raw_rows_per_row });
-    }
+    let (raw, files) = (&raw, files.as_slice());
+    let names = raw.contract().rollups.iter().filter_map(|n| n.parse::<TableName>().ok());
+    let candidates = names
+        .filter(|n| Some(n) != except)
+        .map(|rollup| async move { candidate(lake, raw, files, &rollup, interval).await });
+    let mut rollups: Vec<Candidate> = futures::future::join_all(candidates).await.into_iter().flatten().collect();
     // The widest first: fewer rows to read and merge for the queries it answers.
     rollups.sort_by_key(|c| std::cmp::Reverse(c.def.width));
     (!rollups.is_empty()).then_some(Routes { version: raw.version(), rollups })
+}
+
+/// Rollup `name` of `raw` (whose live files are `files`) as a candidate for its queries: what it
+/// has right of this version of `raw`. `None` if it isn't a rollup of `raw` or reflects a version
+/// `raw` went back from.
+async fn candidate(
+    lake: &Lake,
+    raw: &Table,
+    files: &[LiveEntry],
+    name: &TableName,
+    interval: Option<Duration>,
+) -> Option<Candidate> {
+    let rollup = lake.table_recent(name, interval, PLANNING_REUSE).await.ok()?;
+    let def = Definition::of(&rollup).ok()?;
+    let reflects = Reflects::of(&rollup)?;
+    if def.source != *raw.name() || !in_history(raw, &rollup) {
+        return None;
+    }
+    let dirty = changed(raw, files, reflects.sequence(), def.width)?;
+    // Retention drops whole partitions that end before now minus the retention: buckets from
+    // there on are complete in a table (and were when the rollup computed them).
+    let now = chrono::Utc::now().timestamp_micros();
+    let kept = |t: &Table| t.contract().retention_cutoff(now);
+    let from = [kept(raw), kept(&rollup)].into_iter().flatten().max();
+    let from = from.map_or(-FAR, |t| ceil(t, def.width));
+    let clean = complement(&dirty, from, FAR);
+    let rollup_files = rollup.files().await.ok()?;
+    let raw_rows_per_row = rows(files) / rows(&rollup_files).max(1);
+    Some(Candidate { def, rollup: rollup.without_check(), clean, raw_rows_per_row })
+}
+
+/// The rows of `files`.
+fn rows(files: &[LiveEntry]) -> u64 {
+    files.iter().map(|f| f.data_file.record_count()).sum()
 }
 
 /// Whether queries on `table` may be routed with session `options`: routing is on for it, and it

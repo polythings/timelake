@@ -260,6 +260,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Maintenance in the engine merges several groups of files at once (up to 8, reading at most 24 files together, the
+  most one merge reads), instead of one partition after another. Rollup refreshes load their rollups, and queries
+  look up the rollups they may route to, at once rather than one by one.
 - Maintenance in the engine (`timelake maintain`, Python's `maintain()`, Rust) merges at most 24 files at once, as the
   TypeScript writer does, so a merge's memory stays bounded. A partition with more files to merge is merged in parts,
   the report's `more_to_compact` says so, and the next run finishes it (`timelake upgrade` runs until it is done). A

@@ -14,13 +14,13 @@ use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use timelake_format::layout::metadata_prefix;
 use timelake_format::maintain::{
-    CompactionPlan, Missing, PlanFile, SnapshotTime, compaction_plan as plan, expired_snapshots, pruned_metadata,
-    retention_plan,
+    CompactionPlan, MAX_MERGE_INPUTS, Missing, PlanFile, SnapshotTime, compaction_plan as plan, expired_snapshots,
+    pruned_metadata, retention_plan,
 };
 pub use timelake_format::maintain::{MaintainOptions, MaintainReport, MaintainSteps};
 use timelake_format::merge::{Merge, MergeOptions, Step};
 use timelake_format::rows::{align_batch, stable_sort};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::commit::{Change, commit, publish_retrying};
 use crate::error::{Error, Result};
@@ -38,6 +38,8 @@ const READ_BATCH_ROWS: usize = 4 * 1024;
 const READ_AHEAD: usize = 1;
 /// Rows per batch the merge hands the writer.
 const MERGED_BATCH_ROWS: usize = 64 * 1024;
+/// Groups compaction rewrites at once, at most: each holds the row group it is writing.
+const CONCURRENT_REWRITES: usize = 4;
 /// How many manifest lists or manifests expiry reads at once.
 const CONCURRENT_METADATA_READS: usize = 16;
 
@@ -93,24 +95,42 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
     report.partitions_compacted += plan.groups.iter().map(|(p, _)| p).collect::<HashSet<_>>().len();
     let props = writer_properties(table)?;
     let uploads = Uploads::default();
+    // Groups are rewritten at once while they read no more files together than one merge may: the
+    // memory one merge is allowed. Every rewrite runs to its end, so one that fails doesn't drop the
+    // others halfway with their uploads open. The futures are created up front so the returned
+    // future stays `Send`.
+    let inputs = Semaphore::new(MAX_MERGE_INPUTS);
+    let rewrites: Vec<_> = plan
+        .groups
+        .iter()
+        .map(|(partition, files)| {
+            let (inputs, writer) = (&inputs, PartitionWriter::new(table, *partition, &props, &uploads));
+            async move {
+                let n = u32::try_from(files.len().min(MAX_MERGE_INPUTS)).unwrap_or(u32::MAX);
+                let _permits = inputs.acquire_many(n).await.expect("the semaphore is never closed");
+                rewrite_partition(table, files, writer).await
+            }
+        })
+        .collect();
+    let results: Vec<Result<Rewritten>> = futures::stream::iter(rewrites).buffered(CONCURRENT_REWRITES).collect().await;
     let (mut removed, mut added, mut sequence_numbers) = (vec![], vec![], vec![]);
     let mut outcome = Ok(());
-    for (partition, files) in plan.groups {
+    for ((_, files), result) in plan.groups.into_iter().zip(results) {
+        let rewritten = match result {
+            Ok(rewritten) => rewritten,
+            Err(e) => {
+                outcome = outcome.and(Err(e));
+                continue;
+            }
+        };
+        let bytes = files.iter().map(|e| e.data_file.file_size_in_bytes()).sum();
+        report.merged(files.len(), bytes, rewritten.rows_in, rewritten.rows_out);
         // The files are a run in commit order (older first, so "later row wins" means "latest write
         // wins"); the new files take the run's place in that order.
         let sequence_number = files.iter().map(|f| f.sequence_number).max().unwrap_or_default();
-        let writer = PartitionWriter::new(table, partition, &props, &uploads);
-        match rewrite_partition(table, &files, writer, report).await {
-            Ok(written) => {
-                sequence_numbers.extend(std::iter::repeat_n(sequence_number, written.len()));
-                added.extend(written);
-                removed.extend(files);
-            }
-            Err(e) => {
-                outcome = Err(e);
-                break;
-            }
-        }
+        sequence_numbers.extend(std::iter::repeat_n(sequence_number, rewritten.files.len()));
+        added.extend(rewritten.files);
+        removed.extend(files);
     }
     report.files_written += added.len();
     let paths: Vec<String> = added.iter().map(|f| f.file_path().to_string()).collect();
@@ -131,12 +151,7 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
 /// Merges the rows of `files` (oldest commit first), files of one partition, into sorted,
 /// deduplicated new files that `writer` writes, as streams (spec 19): memory is a few batches per
 /// file and the row group being written, however large the partition.
-async fn rewrite_partition(
-    table: &Table,
-    files: &[LiveEntry],
-    mut writer: PartitionWriter<'_>,
-    report: &mut MaintainReport,
-) -> Result<Vec<DataFile>> {
+async fn rewrite_partition(table: &Table, files: &[LiveEntry], mut writer: PartitionWriter<'_>) -> Result<Rewritten> {
     let contract = table.contract();
     let order = contract.write_order();
     let unique = if contract.dedup { contract.sort_columns().len() } else { 0 };
@@ -169,8 +184,14 @@ async fn rewrite_partition(
         return Err(e);
     }
     let (rows_in, rows_out, _) = merge.stats();
-    report.merged(files.len(), files.iter().map(|e| e.data_file.file_size_in_bytes()).sum(), rows_in, rows_out);
-    writer.finish().await
+    Ok(Rewritten { files: writer.finish().await?, rows_in, rows_out })
+}
+
+/// What rewriting a group of files wrote, and the rows it merged.
+struct Rewritten {
+    files: Vec<DataFile>,
+    rows_in: u64,
+    rows_out: u64,
 }
 
 /// What compaction merges: groups of live files, each a run in commit order

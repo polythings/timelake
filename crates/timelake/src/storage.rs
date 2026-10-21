@@ -688,15 +688,19 @@ impl Uploads {
         results.into_iter().collect()
     }
 
-    /// Drops everything queued, aborting multipart uploads already started.
+    /// Drops everything queued, aborting multipart uploads already started, concurrently.
     pub(crate) async fn abort(&self) {
         let pending = std::mem::take(&mut *self.queue());
-        for p in pending {
-            if let Pending::Writer(mut w) = p {
+        let writers = pending.into_iter().filter_map(|p| match p {
+            Pending::Writer(w) => Some(w),
+            Pending::Put { .. } => None,
+        });
+        futures::stream::iter(writers)
+            .for_each_concurrent(UPLOAD_CONCURRENCY, |mut w| async move {
                 // An upload that can't be aborted is left to the bucket's lifecycle rules.
                 let _ = w.abort().await;
-            }
-        }
+            })
+            .await;
     }
 }
 

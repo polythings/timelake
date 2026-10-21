@@ -206,15 +206,15 @@ pub(crate) async fn refresh_all(raw: &Table, mode: RollupRefresh) -> Result<Refr
         return Ok(done);
     }
     // Narrowest buckets first: a wider rollup is then computed from an up-to-date narrower one.
-    let mut rollups = vec![];
-    for name in &raw.contract().rollups {
-        let Ok(name) = name.parse::<TableName>() else { continue };
+    let names = raw.contract().rollups.iter().filter_map(|n| n.parse::<TableName>().ok());
+    let widths = names.map(|name| async move {
         let width = match raw.lake().table(&name).await {
             Ok(t) => Definition::of(&t).map_or(i64::MAX, |d| d.width),
             Err(_) => i64::MAX,
         };
-        rollups.push((width, name));
-    }
+        (width, name)
+    });
+    let mut rollups = futures::future::join_all(widths).await;
     rollups.sort();
     for (_, name) in rollups {
         if mode == RollupRefresh::Due && !due(raw, &name) {
