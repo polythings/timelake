@@ -25,7 +25,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from timebench import BENCH, DATA, RESULTS, TPCH_TABLES, TSBS_TABLES
 from timebench.queries import (
@@ -306,20 +306,37 @@ def engine_version(engine: str) -> str:
     return importlib.import_module(module).__version__
 
 
-def query_command(cfg: RunConfig, name: str, sql: str) -> tuple[list[str], str | None]:
-    """The command that runs one query in a fresh process, and its stdin."""
+class QueryCommand(NamedTuple):
+    """A process that runs one query: its command line, stdin, and environment (``None``: this one's)."""
+
+    cmd: list[str]
+    stdin: str | None = None
+    env: dict[str, str] | None = None
+
+
+def query_command(cfg: RunConfig, name: str, sql: str) -> QueryCommand:
+    """The process that runs one query.
+
+    The Rust reader reaches S3 through ``PROXY`` as its ``AWS_*`` variables say, and counts requests on its admin
+    address.
+    """
     if cfg.engine in RUST_ENGINES:
         cmd = [str(RUST_BIN), "--suite", cfg.suite, "--runs", str(cfg.runs), "--storage", cfg.storage]
-        return [*cmd, "--layout", cfg.layout, *RUST_ENGINES[cfg.engine]], sql
+        cmd += ["--layout", cfg.layout, *RUST_ENGINES[cfg.engine]]
+        if not cfg.s3:
+            return QueryCommand(cmd, sql)
+        cmd += ["--bucket", BUCKET, "--proxy-admin", str(PROXY.admin)]
+        return QueryCommand(cmd, sql, {**os.environ, **PROXY.environment()})
     common = ["--suite", cfg.suite, "--engine", cfg.engine, "--runs", str(cfg.runs), "--storage", cfg.storage]
-    return [sys.executable, __file__, *common, "--layout", cfg.layout, "--worker", name], None
+    return QueryCommand([sys.executable, __file__, *common, "--layout", cfg.layout, "--worker", name])
 
 
-def measure(cmd: list[str], stdin: str | None, timeout: int) -> QueryRecord:
+def measure(command: QueryCommand, timeout: int) -> QueryRecord:
     """Runs one query process; its measurements plus ``status`` (and ``error``)."""
+    cmd, stdin, env = command
     try:
         # A failing query is a result to record, not a reason to stop: no check=True.
-        proc = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(cmd, input=stdin, env=env, capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         return {"status": "timeout"}
     if proc.returncode == 0:
@@ -356,7 +373,7 @@ def drive(cfg: RunConfig, queries: list[str], timeout: int, out: Path) -> None:
         if cfg.direct_bucket:
             record["direct"] = True
         before = PROXY.stats() if cfg.counted else None
-        record.update(measure(*query_command(cfg, name, sqls[name]), timeout))
+        record.update(measure(query_command(cfg, name, sqls[name]), timeout))
         # Requests by kind over all runs, for engines that don't report them per run (Rust, Timelake CLI).
         if before and "kinds" in before and (total := request_kinds(before, PROXY.stats())):
             record["kinds_total"] = total

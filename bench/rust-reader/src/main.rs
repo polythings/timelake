@@ -2,7 +2,11 @@
 //! tools/s3proxy). Invoked by run.py (engines `datafusion-rs*`): reads one query from stdin, runs it
 //! 1 + `--runs` times in this process, and prints one JSON line in run.py's worker format.
 //!
-//!   bench-reader --suite tsbs_iot --format vortex --storage s3 --layout sorted --runs 3 < query.sql
+//! S3 is reached as the `AWS_*` environment variables say (run.py sets them from timebench's `PROXY`), and the
+//! proxy's request counters are read from `--proxy-admin`, as the `timelake` CLI's benchmark mode does.
+//!
+//!   bench-reader --suite tsbs_iot --format vortex --storage s3 --layout sorted --runs 3 \
+//!     --bucket bench --proxy-admin localhost:59101 < query.sql
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -21,8 +25,6 @@ use vortex_datafusion::VortexFormatFactory;
 
 const TPCH: [&str; 8] = ["lineitem", "orders", "customer", "part", "partsupp", "supplier", "nation", "region"];
 const TSBS: [&str; 3] = ["tags", "readings", "diagnostics"];
-const S3_ENDPOINT: &str = "http://localhost:59100";
-const PROXY_ADMIN: &str = "127.0.0.1:59101";
 
 struct Args {
     suite: String,
@@ -32,6 +34,10 @@ struct Args {
     runs: usize,
     pushdown: bool,
     data: PathBuf,
+    /// The S3 bucket (`--storage s3`).
+    bucket: Option<String>,
+    /// The counting proxy's admin address, `host:port`: request and byte counts per run.
+    proxy_admin: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -56,12 +62,17 @@ fn parse_args() -> Result<Args> {
         runs: get("runs", "3").parse()?,
         pushdown: flags.contains(&"pushdown"),
         data: PathBuf::from(get("data", concat!(env!("CARGO_MANIFEST_DIR"), "/../data"))).canonicalize()?,
+        bucket: kv.get("bucket").cloned(),
+        proxy_admin: kv.get("proxy-admin").cloned(),
     })
 }
 
 /// Table name -> location, following the layout of bench/data (and s3://bench).
 fn tables(a: &Args) -> Vec<(String, String)> {
-    let base = if a.storage == "s3" { "s3://bench".to_string() } else { a.data.display().to_string() };
+    let base = match &a.bucket {
+        Some(bucket) if a.storage == "s3" => format!("s3://{bucket}"),
+        _ => a.data.display().to_string(),
+    };
     let vortex = a.format == "vortex";
     let tsbs_dir = match (vortex, a.layout.as_str()) {
         (false, "sorted") => "parquet-sorted",
@@ -107,15 +118,9 @@ async fn setup(a: &Args) -> Result<SessionContext> {
     let ctx = SessionContext::new_with_state(builder.build());
 
     if a.storage == "s3" {
-        let store = AmazonS3Builder::new()
-            .with_bucket_name("bench")
-            .with_region("us-east-1")
-            .with_access_key_id("benchkey")
-            .with_secret_access_key("benchsecret123")
-            .with_endpoint(S3_ENDPOINT)
-            .with_allow_http(true)
-            .build()?;
-        ctx.register_object_store(&url::Url::parse("s3://bench")?, Arc::new(store));
+        let bucket = a.bucket.as_deref().context("--storage s3 needs --bucket")?;
+        let store = AmazonS3Builder::from_env().with_bucket_name(bucket).build()?;
+        ctx.register_object_store(&url::Url::parse(&format!("s3://{bucket}"))?, Arc::new(store));
     }
 
     let stored_as = if a.format == "vortex" { "VORTEX" } else { "PARQUET" };
@@ -138,9 +143,9 @@ async fn setup(a: &Args) -> Result<SessionContext> {
     Ok(ctx)
 }
 
-/// (requests, bytes) counters from tools/s3proxy.
-fn proxy_stats() -> Result<(i64, i64)> {
-    let mut s = TcpStream::connect(PROXY_ADMIN)?;
+/// (requests, bytes) counters from tools/s3proxy's admin address.
+fn proxy_stats(admin: &str) -> Result<(i64, i64)> {
+    let mut s = TcpStream::connect(admin)?;
     s.write_all(b"GET /stats HTTP/1.0\r\nHost: localhost\r\n\r\n")?;
     let mut resp = String::new();
     s.read_to_string(&mut resp)?;
@@ -161,19 +166,19 @@ async fn main() -> Result<()> {
 
     let (mut times, mut requests, mut bytes, mut rows) = (vec![], vec![], vec![], 0usize);
     for _ in 0..=a.runs {
-        let before = if a.storage == "s3" { Some(proxy_stats()?) } else { None };
+        let before = a.proxy_admin.as_deref().map(proxy_stats).transpose()?;
         let t = Instant::now();
         let batches = ctx.sql(&sql).await?.collect().await?;
         times.push(t.elapsed().as_secs_f64());
         rows = batches.iter().map(|b| b.num_rows()).sum();
-        if let Some((r0, b0)) = before {
-            let (r1, b1) = proxy_stats()?;
+        if let (Some((r0, b0)), Some(admin)) = (before, a.proxy_admin.as_deref()) {
+            let (r1, b1) = proxy_stats(admin)?;
             requests.push(r1 - r0);
             bytes.push(b1 - b0);
         }
     }
     let mut out = serde_json::json!({ "times": times, "rows": rows, "setup_s": setup_s });
-    if a.storage == "s3" {
+    if a.proxy_admin.is_some() {
         out["requests"] = requests.into();
         out["bytes"] = bytes.into();
     }

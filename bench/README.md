@@ -164,7 +164,9 @@ uv run python run.py --suite tsbs_iot --engine duckdb --layout sorted --tag myta
 | `clickbench` | ClickBench `hits`, 10% subset (as in `infra/remote.sh`, `data`) | 43 official queries, downloaded at a pinned commit (`queries/README.md`) |
 
 Engines: `duckdb`, `datafusion`, `polars` (Python packages), `duckdb-iceberg`, `duckdb-vortex`, and `datafusion-rs*`
-(DataFusion in Rust, `rust-reader/`). Results: `results/<suite>.<tag>.jsonl`.
+(DataFusion in Rust, `rust-reader/`). Results: `results/<suite>.<tag>.jsonl`. The proxy's addresses are defined once,
+as `PROXY` in `timebench/s3.py`: `run.py` hands them to the Rust reader as `AWS_*` variables and `--proxy-admin`, as
+`timebench` does for the `timelake` CLI.
 
 The v0 scripts (`v0/ingest.py`, `run_queries.sh`, `summarize.py`, `tsdb_cloud.py`) that produced `V0.md`, `S3.md`
 and `TIMESCALE.md` were replaced by `timebench` on 2026-10-15; recover them with
