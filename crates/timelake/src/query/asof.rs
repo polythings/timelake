@@ -484,26 +484,16 @@ impl ExtensionPlanner for AsofPlanner {
         let on_right = |e: &Expr| planner.create_physical_expr(e, right_logical.schema(), session_state);
         let left_keys = join.on.iter().map(|(l, _)| on_left(l)).collect::<DfResult<_>>()?;
         let right_keys = join.on.iter().map(|(_, r)| on_right(r)).collect::<DfResult<_>>()?;
-        let schema: SchemaRef = Arc::new(join.schema.as_arrow().clone());
-        let properties = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&schema)),
-            left.output_partitioning().clone(),
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        );
-        Ok(Some(Arc::new(AsofJoinExec {
-            left: Arc::clone(left),
-            right: Arc::clone(right),
+        let matching = Matching {
             left_keys,
             right_keys,
             left_time: on_left(&join.left_time)?,
             right_time: on_right(&join.right_time)?,
             direction: join.direction,
             keep_unmatched: join.keep_unmatched,
-            schema,
-            properties: Arc::new(properties),
-            built: Arc::new(OnceCell::new()),
-        })))
+        };
+        let schema: SchemaRef = Arc::new(join.schema.as_arrow().clone());
+        Ok(Some(Arc::new(AsofJoinExec::new(Arc::clone(left), Arc::clone(right), matching, schema))))
     }
 }
 
@@ -515,17 +505,24 @@ struct Built {
     converter: RowConverter,
 }
 
-/// Runs an ASOF join: collects the right input once, then streams the left input's partitions.
-#[derive(Debug)]
-pub(super) struct AsofJoinExec {
-    left: Arc<dyn ExecutionPlan>,
-    right: Arc<dyn ExecutionPlan>,
+/// What an ASOF join matches rows on, over its inputs' columns.
+#[derive(Clone, Debug)]
+struct Matching {
     left_keys: Vec<Arc<dyn PhysicalExpr>>,
     right_keys: Vec<Arc<dyn PhysicalExpr>>,
     left_time: Arc<dyn PhysicalExpr>,
     right_time: Arc<dyn PhysicalExpr>,
     direction: Direction,
     keep_unmatched: bool,
+}
+
+/// Runs an ASOF join: collects the right input once, then streams the left input's partitions.
+/// Clones share the collected right input.
+#[derive(Clone, Debug)]
+pub(super) struct AsofJoinExec {
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    matching: Matching,
     schema: SchemaRef,
     properties: Arc<PlanProperties>,
     built: Arc<OnceCell<Arc<Built>>>,
@@ -533,7 +530,7 @@ pub(super) struct AsofJoinExec {
 
 impl DisplayAs for AsofJoinExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "AsofJoinExec: {} keys, {:?}", self.left_keys.len(), self.direction)
+        write!(f, "AsofJoinExec: {} keys, {:?}", self.matching.left_keys.len(), self.matching.direction)
     }
 }
 
@@ -552,14 +549,24 @@ fn evaluate(exprs: &[Arc<dyn PhysicalExpr>], batch: &RecordBatch) -> DfResult<Ve
 }
 
 impl AsofJoinExec {
+    fn new(left: Arc<dyn ExecutionPlan>, right: Arc<dyn ExecutionPlan>, matching: Matching, schema: SchemaRef) -> Self {
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            left.output_partitioning().clone(),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        );
+        Self { left, right, matching, schema, properties: Arc::new(properties), built: Arc::new(OnceCell::new()) }
+    }
+
     async fn build(&self, context: Arc<TaskContext>) -> DfResult<Arc<Built>> {
         let batches = collect(Arc::clone(&self.right), context).await?;
         let rows = concat_batches(&self.right.schema(), &batches)?;
-        let keys = evaluate(&self.right_keys, &rows)?;
+        let keys = evaluate(&self.matching.right_keys, &rows)?;
         let fields = keys.iter().map(|k| SortField::new(k.data_type().clone())).collect();
         let converter = RowConverter::new(fields)?;
         let encoded = converter.convert_columns(&keys)?;
-        let time = times(&self.right_time.evaluate(&rows)?.into_array(rows.num_rows())?)?;
+        let time = times(&self.matching.right_time.evaluate(&rows)?.into_array(rows.num_rows())?)?;
         let time = time.as_primitive::<Int64Type>();
         let mut by_key: HashMap<Box<[u8]>, Vec<(i64, u32)>> = HashMap::new();
         for i in 0..rows.num_rows() {
@@ -577,9 +584,9 @@ impl AsofJoinExec {
 
     /// The left batch with its matches' right columns.
     fn probe(&self, built: &Built, batch: &RecordBatch) -> DfResult<RecordBatch> {
-        let keys = evaluate(&self.left_keys, batch)?;
+        let keys = evaluate(&self.matching.left_keys, batch)?;
         let encoded = built.converter.convert_columns(&keys)?;
-        let time = times(&self.left_time.evaluate(batch)?.into_array(batch.num_rows())?)?;
+        let time = times(&self.matching.left_time.evaluate(batch)?.into_array(batch.num_rows())?)?;
         let time = time.as_primitive::<Int64Type>();
         let matches: UInt32Array = (0..batch.num_rows())
             .map(|i| {
@@ -588,7 +595,7 @@ impl AsofJoinExec {
                 }
                 let list = built.by_key.get(encoded.row(i).as_ref())?;
                 let t = time.value(i);
-                let at = match self.direction {
+                let at = match self.matching.direction {
                     Direction::Before { inclusive } => {
                         let end = list.partition_point(|&(r, _)| if inclusive { r <= t } else { r < t });
                         end.checked_sub(1)?
@@ -604,7 +611,7 @@ impl AsofJoinExec {
         let right = built.rows.columns().iter().map(|c| take(c, &matches, None)).collect::<Result<Vec<_>, _>>()?;
         let columns = batch.columns().iter().cloned().chain(right).collect();
         let joined = RecordBatch::try_new(Arc::clone(&self.schema), columns)?;
-        if self.keep_unmatched {
+        if self.matching.keep_unmatched {
             return Ok(joined);
         }
         let matched = arrow::compute::is_not_null(&matches)?;
@@ -632,43 +639,12 @@ impl ExecutionPlan for AsofJoinExec {
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> DfResult<Arc<dyn ExecutionPlan>> {
         let [left, right] = <[Arc<dyn ExecutionPlan>; 2]>::try_from(children)
             .map_err(|_| datafusion::error::DataFusionError::Internal("an ASOF join has two inputs".into()))?;
-        let properties = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&self.schema)),
-            left.output_partitioning().clone(),
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        );
-        Ok(Arc::new(Self {
-            left,
-            right,
-            left_keys: self.left_keys.clone(),
-            right_keys: self.right_keys.clone(),
-            left_time: Arc::clone(&self.left_time),
-            right_time: Arc::clone(&self.right_time),
-            direction: self.direction,
-            keep_unmatched: self.keep_unmatched,
-            schema: Arc::clone(&self.schema),
-            properties: Arc::new(properties),
-            built: Arc::new(OnceCell::new()),
-        }))
+        Ok(Arc::new(Self::new(left, right, self.matching.clone(), Arc::clone(&self.schema))))
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DfResult<SendableRecordBatchStream> {
         let left = self.left.execute(partition, Arc::clone(&context))?;
-        let this = Self {
-            left: Arc::clone(&self.left),
-            right: Arc::clone(&self.right),
-            left_keys: self.left_keys.clone(),
-            right_keys: self.right_keys.clone(),
-            left_time: Arc::clone(&self.left_time),
-            right_time: Arc::clone(&self.right_time),
-            direction: self.direction,
-            keep_unmatched: self.keep_unmatched,
-            schema: Arc::clone(&self.schema),
-            properties: Arc::clone(&self.properties),
-            built: Arc::clone(&self.built),
-        };
-        let this = Arc::new(this);
+        let this = Arc::new(self.clone());
         let stream = futures::stream::once(async move {
             let built = Arc::clone(this.built.get_or_try_init(|| this.build(context)).await?);
             Ok::<_, datafusion::error::DataFusionError>(left.map(move |batch| this.probe(&built, &batch?)))

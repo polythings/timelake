@@ -170,15 +170,15 @@ impl PartitionEvaluator for FillEvaluator {
     fn evaluate_all(&mut self, values: &[ArrayRef], num_rows: usize) -> DfResult<ArrayRef> {
         let Some(x) = values.first() else { return exec_err!("a fill takes a column") };
         match self.0 {
-            Fill::Forward => Ok(take(x, &fill_indices(x, (0..num_rows).collect::<Vec<_>>()), None)?),
-            Fill::Backward => Ok(take(x, &fill_indices(x, (0..num_rows).rev().collect::<Vec<_>>()), None)?),
+            Fill::Forward => Ok(take(x, &fill_indices(x, 0..num_rows), None)?),
+            Fill::Backward => Ok(take(x, &fill_indices(x, (0..num_rows).rev()), None)?),
             Fill::Interpolate => interpolate(x, values.get(1)),
         }
     }
 }
 
 /// For each row, in `order`, the index of the last row so far whose value isn't null.
-fn fill_indices(x: &ArrayRef, order: Vec<usize>) -> UInt32Array {
+fn fill_indices(x: &ArrayRef, order: impl IntoIterator<Item = usize>) -> UInt32Array {
     let mut indices = vec![None; x.len()];
     let mut last = None;
     for i in order {

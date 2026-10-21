@@ -213,14 +213,19 @@ struct Query<'a> {
 }
 
 impl RollupRewrite {
+    /// The routes prepared for this version of `table`, if any.
+    fn routes_of(&self, table: &Table) -> Option<Arc<Routes>> {
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(table.name()).cloned();
+        routes.filter(|r| r.version == table.version())
+    }
+
     fn route(&self, a: &Aggregate, options: &ConfigOptions) -> DfResult<Option<LogicalPlan>> {
         let Some(q) = read_query(a) else { return Ok(None) };
         if !routable(&q.table, options) {
             return Ok(None);
         }
         let Some(width) = q.width else { return self.route_range(a, &q, options) };
-        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(q.table.name()).cloned();
-        let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
+        let Some(routes) = self.routes_of(&q.table) else { return Ok(None) };
         for candidate in &routes.rollups {
             let Some(answer) = candidate.answers(&q) else { continue };
             let Some(full) = full_buckets(q.from, q.to, width) else { return Ok(None) };
@@ -238,9 +243,7 @@ impl RollupRewrite {
         }
         Ok(None)
     }
-}
 
-impl RollupRewrite {
     /// A query over a time range without a bucket: its aggregates in mergeable form (states,
     /// sums and counts) per bucket of a rollup's width, routed as a bucketed query, then merged by
     /// the query's keys. The widest rollup that answers goes first.
@@ -248,8 +251,7 @@ impl RollupRewrite {
         let Some(parts) = a.aggr_expr.iter().map(|e| partial(e, &q.time)).collect::<Option<Vec<_>>>() else {
             return Ok(None);
         };
-        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(q.table.name()).cloned();
-        let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
+        let Some(routes) = self.routes_of(&q.table) else { return Ok(None) };
         let mut widths: Vec<i64> = routes.rollups.iter().map(|c| c.def.width).collect();
         widths.sort_unstable_by(|x, y| y.cmp(x));
         widths.dedup();
