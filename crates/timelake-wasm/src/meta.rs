@@ -1,10 +1,9 @@
-//! Iceberg table metadata (`vN.metadata.json`) and manifests (Avro), read without iceberg-rust so
-//! the reader stays small and compiles to WebAssembly.
+//! Iceberg table metadata (`vN.metadata.json`), and manifests read by lakebed (`lakebed_iceberg`),
+//! without iceberg-rust, so the reader stays small and compiles to WebAssembly.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use apache_avro::types::Value;
 use parquet::basic::TimeUnit;
 use serde::{Deserialize, Serialize};
 use timelake_format::bounds::{Bound, decode};
@@ -160,55 +159,7 @@ impl TableMeta {
     }
 }
 
-// --- Avro manifests -------------------------------------------------------------------------------
-
-/// Iceberg's integer codes in manifests.
-mod code {
-    /// `manifest_file.content` and `data_file.content`: data rather than deletes.
-    pub(super) const CONTENT_DATA: i64 = 0;
-    /// `manifest_file.content`: delete files.
-    pub(super) const CONTENT_DELETES: i64 = 1;
-    /// `manifest_entry.status`: the file was removed in this snapshot.
-    pub(super) const STATUS_DELETED: i64 = 2;
-}
-
-/// Optional Avro fields are unions with null; this returns the value inside.
-fn strip_union(v: &Value) -> &Value {
-    match v {
-        Value::Union(_, inner) => strip_union(inner),
-        other => other,
-    }
-}
-
-fn field<'a>(record: &'a Value, name: &str) -> Option<&'a Value> {
-    match strip_union(record) {
-        Value::Record(fields) => fields.iter().find(|(n, _)| n == name).map(|(_, v)| strip_union(v)),
-        _ => None,
-    }
-}
-
-fn as_i64(v: Option<&Value>) -> Option<i64> {
-    match v? {
-        Value::Long(x) => Some(*x),
-        Value::Int(x) => Some(i64::from(*x)),
-        _ => None,
-    }
-}
-
-fn as_u64(v: Option<&Value>) -> u64 {
-    as_i64(v).and_then(|x| u64::try_from(x).ok()).unwrap_or(0)
-}
-
-fn as_string(v: Option<&Value>) -> Option<String> {
-    match v? {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn read_avro(bytes: &[u8]) -> Result<Vec<Value>> {
-    Ok(apache_avro::Reader::new(bytes)?.collect::<Result<_, _>>()?)
-}
+// --- manifests ----------------------------------------------------------------------------------
 
 /// What a manifest tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -231,24 +182,19 @@ pub struct ManifestRef {
 
 /// Parses a manifest list (`snap-….avro`).
 pub fn parse_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
-    read_avro(bytes)?
-        .iter()
-        .map(|r| {
-            let content = match as_i64(field(r, "content")).unwrap_or(code::CONTENT_DATA) {
-                code::CONTENT_DATA => ManifestContent::Data,
-                code::CONTENT_DELETES => ManifestContent::Deletes,
-                other => return Err(Error::invalid(format!("unknown manifest content {other}"))),
-            };
-            Ok(ManifestRef {
-                path: as_string(field(r, "manifest_path"))
-                    .ok_or_else(|| Error::invalid("manifest list entry without path"))?,
-                length: as_i64(field(r, "manifest_length")).unwrap_or(0),
-                content,
-                sequence_number: as_i64(field(r, "sequence_number")).unwrap_or(0),
-                added_snapshot_id: as_i64(field(r, "added_snapshot_id")).unwrap_or(0),
-            })
+    Ok(lakebed_iceberg::read_manifest_list(bytes)?
+        .into_iter()
+        .map(|m| ManifestRef {
+            content: match m.content {
+                lakebed_iceberg::ManifestContent::Data => ManifestContent::Data,
+                lakebed_iceberg::ManifestContent::Deletes => ManifestContent::Deletes,
+            },
+            path: m.path,
+            length: m.length,
+            sequence_number: m.sequence_number,
+            added_snapshot_id: m.added_snapshot_id,
         })
-        .collect()
+        .collect())
 }
 
 /// A live data file with its column bounds, keyed by column name.
@@ -265,14 +211,11 @@ pub struct DataFile {
 
 /// Column bounds by name; nanosecond timestamps in microseconds, as queries give times (rounded
 /// outward, so the bounds still contain every row).
-fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashMap<String, Bound> {
-    let Some(Value::Array(entries)) = v else { return HashMap::new() };
-    entries
+fn bounds(by_field_id: &BTreeMap<i32, Vec<u8>>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashMap<String, Bound> {
+    by_field_id
         .iter()
-        .filter_map(|e| {
-            let id = i32::try_from(as_i64(field(e, "key"))?).ok()?;
-            let Some(Value::Bytes(b)) = field(e, "value") else { return None };
-            let f = by_id.get(&id)?;
+        .filter_map(|(id, b)| {
+            let f = by_id.get(id)?;
             let bound = match (f.ty.as_str(), decode(&f.ty, b)?) {
                 ("timestamp_ns" | "timestamptz_ns", Bound::Int(x)) => {
                     Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper))
@@ -287,34 +230,20 @@ fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashM
 /// Parses a data manifest; returns its live (not deleted) data files.
 pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
     let by_id: HashMap<i32, &Field> = schema.iter().map(|f| (f.id, f)).collect();
-    let mut out = vec![];
-    for entry in read_avro(bytes)? {
-        if as_i64(field(&entry, "status")) == Some(code::STATUS_DELETED) {
-            continue;
-        }
-        let Some(df) = field(&entry, "data_file") else { continue };
+    let entries = lakebed_iceberg::read_manifest(&lakebed_iceberg::ManifestFile::default(), bytes)?;
+    Ok(entries
+        .into_iter()
         // Timelake writes no delete files.
-        if as_i64(field(df, "content")).unwrap_or(code::CONTENT_DATA) != code::CONTENT_DATA {
-            continue;
-        }
-        let partition = match field(df, "partition") {
-            Some(Value::Record(fs)) => fs.first().and_then(|(_, v)| match strip_union(v) {
-                // A day partition is an Avro `date`.
-                Value::Date(days) => Some(i64::from(*days)),
-                other => as_i64(Some(other)),
-            }),
-            _ => None,
-        };
-        out.push(DataFile {
-            path: as_string(field(df, "file_path")).ok_or_else(|| Error::invalid("data file without path"))?,
-            size: as_u64(field(df, "file_size_in_bytes")),
-            records: as_u64(field(df, "record_count")),
-            partition,
-            lower: bounds(field(df, "lower_bounds"), &by_id, false),
-            upper: bounds(field(df, "upper_bounds"), &by_id, true),
-        });
-    }
-    Ok(out)
+        .filter(|e| e.status != lakebed_iceberg::Status::Deleted && e.file.content == lakebed_iceberg::Content::Data)
+        .map(|e| DataFile {
+            path: e.file.path.clone(),
+            size: e.file.file_size,
+            records: e.file.record_count,
+            partition: e.file.partition.first().and_then(|v| v.as_ref()?.as_i64()),
+            lower: bounds(&e.file.lower_bounds, &by_id, false),
+            upper: bounds(&e.file.upper_bounds, &by_id, true),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -328,15 +257,9 @@ mod tests {
             Field { id: 2, name: "us".into(), ty: "timestamptz".into(), required: true },
         ];
         let by_id = fields.iter().map(|f| (f.id, f)).collect();
-        let entry = |id: i32, x: i64| {
-            Value::Record(vec![
-                ("key".into(), Value::Int(id)),
-                ("value".into(), Value::Bytes(x.to_le_bytes().to_vec())),
-            ])
-        };
-        let v = Value::Array(vec![entry(1, 1_500_001), entry(2, 1_500_001)]);
-        let lower = bounds(Some(&v), &by_id, false);
-        let upper = bounds(Some(&v), &by_id, true);
+        let v = BTreeMap::from([(1, 1_500_001i64.to_le_bytes().to_vec()), (2, 1_500_001i64.to_le_bytes().to_vec())]);
+        let lower = bounds(&v, &by_id, false);
+        let upper = bounds(&v, &by_id, true);
         assert_eq!((&lower["ns"], &upper["ns"]), (&Bound::Int(1500), &Bound::Int(1501)));
         assert_eq!((&lower["us"], &upper["us"]), (&Bound::Int(1_500_001), &Bound::Int(1_500_001)));
     }

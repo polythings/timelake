@@ -155,15 +155,15 @@ fn data_file(table: &Table, uri: String, partition: Option<i32>, stats: &FileSta
         .file_format(DataFileFormat::Parquet)
         .partition(partition_struct(partition))
         .partition_spec_id(metadata.default_partition_spec().spec_id())
-        .record_count(stats.record_count)
-        .file_size_in_bytes(stats.file_size)
-        .column_sizes(counts(&stats.column_sizes))
-        .value_counts(counts(&stats.value_counts))
-        .null_value_counts(counts(&stats.null_counts))
-        .nan_value_counts(counts(&stats.nan_counts))
-        .lower_bounds(datums(&stats.lower_bounds)?)
-        .upper_bounds(datums(&stats.upper_bounds)?)
-        .split_offsets(Some(stats.split_offsets.clone()));
+        .record_count(stats.iceberg.record_count)
+        .file_size_in_bytes(stats.iceberg.file_size)
+        .column_sizes(counts(&stats.iceberg.column_sizes))
+        .value_counts(counts(&stats.iceberg.value_counts))
+        .null_value_counts(counts(&stats.iceberg.null_counts))
+        .nan_value_counts(counts(&stats.iceberg.nan_counts))
+        .lower_bounds(datums(&stats.iceberg.lower_bounds)?)
+        .upper_bounds(datums(&stats.iceberg.upper_bounds)?)
+        .split_offsets(Some(stats.iceberg.split_offsets.clone()));
     if !table.contract().sort_columns().is_empty() {
         let id = i32::try_from(metadata.default_sort_order_id())
             .map_err(|_| Error::invalid("sort order id out of range"))?;
@@ -229,111 +229,6 @@ mod tests {
         assert_eq!(ours.split_offsets(), theirs.split_offsets());
         let storage = lake.storage();
         assert_eq!(storage.read(ours.file_path()).await.unwrap(), storage.read(theirs.file_path()).await.unwrap());
-    }
-}
-
-/// The shared Iceberg writer (`timelake_format::iceberg`, used by the WASM writer) and iceberg-rust
-/// read each other's manifests and manifest lists.
-#[cfg(test)]
-mod shared_iceberg_tests {
-    use std::sync::Arc;
-
-    use iceberg::spec::{FormatVersion, Manifest, ManifestList, ManifestStatus};
-    use timelake_format::iceberg::{self as shared, ManifestContext, ManifestWrite, Status};
-
-    use super::file_partition;
-    use crate::append::AppendOptions;
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
-
-    fn no_maintenance() -> AppendOptions {
-        AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-    }
-
-    fn shared_file(f: &iceberg::spec::DataFile) -> shared::DataFile {
-        let bytes = |m: &std::collections::HashMap<i32, iceberg::spec::Datum>| {
-            m.iter().map(|(k, d)| (*k, d.to_bytes().unwrap().to_vec())).collect()
-        };
-        let counts = |m: &std::collections::HashMap<i32, u64>| m.iter().map(|(k, v)| (*k, *v)).collect();
-        shared::DataFile {
-            path: f.file_path().to_string(),
-            partition: file_partition(f),
-            record_count: f.record_count(),
-            file_size: f.file_size_in_bytes(),
-            column_sizes: counts(f.column_sizes()),
-            value_counts: counts(f.value_counts()),
-            null_counts: counts(f.null_value_counts()),
-            nan_counts: counts(f.nan_value_counts()),
-            lower_bounds: bytes(f.lower_bounds()),
-            upper_bounds: bytes(f.upper_bounds()),
-            split_offsets: f.split_offsets().map(<[i64]>::to_vec),
-            sort_order_id: f.sort_order_id(),
-        }
-    }
-
-    #[tokio::test]
-    async fn shared_manifests_match_iceberg_rust() {
-        let (lake, _store) = faulty_lake();
-        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-        let (t, _) = t.append(&[batch(&[(T0, 1, 1.0), (T0 + 1, 2, f64::NAN)])], no_maintenance()).await.unwrap();
-        let (t, _) = t.append(&[batch(&[(T0 + 86_400_000_000, 1, 2.0)])], no_maintenance()).await.unwrap();
-        let storage = lake.storage();
-
-        // The shared reader reads what iceberg-rust wrote.
-        let list_uri = t.metadata().current_snapshot().unwrap().manifest_list().to_string();
-        let list = shared::read_manifest_list(&storage.read(&list_uri).await.unwrap()).unwrap();
-        let mut ours = vec![];
-        for m in &list {
-            ours.extend(shared::read_manifest(m, &storage.read(&m.path).await.unwrap()).unwrap());
-        }
-        let mut theirs = t.files().await.unwrap();
-        theirs.sort_by(|a, b| a.data_file.file_path().cmp(b.data_file.file_path()));
-        ours.sort_by(|a, b| a.file.path.cmp(&b.file.path));
-        assert_eq!(ours.len(), theirs.len());
-        for (o, e) in ours.iter().zip(&theirs) {
-            assert_eq!(*o.file, shared_file(&e.data_file));
-            assert_eq!(
-                (o.snapshot_id, o.sequence_number, o.file_sequence_number),
-                (e.snapshot_id, e.sequence_number, e.file_sequence_number)
-            );
-        }
-
-        // iceberg-rust reads what the shared writer writes.
-        let metadata = t.metadata();
-        let schema_json = serde_json::to_string(metadata.current_schema().as_ref()).unwrap();
-        let spec = metadata.default_partition_spec();
-        let spec_json = serde_json::to_string(spec.fields()).unwrap();
-        let ctx = ManifestContext {
-            schema_json: &schema_json,
-            schema_id: metadata.current_schema_id(),
-            spec_fields_json: &spec_json,
-            spec_id: spec.spec_id(),
-            partition: Some(("time_day", t.contract().chunk.unwrap())),
-        };
-        let writes: Vec<ManifestWrite> = ours
-            .iter()
-            .enumerate()
-            .map(|(i, e)| ManifestWrite {
-                status: if i == 0 { Status::Added } else { Status::Existing },
-                snapshot_id: Some(42),
-                sequence_number: (i > 0).then_some(e.sequence_number),
-                file_sequence_number: (i > 0).then_some(e.file_sequence_number),
-                file: Arc::clone(&e.file),
-            })
-            .collect();
-        let bytes = shared::write_manifest(&ctx, &writes).unwrap();
-        let (entries, _) = Manifest::parse_avro(&bytes).unwrap().into_parts();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].status, ManifestStatus::Added);
-        assert_eq!(entries[1].status, ManifestStatus::Existing);
-        for (entry, theirs) in entries.iter().zip(&theirs) {
-            assert_eq!(entry.data_file, *theirs.data_file);
-        }
-        let mf = shared::manifest_file("memory://test/m.avro", &bytes, spec.spec_id(), 42, &writes, true);
-        let list = shared::write_manifest_list(&[mf], 42, Some(7), 9).unwrap();
-        let parsed = ManifestList::parse_with_version(&list, FormatVersion::V2).unwrap();
-        let parsed = &parsed.entries()[0];
-        assert_eq!((parsed.sequence_number, parsed.added_snapshot_id, parsed.added_files_count), (9, 42, Some(1)));
-        assert_eq!(parsed.existing_rows_count, Some(theirs[1].data_file.record_count()));
     }
 }
 

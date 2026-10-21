@@ -13,11 +13,12 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use common::{DAY, T0, batch, opts, rows, scalar_i64, schema, temp_lake};
+use lakebed_core::{Error as HostError, Result as HostResult};
 use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};
-use timelake_format::error::{WriteError, WriteResult};
-use timelake_format::host::{Host, Listed, Upload};
+use timelake_format::error::WriteError;
+use timelake_format::host::{Host, Listed, Upload, WriteHost};
 use timelake_format::table::TableState;
 
 /// The shared writer's host over the engine's storage.
@@ -47,17 +48,17 @@ const METADATA_LANDS_THEN_FAILS: usize = 2;
 const METADATA_FAILS: usize = 3;
 
 impl Faults {
-    fn data_write(&self, uri: &str) -> WriteResult<()> {
+    fn data_write(&self, uri: &str) -> HostResult<()> {
         let n = if uri.contains("/data/") { self.data_writes.fetch_add(1, Ordering::Relaxed) + 1 } else { 0 };
         if n > 0 && n == self.fail_data_write.load(Ordering::Relaxed) {
-            return Err(WriteError::Store(format!("injected failure writing {uri}")));
+            return Err(HostError::Store(format!("injected failure writing {uri}")));
         }
         Ok(())
     }
 }
 
-fn err(e: &timelake::Error) -> WriteError {
-    WriteError::Store(e.to_string())
+fn err(e: &timelake::Error) -> HostError {
+    HostError::Store(e.to_string())
 }
 
 struct BufferedUpload<'a> {
@@ -68,12 +69,12 @@ struct BufferedUpload<'a> {
 }
 
 impl Upload for BufferedUpload<'_> {
-    fn put_part(&mut self, bytes: Vec<u8>) -> impl Future<Output = WriteResult<()>> {
+    fn put_part(&mut self, bytes: Vec<u8>) -> impl Future<Output = HostResult<()>> {
         self.bytes.extend(bytes);
         std::future::ready(self.faults.data_write(&self.uri))
     }
 
-    async fn complete(self) -> WriteResult<()> {
+    async fn complete(self) -> HostResult<()> {
         self.faults.open_uploads.fetch_sub(1, Ordering::Relaxed);
         self.storage.write(&self.uri, Bytes::from(self.bytes)).await.map_err(|e| err(&e))
     }
@@ -92,48 +93,48 @@ impl EngineHost {
 impl Host for &EngineHost {
     type Upload = BufferedUpload<'static>;
 
-    async fn get(&self, uri: &str) -> WriteResult<Option<Vec<u8>>> {
+    async fn get(&self, uri: &str) -> HostResult<Option<Vec<u8>>> {
         Ok(self.storage.read_opt(uri).await.map_err(|e| err(&e))?.map(|b| b.to_vec()))
     }
 
-    async fn get_range(&self, uri: &str, start: u64, len: u64) -> WriteResult<Vec<u8>> {
+    async fn get_range(&self, uri: &str, start: u64, len: u64) -> HostResult<Vec<u8>> {
         let bytes = self.storage.read(uri).await.map_err(|e| err(&e))?;
         let start = usize::try_from(start).unwrap().min(bytes.len());
         let end = start.saturating_add(usize::try_from(len).unwrap()).min(bytes.len());
         Ok(bytes[start..end].to_vec())
     }
 
-    async fn exists(&self, uri: &str) -> WriteResult<bool> {
+    async fn exists(&self, uri: &str) -> HostResult<bool> {
         self.storage.exists(uri).await.map_err(|e| err(&e))
     }
 
-    async fn put(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<()> {
+    async fn put(&self, uri: &str, bytes: Vec<u8>) -> HostResult<()> {
         self.faults.data_write(uri)?;
         self.storage.write(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))
     }
 
-    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<bool> {
+    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> HostResult<bool> {
         let fault =
             if uri.ends_with(".metadata.json") { self.faults.metadata_put.swap(0, Ordering::Relaxed) } else { 0 };
         if fault == METADATA_FAILS {
-            return Err(WriteError::Store(format!("injected failure writing {uri}")));
+            return Err(HostError::Store(format!("injected failure writing {uri}")));
         }
         let written = self.storage.write_if_absent(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))?;
         match fault {
             METADATA_LANDS_THEN_LOSES => Ok(false),
-            METADATA_LANDS_THEN_FAILS => Err(WriteError::Store(format!("injected timeout writing {uri}"))),
+            METADATA_LANDS_THEN_FAILS => Err(HostError::Store(format!("injected timeout writing {uri}"))),
             _ => Ok(written),
         }
     }
 
-    fn upload(&self, uri: &str) -> impl Future<Output = WriteResult<BufferedUpload<'static>>> {
+    fn upload(&self, uri: &str) -> impl Future<Output = HostResult<BufferedUpload<'static>>> {
         let storage: &'static Storage = Box::leak(Box::new(self.storage.clone()));
         self.faults.open_uploads.fetch_add(1, Ordering::Relaxed);
         let faults = self.faults.clone();
         std::future::ready(Ok(BufferedUpload { storage, uri: uri.to_string(), bytes: vec![], faults }))
     }
 
-    async fn list(&self, prefix: &str) -> WriteResult<Vec<Listed>> {
+    async fn list(&self, prefix: &str) -> HostResult<Vec<Listed>> {
         let dir = &prefix[..prefix.rfind('/').unwrap()];
         let listed = self.storage.list(dir).await.map_err(|e| err(&e))?;
         Ok(listed
@@ -143,7 +144,7 @@ impl Host for &EngineHost {
             .collect())
     }
 
-    async fn delete(&self, uris: &[String]) -> WriteResult<()> {
+    async fn delete(&self, uris: &[String]) -> HostResult<()> {
         self.storage.delete_many(uris.to_vec()).await.map(drop).map_err(|e| err(&e))
     }
 
@@ -159,7 +160,9 @@ impl Host for &EngineHost {
     async fn sleep(&self, ms: u64) {
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     }
+}
 
+impl WriteHost for &EngineHost {
     fn max_row_group_bytes(&self) -> Option<usize> {
         self.row_group_bytes
     }

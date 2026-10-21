@@ -32,6 +32,7 @@ chrono.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+lakebed-core.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -24,7 +24,8 @@ write = [
     "dep:arrow-schema",
     "dep:arrow-select",
     "dep:parquet",
-    "dep:apache-avro",
+    "dep:lakebed-core",
+    "dep:lakebed-iceberg",
     "dep:serde_json",
     "dep:bytes",
     "dep:futures-util",
@@ -34,7 +35,8 @@ write = [
 [dependencies]
 bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
-apache-avro = { version = "0.21", default-features = false, optional = true }
+lakebed-core = { workspace = true, optional = true }
+lakebed-iceberg = { workspace = true, features = ["write", "arrow", "parquet-stats"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 arrow-arith = { version = "58", optional = true }
 arrow-array = { version = "58", optional = true }

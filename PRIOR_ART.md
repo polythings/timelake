@@ -17,6 +17,7 @@ Timelake is built on these. Their licenses ship with our packages through the no
 |---|---|---|
 | [Apache Iceberg](https://iceberg.apache.org) | Apache-2.0 | The table format: metadata, snapshots, manifests, column bounds |
 | [iceberg-rust](https://github.com/apache/iceberg-rust) | Apache-2.0 | Iceberg types and metadata. Our commit layer is our own code on its public types (D13) |
+| [lakebed](https://github.com/polythings/lakebed) | Apache-2.0 | Iceberg manifests, metadata and commits without I/O, for the WASM reader and writer (D24); a sibling project |
 | [Apache Parquet](https://parquet.apache.org), [arrow-rs](https://github.com/apache/arrow-rs) | Apache-2.0 | Data files, the last-value index, footers; Arrow in memory and as the head codec |
 | [Apache DataFusion](https://datafusion.apache.org) | Apache-2.0 | The embedded query engine (`time_bucket` is its `date_bin`) |
 | [object_store](https://github.com/apache/arrow-rs-object-store) | Apache-2.0 | Every read and write to S3, GCS, Azure and local disk |
