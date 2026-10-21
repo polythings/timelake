@@ -34,7 +34,7 @@ export class Query {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * The result as a JSON array string.
+     * The result as a JSON array string. Call it once: the rows are handed over.
      */
     finish(): string;
     constructor(query: any);
