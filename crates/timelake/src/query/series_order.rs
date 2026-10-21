@@ -1,25 +1,7 @@
-//! Series order for the run aggregates ([`super::runs`]: `time_weighted_mean`, `integral`,
-//! `counter_diff`, `counter_rate`, `gap_count`, `gap_seconds`). Each partition sums its runs of a series' readings, and the runs of all
-//! partitions are joined in time order: exact when no partition has readings of the series inside
-//! another's run. A scan under a signal aggregate gives that:
-//! - files that must be merged (copies to remove with dedup on read; without, files that overlap
-//!   another on the series and time or aren't sorted) are merged in `(series…, time)` order, each
-//!   series in one slice, with every file in the time they span (the dedup scan's merge, keeping
-//!   every row without dedup);
-//! - the files before and after that time are read as they are, each partition a stretch of time
-//!   in time order, and kept to its files (DataFusion otherwise lets idle partitions take others').
-//!
-//! Setting `series-order`: `auto` (the default) merges what has to be, `segments` only copies
-//! (overlaps are then an error), `merge` everything. Measured alternatives: a window over every
-//! reading (550 s and 20 GB for hourly means of 370 M readings, against 2 s); files spread over
-//! partitions by size, as other scans do, which makes runs with gaps that other partitions fill.
-//!
-//! A window over each series in time order (`lead(…) OVER (PARTITION BY <series key> ORDER BY
-//! time)`) can read every file merged the same way: split by series and sorted, so DataFusion
-//! neither repartitions nor sorts. Setting `window-series-order`: on the industrial benchmark,
-//! gaps of a day's 1-second readings (one file) 265 → 217 ms, but of a week (seven) 2.0 → 3.0 s:
-//! merging sorted files costs more than DataFusion's sort once there are several. `auto` (the
-//! default) merges when the files are in one time partition, `true` always, `false` never.
+//! Series order (spec 26): scans under a run aggregate ([`super::runs`]) or a window over each
+//! series in time order read each series' rows in time order, so runs from different partitions
+//! join exactly and windows need no sort. Settings `series-order` and `window-series-order` choose
+//! which files are merged for it.
 
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -529,7 +529,7 @@ impl<'a> Scan<'a> {
     }
 
     /// Scans files that may share keys, strategy keys-first. Pass 1 reads only the key columns and
-    /// the rank, merges them like [`scan_deduplicated`] and lists the older copies. Pass 2 reads the
+    /// the rank, merges them like [`Scan::deduplicated`] and lists the older copies. Pass 2 reads the
     /// files like any scan, every filter pruning and removing rows, and leaves out the rows on that
     /// list: the list was built from all rows, so filters on other columns are safe before it.
     async fn keys_first(&self, files: Vec<LiveEntry>, key_filters: &[Expr]) -> DfResult<Arc<dyn ExecutionPlan>> {
@@ -676,7 +676,7 @@ fn time_bounds(table: &Table, f: &LiveEntry) -> (i64, i64) {
     (lo.unwrap_or(i64::MIN), hi.unwrap_or(i64::MAX))
 }
 
-/// What [`select_files`] picks: the files to scan as they are, the groups of files to
+/// What [`Scan::select_files`] picks: the files to scan as they are, the groups of files to
 /// deduplicate together, and the filters on key columns only.
 type Selection = (Vec<LiveEntry>, Vec<Vec<LiveEntry>>, Vec<Expr>);
 

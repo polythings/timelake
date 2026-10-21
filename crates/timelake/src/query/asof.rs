@@ -13,10 +13,11 @@
 //!
 //! DataFusion has no ASOF JOIN: [`rewrite_statement`] turns one into a left join whose condition
 //! carries the match condition inside a marker function, [`AsofRule`] replaces that join with an
-//! [`AsofJoin`] node before the optimizer runs, and [`AsofJoinExec`] runs it: the right side is collected and each key's rows
-//! sorted by time, then each left row finds its match by binary search. On a day of the industrial
-//! benchmark's one-second readings (8.6 M rows) matched with their machines' states: 0.23 s, against
-//! 0.36 s for the same answer from a union and `forward_fill`, and 78 s as a range join.
+//! [`AsofJoin`] node before the optimizer runs, and [`AsofJoinExec`] runs it: the right side is
+//! collected and each key's rows sorted by time, then each left row finds its match by binary
+//! search. On a day of the industrial benchmark's one-second readings (8.6 M rows) matched with
+//! their machines' states: 0.23 s, against 0.36 s for the same answer from a union and
+//! `forward_fill`, and 78 s as a range join.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;

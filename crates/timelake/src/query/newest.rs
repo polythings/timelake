@@ -1,16 +1,7 @@
-//! Newest-first scans (#72): `ORDER BY time DESC LIMIT k` over a time-partitioned table reads the
-//! newest partition first, in parallel within it, then each older one only while it can still
-//! hold one of the `k` newest rows: once `k` rows newer than an older partition's newest time are
-//! in, the rest is never read. Each partition is planned as the ordinary scan of its files, so
-//! pruning, dedup and the sort above work as before; this only orders and stops them.
-//!
-//! The same holds for the newest buckets of a `GROUP BY time_bucket(…)` sorted by the bucket,
-//! descending, with a limit (`groupby-orderby-limit`): once `k` buckets start after an older
-//! partition's newest time, that partition holds no row of them, nor of any newer bucket.
-//!
-//! The idea is threshold-style top-k (Fagin, Lotem and Naor, PODS 2001): visit candidates in order
-//! of their upper bound, here a partition's newest time, and stop once the k-th result beats every
-//! bound left.
+//! Newest-first scans (spec 25): `ORDER BY time DESC LIMIT k`, or the newest `k` buckets of a
+//! `GROUP BY time_bucket(…)`, reads time partitions newest first and stops once older ones can't
+//! hold any of the `k` newest rows or buckets. This is threshold-style top-k (Fagin, Lotem and
+//! Naor, PODS 2001), a partition's newest time its bound.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
