@@ -103,20 +103,66 @@ class AppendResult(_AppendResult, total=False):
     maintenance_error: str
 
 
+class ColumnInfo(TypedDict):
+    """A top-level column: its Arrow ``type`` as Arrow prints it."""
+
+    name: str
+    type: str
+    nullable: bool
+
+
+class PartitionInfo(TypedDict):
+    """The live files of one time partition, named as its chunk names it (``"2026-01-01"``)."""
+
+    partition: str
+    files: int
+    rows: int
+    bytes: int
+
+
+class SnapshotInfo(TypedDict):
+    """One snapshot, with the counts from its summary.
+
+    ``id`` is a string, as in the CLI's JSON; ``Table.rollback(int(id))`` returns to it.
+    """
+
+    id: str
+    timestamp_ms: int
+    operation: str
+    added_records: int
+    deleted_records: int
+    added_files: int
+    deleted_files: int
+    total_records: int
+
+
 class TableInfo(TypedDict):
-    """Contract, size and layout of a table version."""
+    """Contract, size and layout of a table version, as ``timelake info --json`` gives them.
+
+    ``format_version`` is Iceberg's, ``timelake_format_version`` the table format's. ``retention`` is a duration
+    such as ``"90d"``. ``partitions`` are newest first; ``snapshots`` are the newest 50, newest first, of
+    ``snapshot_count``.
+    """
 
     name: str
     version: int
     location: str
+    format_version: int
+    timelake_format_version: str
     time_column: str | None
     series_key: list[str]
     chunk: str | None
     dedup: bool
     ingest_time_column: str | None
+    retention: str | None
+    schema: list[ColumnInfo]
     rows: int
     files: int
     bytes: int
-    snapshots: int
     manifests: int
+    snapshot_count: int
+    last_commit_ms: int | None
+    current_snapshot: str | None
     last_value_index: str | None
+    partitions: list[PartitionInfo]
+    snapshots: list[SnapshotInfo]

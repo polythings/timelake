@@ -13,7 +13,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use timelake::datafusion::prelude::DataFrame;
 use timelake::{Lake, MaintainOptions, MaintainReport, MaintainSteps, Session, TableName, UpgradeOptions};
 
-use crate::info::TableInfo;
 use crate::load::{LoadArgs, TableDef};
 
 #[derive(Parser)]
@@ -244,11 +243,11 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::Info { table, json } => {
-            let info = TableInfo::load(&lake.table(&table).await?).await?;
+            let info = lake.table(&table).await?.info().await?;
             if json {
-                println!("{}", info.to_json());
+                println!("{}", serde_json::to_string(&info)?);
             } else {
-                print!("{info}");
+                print!("{}", info::Text(&info));
             }
             Ok(())
         }

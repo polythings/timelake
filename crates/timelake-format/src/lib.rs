@@ -209,6 +209,10 @@ pub const INGEST_TIME_COLUMN: &str = "_ingest_ts";
 /// Optional warehouse-level index of table names, for stores that cannot list (plain HTTPS).
 pub const TABLES_INDEX: &str = "timelake-tables.json";
 
+/// How many snapshots a table's description lists, newest first: `timelake info`, Python's `Table.info()` and the
+/// WebAssembly reader's table info. Each also says how many there are in all.
+pub const LISTED_SNAPSHOTS: usize = 50;
+
 /// An error in Timelake's table conventions.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

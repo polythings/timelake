@@ -61,7 +61,8 @@ fn parses_metadata_and_manifests() {
     assert_eq!(fields, types.map(|(name, ty, required)| (name, ty.to_string(), required)));
     assert_eq!(meta.time_column.as_deref(), Some("time"));
     assert_eq!(meta.series_key, ["tags_id"]);
-    assert_eq!(meta.chunk.as_deref(), Some("day"));
+    assert_eq!(meta.chunk, Some(timelake_format::Chunk::Day));
+    assert_eq!(meta.retention, None);
     assert!(meta.last_value_index.is_some());
     assert_eq!(meta.snapshot_count, 1);
     assert_eq!(meta.current_snapshot.as_ref().map(|s| s.operation.as_str()), Some("append"));

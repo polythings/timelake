@@ -117,6 +117,10 @@ export interface TableInfo {
   seriesKey: string[]
   chunk: string | null
   dedup: boolean
+  /** The insertion-time column, if the table has one. */
+  ingestTimeColumn: string | null
+  /** Partitions older than this are dropped (`90d`); `null` keeps them forever. */
+  retention: string | null
   properties: Record<string, string>
   currentSnapshot: SnapshotInfo | null
   lastValueIndex: string | null

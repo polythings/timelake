@@ -64,6 +64,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `time-above-limit` 396 → 327 ms. Over a week of files merging is slower (2.0 → 3.0 s), so `auto` leaves it.
 - Setting `shared-signal-state` (on by default): signal aggregates of the same column in one query compute their runs
   of readings once. All four, hourly for 1,000 tags over 30 days: 3.5 → 2.1 s.
+- TypeScript client: `table.info()` has the table's `ingestTimeColumn` and `retention` (`90d`), as the CLI and Python
+  give them.
 
 ### Fixed
 
@@ -351,6 +353,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   longer prefixed with `head:`.
 - TypeScript client: `TableWriter` takes a table name without a namespace (`readings` is `default.readings`), like the
   reader and the engine, and both check names with the engine's rules, so `iot/readings` or `a.b.c` is an error.
+- Python: `Table.info()` returns every field of `timelake info --json`, typed as `TableInfo`: the schema, retention,
+  partitions, and the newest 50 `snapshots`, newest first. `snapshots` was a count before; the count is now
+  `snapshot_count`. `timelake info --json` gains `timelake_format_version` and `current_snapshot`. The Rust API has
+  `Table::info()`.
 
 ### Removed
 

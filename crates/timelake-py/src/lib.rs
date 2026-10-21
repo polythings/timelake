@@ -387,33 +387,11 @@ impl Table {
         Ok(())
     }
 
-    /// Contract, size and layout of the current version.
-    fn info(&self, py: Python<'_>) -> PyResult<TableInfo> {
+    /// Contract, size and layout of the current version, as `timelake info --json` gives them.
+    fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let table = self.get();
-        let (files, manifests) = run(py, {
-            let table = table.clone();
-            async move {
-                let (files, manifests) = tokio::try_join!(table.files(), table.manifests())?;
-                Ok((files, manifests.len()))
-            }
-        })?;
-        let contract = table.contract();
-        Ok(TableInfo {
-            name: table.name().to_string(),
-            version: table.version(),
-            location: table.location().to_string(),
-            time_column: contract.time_column.clone(),
-            series_key: contract.series_key.clone(),
-            chunk: contract.chunk.map(Chunk::as_str),
-            dedup: contract.dedup,
-            ingest_time_column: contract.ingest_time_column.clone(),
-            rows: files.iter().map(|f| f.data_file.record_count()).sum(),
-            files: files.len(),
-            bytes: files.iter().map(|f| f.data_file.file_size_in_bytes()).sum(),
-            snapshots: table.metadata().snapshots().len(),
-            manifests,
-            last_value_index: table.last_value_index(),
-        })
+        let info = run(py, async move { table.info().await })?;
+        Ok(pythonize::pythonize(py, &info)?)
     }
 
     fn __repr__(&self) -> String {
@@ -456,25 +434,6 @@ struct UpgradeSummary {
     version_before: u64,
     snapshot_before: Option<i64>,
     keep_snapshots_until_ms: Option<i64>,
-}
-
-/// `Table.info` result.
-#[derive(IntoPyObject)]
-struct TableInfo {
-    name: String,
-    version: u64,
-    location: String,
-    time_column: Option<String>,
-    series_key: Vec<String>,
-    chunk: Option<&'static str>,
-    dedup: bool,
-    ingest_time_column: Option<String>,
-    rows: u64,
-    files: usize,
-    bytes: u64,
-    snapshots: usize,
-    manifests: usize,
-    last_value_index: Option<String>,
 }
 
 /// Waits for background writes (version hints) to land; registered with `atexit`.

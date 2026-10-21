@@ -41,7 +41,7 @@ Properties: `name`, `location`, `version`, `schema` (pyarrow). Methods that comm
 | `set_properties(properties)` | Changes table [settings](/docs/settings), such as `{"read_dedup": "false"}`; a value of `None` returns one to its default. One commit of new metadata, no new snapshot. `ValueError` for an unknown setting, a bad value, or one fixed at creation. |
 | `rollback(snapshot_id)` | Makes an earlier snapshot current again (`KeyError` if the table has none with that id). |
 | `maintain(compact=True, retention=True, expire=True, rollups=True)` | dict: `partitions_compacted`, `files_rewritten`, `files_written`, `rows_rewritten`, `bytes_rewritten`, `duplicates_removed`, `more_to_compact` (a group of more than 24 files was merged in parts: run again to finish), `partitions_dropped`, `files_dropped`, `rollups_refreshed`, `rollup_rows`, `snapshots_expired`, `objects_deleted`, `seconds`. `rollups=False` skips refreshing the table's [rollups](/docs/rollups). |
-| `info()` | dict: `name`, `version`, `location`, contract (`time_column`, `series_key`, `chunk`, `dedup`), size (`rows`, `files`, `bytes`), `snapshots`, `manifests`, `last_value_index`. |
+| `info()` | dict, as `timelake info --json`: `name`, `version`, `location`, contract (`time_column`, `series_key`, `chunk`, `dedup`, `ingest_time_column`, `retention`), `schema`, size (`rows`, `files`, `bytes`, `partitions`), `snapshot_count` and the newest 50 `snapshots`, `manifests`, `last_value_index`. |
 | `refresh()` | Reloads the latest committed version. |
 
 ## Input data

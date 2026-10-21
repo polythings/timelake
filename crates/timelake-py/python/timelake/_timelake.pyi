@@ -206,4 +206,4 @@ class Table:
         """Reloads the latest committed version."""
 
     def info(self) -> TableInfo:
-        """Contract, size and layout of the current version."""
+        """Contract, size and layout of the current version: the fields of ``timelake info --json``."""

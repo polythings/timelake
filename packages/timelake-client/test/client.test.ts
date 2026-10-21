@@ -40,6 +40,7 @@ test("lists tables and reads info", async () => {
   expect(info.timeColumn).toBe("time")
   expect(info.seriesKey).toEqual(["tags_id"])
   expect(info.chunk).toBe("hour")
+  expect([info.ingestTimeColumn, info.retention]).toEqual(["_ingest_ts", null])
   expect(info.files.length).toBe(24)
   expect(info.files.reduce((s, f) => s + f.records, 0)).toBe(SERIES * POINTS)
   // Hour partitions, as hours since the epoch.

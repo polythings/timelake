@@ -52,7 +52,7 @@ pub use layout::{
     footer_prefetch_bytes, head_uri, hint_uri, metadata_uri, metadata_version, parse_duration_micros, parse_table_name,
     table_location, tables_index_uri,
 };
-pub use meta::{DataFile, Field, MAX_SNAPSHOTS, SnapshotInfo, TableMeta, data_manifests, parse_manifest};
+pub use meta::{DataFile, Field, SnapshotInfo, TableMeta, data_manifests, parse_manifest};
 pub use prune::plan_files;
 pub use query::Collector;
 pub use spec::{AggInput, AggOp, AggSpec, BucketSpec, QuerySpec};

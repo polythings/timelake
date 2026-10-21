@@ -290,7 +290,10 @@ def test_info_counts_rows_and_files(table: timelake.Table) -> None:
     table.append(readings())
     table.append(readings(START - dt.timedelta(days=1), minutes=10))
     info = table.info()
-    assert (info["rows"], info["files"]) == (350, 2)
+    assert (info["rows"], info["files"], info["snapshot_count"]) == (350, 2, 2)
+    assert [(p["partition"], p["rows"]) for p in info["partitions"]] == [("2026-01-01", 300), ("2025-12-31", 50)]
+    assert [s["total_records"] for s in info["snapshots"]] == [350, 300]
+    assert info["current_snapshot"] == info["snapshots"][0]["id"]
 
 
 def test_info_of_plain_table_has_no_contract(lake: timelake.Lake) -> None:
@@ -299,22 +302,12 @@ def test_info_of_plain_table_has_no_contract(lake: timelake.Lake) -> None:
 
 
 def test_info_has_documented_keys(table: timelake.Table) -> None:
-    assert set(table.info()) == {
-        "name",
-        "version",
-        "location",
-        "time_column",
-        "ingest_time_column",
-        "series_key",
-        "chunk",
-        "dedup",
-        "rows",
-        "files",
-        "bytes",
-        "snapshots",
-        "manifests",
-        "last_value_index",
-    }
+    table.append(readings())
+    info = table.info()
+    assert set(info) == timelake.TableInfo.__required_keys__
+    assert set(info["schema"][0]) == timelake.ColumnInfo.__required_keys__
+    assert set(info["partitions"][0]) == timelake.PartitionInfo.__required_keys__
+    assert set(info["snapshots"][0]) == timelake.SnapshotInfo.__required_keys__
 
 
 @pytest.mark.network  # DuckDB downloads its iceberg extension on first use

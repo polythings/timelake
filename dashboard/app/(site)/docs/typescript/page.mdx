@@ -50,7 +50,7 @@ The client asks for some objects that may not exist: the head, the version hint,
 | `table.latest({ series?, columns? })` | The newest row of each series, read from the last-value index in a single request. Tables without the index (written by another Iceberg writer) are scanned instead. |
 | `table.range({ series?, from?, to?, columns?, limit?, order? })` | Rows in `[from, to)`, ordered by time. `columns` narrows the result type to those columns. |
 | `table.bucket({ series?, from?, to?, every, agg, by? })` | One row per bucket (and per `by` value): `bucket: Date` plus `<column>_<op>` for each aggregate (`count`, `sum`, `avg`, `min`, `max`, `first`, `last`); `"*": ["count"]` gives `count`. |
-| `table.info()` | Contract, schema, snapshots, and live files of the current version. |
+| `table.info()` | Contract (`timeColumn`, `seriesKey`, `chunk`, `dedup`, `ingestTimeColumn`, `retention`), schema, snapshots (the newest 50 of `snapshotCount`), and live files of the current version. |
 | `table.zodSource()` | The TypeScript source of a Zod schema for the table, ready to paste. The schema is named after the table in PascalCase, without a trailing `s` unless it follows `s`, `i` or `u` (`readings` gives `Reading`, `status` gives `Status`). |
 | `table.refresh()` | Forget the cached table version, so the next query reads the newest one. |
 | `zodSource(info, exportName?)`, `readerVersion()` | Standalone exports: generate Zod source from a `table.info()` result; the version of the embedded WASM reader. |

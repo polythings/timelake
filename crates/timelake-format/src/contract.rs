@@ -142,6 +142,13 @@ impl fmt::Display for Chunk {
     }
 }
 
+/// As its name (`day`).
+impl serde::Serialize for Chunk {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// Options for creating a table. Only `time_column` is required for a time-series table; leave it
 /// unset for a plain (dimension) table such as device metadata.
 #[derive(Clone, Debug, Default)]

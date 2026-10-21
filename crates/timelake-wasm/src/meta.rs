@@ -11,13 +11,10 @@ use serde::Serialize;
 use timelake_format::bounds::{Bound, decode};
 use timelake_format::iceberg::{Content, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 use timelake_format::metadata::{Metadata, SnapshotRef};
-use timelake_format::{Contract, IcebergType, summary};
+use timelake_format::{Chunk, Contract, IcebergType, LISTED_SNAPSHOTS, format_duration, summary};
 
 use crate::error::{Error, Result};
 use crate::prune::scale_to_micros;
-
-/// How many snapshots [`TableMeta::snapshots`] keeps, newest first.
-pub const MAX_SNAPSHOTS: usize = 50;
 
 /// A top-level column of the current schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,13 +60,16 @@ pub struct TableMeta {
     pub properties: HashMap<String, String>,
     pub time_column: Option<String>,
     pub series_key: Vec<String>,
-    pub chunk: Option<String>,
+    pub chunk: Option<Chunk>,
     pub dedup: bool,
+    pub ingest_time_column: Option<String>,
+    /// Partitions older than this are dropped (`90d`); `None` keeps them forever.
+    pub retention: Option<String>,
     pub current_snapshot: Option<SnapshotInfo>,
     pub manifest_list: Option<String>,
     pub last_value_index: Option<String>,
     pub snapshot_count: usize,
-    /// Newest first, at most [`MAX_SNAPSHOTS`].
+    /// Newest first, at most [`LISTED_SNAPSHOTS`].
     pub snapshots: Vec<SnapshotInfo>,
     pub last_updated_ms: i64,
 }
@@ -95,15 +95,17 @@ impl TableMeta {
         let current = metadata.current_snapshot_id().and_then(|id| all.iter().find(|s| s.id == id));
         let mut snapshots: Vec<SnapshotInfo> = all.iter().map(SnapshotInfo::from).collect();
         snapshots.sort_by_key(|s| Reverse(s.timestamp_ms));
-        snapshots.truncate(MAX_SNAPSHOTS);
+        snapshots.truncate(LISTED_SNAPSHOTS);
         Ok(Self {
             location: metadata.location().to_string(),
             format_version: metadata.format_version(),
             schema,
             time_column: contract.time_column,
             series_key: contract.series_key,
-            chunk: contract.chunk.map(|c| c.as_str().to_string()),
+            chunk: contract.chunk,
             dedup: contract.dedup,
+            ingest_time_column: contract.ingest_time_column,
+            retention: contract.retention.map(format_duration),
             properties,
             current_snapshot: current.map(SnapshotInfo::from),
             manifest_list: current.map(|s| s.manifest_list.clone()),
