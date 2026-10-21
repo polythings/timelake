@@ -7,7 +7,6 @@
 //! optimizer rules can't do I/O: [`prepare`] works it out before planning, and [`RollupRewrite`]
 //! uses it while optimizing.
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -16,7 +15,7 @@ use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, ScalarValue, TableReference};
-use datafusion::datasource::{provider_as_source, source_as_provider};
+use datafusion::datasource::provider_as_source;
 use datafusion::error::Result as DfResult;
 use datafusion::functions::datetime::date_bin;
 use datafusion::functions_aggregate::expr_fn as agg;
@@ -30,7 +29,7 @@ use datafusion::prelude::{cast, coalesce, ident, lit};
 
 use super::PLANNING_REUSE;
 use super::gaps;
-use super::provider::{Kind, TimelakeProvider};
+use super::provider::{Kind, TimelakeProvider, scan_under};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
 use super::settings::{READ_DEDUP, ROLLUP_ROUTING, VERSION_CHECK_INTERVAL};
 use super::signal::{Method, Output, state_type, udaf};
@@ -542,28 +541,21 @@ impl Candidate {
 fn read_query(a: &Aggregate) -> Option<Query<'_>> {
     let mut filters: Vec<&Expr> = vec![];
     let mut joins = vec![];
-    let mut input = a.input.as_ref();
-    let scan = loop {
-        match input {
-            LogicalPlan::Filter(f) => {
-                filters.extend(split_conjunction(&f.predicate));
-                input = &f.input;
-            }
-            LogicalPlan::Join(j) if j.join_type == JoinType::LeftSemi && j.filter.is_none() => {
-                joins.push((j.right.as_ref(), j.on.as_slice()));
-                input = &j.left;
-            }
-            LogicalPlan::SubqueryAlias(s) => input = &s.input,
-            LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => input = &p.input,
-            LogicalPlan::TableScan(s) => break s,
-            _ => return None,
+    let scan = scan_under(&a.input, |node| match node {
+        LogicalPlan::Filter(f) => {
+            filters.extend(split_conjunction(&f.predicate));
+            Some(&f.input)
         }
-    };
+        LogicalPlan::Join(j) if j.join_type == JoinType::LeftSemi && j.filter.is_none() => {
+            joins.push((j.right.as_ref(), j.on.as_slice()));
+            Some(&j.left)
+        }
+        _ => None,
+    })?;
     if scan.fetch.is_some() {
         return None;
     }
-    let provider = source_as_provider(&scan.source).ok()?;
-    let p = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>()?;
+    let p = TimelakeProvider::of_scan(scan)?;
     if p.kind() != Kind::Data || p.is_routed() {
         return None;
     }
@@ -803,10 +795,7 @@ fn rollup_rows(
 fn mark_routed(plan: LogicalPlan) -> DfResult<LogicalPlan> {
     transform_rows(plan, &mut |node| {
         let LogicalPlan::TableScan(scan) = &node else { return Ok(Transformed::no(node)) };
-        let provider = source_as_provider(&scan.source)?;
-        let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else {
-            return Ok(Transformed::no(node));
-        };
+        let Some(p) = TimelakeProvider::of_scan(scan) else { return Ok(Transformed::no(node)) };
         let mut scan = scan.clone();
         scan.source = provider_as_source(Arc::new(p.routed()));
         Ok(Transformed::yes(LogicalPlan::TableScan(scan)))

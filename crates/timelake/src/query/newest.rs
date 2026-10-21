@@ -12,7 +12,6 @@
 //! of their upper bound, here a partition's newest time, and stop once the k-th result beats every
 //! bound left.
 
-use std::any::Any;
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::fmt;
@@ -22,7 +21,7 @@ use arrow::array::{AsArray, RecordBatch};
 use arrow::datatypes::{SchemaRef, TimestampMicrosecondType};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::{provider_as_source, source_as_provider};
+use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, LogicalPlan, Sort};
@@ -42,7 +41,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use super::provider::{Kind, TimelakeProvider};
+use super::provider::{Kind, TimelakeProvider, scan_under};
 use super::rollup::{bucket_width, unalias};
 use super::settings::NEWEST_FIRST;
 
@@ -82,38 +81,27 @@ fn newest_first(sort: &Sort, options: &ConfigOptions) -> DfResult<Option<Logical
     let mut name = column.name.clone();
     let mut bucket: Option<&Expr> = None;
     let mut filtered = false;
-    let mut input = sort.input.as_ref();
-    loop {
-        input = match input {
-            LogicalPlan::Filter(f) => {
-                filtered |= bucket.is_none();
-                &f.input
-            }
-            LogicalPlan::SubqueryAlias(s) => &s.input,
-            LogicalPlan::Projection(p) if bucket.is_none() => {
-                let fields = p.schema.fields().iter();
-                let Some((e, _)) = p.expr.iter().zip(fields).find(|(_, f)| *f.name() == name) else { return Ok(None) };
-                let Expr::Column(c) = unalias(e) else { return Ok(None) };
-                name.clone_from(&c.name);
-                &p.input
-            }
-            LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => &p.input,
-            // A filter above the aggregate (`HAVING`) drops buckets: more than k could be needed.
-            LogicalPlan::Aggregate(a) if bucket.is_none() && !filtered => {
-                let fields = a.schema.fields().iter();
-                let Some((e, _)) = a.group_expr.iter().zip(fields).find(|(_, f)| *f.name() == name) else {
-                    return Ok(None);
-                };
-                bucket = Some(e);
-                &a.input
-            }
-            LogicalPlan::TableScan(_) => break,
-            _ => return Ok(None),
-        };
-    }
-    let LogicalPlan::TableScan(scan) = input else { return Ok(None) };
-    let provider = source_as_provider(&scan.source)?;
-    let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else { return Ok(None) };
+    let scan = scan_under(&sort.input, |node| match node {
+        LogicalPlan::Filter(f) => {
+            filtered |= bucket.is_none();
+            Some(&f.input)
+        }
+        LogicalPlan::Projection(p) if bucket.is_none() => {
+            let (e, _) = p.expr.iter().zip(p.schema.fields().iter()).find(|(_, f)| *f.name() == name)?;
+            let Expr::Column(c) = unalias(e) else { return None };
+            name.clone_from(&c.name);
+            Some(&p.input)
+        }
+        // A filter above the aggregate (`HAVING`) drops buckets: more than k could be needed.
+        LogicalPlan::Aggregate(a) if bucket.is_none() && !filtered => {
+            let (e, _) = a.group_expr.iter().zip(a.schema.fields().iter()).find(|(_, f)| *f.name() == name)?;
+            bucket = Some(e);
+            Some(&a.input)
+        }
+        _ => None,
+    });
+    let Some(scan) = scan else { return Ok(None) };
+    let Some(p) = TimelakeProvider::of_scan(scan) else { return Ok(None) };
     let contract = p.table().contract();
     let partitioned = contract.chunk.is_some();
     if !NEWEST_FIRST.of(options, contract) {

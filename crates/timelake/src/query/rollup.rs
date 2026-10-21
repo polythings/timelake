@@ -1,19 +1,17 @@
 //! Rollups in DataFusion terms (spec 27): a rollup's definition read from a planned `SELECT`,
 //! the query that computes its buckets, and the expressions routing matches against it.
 
-use std::any::Any;
 use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::common::ScalarValue;
-use datafusion::datasource::source_as_provider;
 use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::expr::{AggregateFunction, Sort};
 use datafusion::logical_expr::{Aggregate as AggregateNode, Expr, LogicalPlan};
 use datafusion::prelude::{DataFrame, SessionContext, ident, lit};
 
-use super::provider::{Kind, TimelakeProvider};
+use super::provider::{Kind, TimelakeProvider, scan_under};
 use super::session::Session;
 use super::signal::{Method, Output, udaf};
 use crate::error::{Error, Result};
@@ -330,18 +328,15 @@ fn outputs_of(plan: &LogicalPlan) -> std::result::Result<(Outputs, &AggregateNod
 
 /// The Timelake table a rollup query's aggregate reads, whole (no filters).
 fn raw_table_of(node: &AggregateNode) -> std::result::Result<Table, String> {
-    let mut input = node.input.as_ref();
-    let scan = loop {
-        match input {
-            LogicalPlan::SubqueryAlias(s) => input = &s.input,
-            LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => input = &p.input,
-            LogicalPlan::TableScan(s) => break s,
-            LogicalPlan::Filter(_) => return Err("WHERE isn't supported in a rollup".into()),
-            _ => return Err(SHAPE.into()),
-        }
+    let mut filtered = false;
+    let scan = scan_under(&node.input, |n| {
+        filtered |= matches!(n, LogicalPlan::Filter(_));
+        None
+    });
+    let Some(scan) = scan else {
+        return Err(if filtered { "WHERE isn't supported in a rollup" } else { SHAPE }.into());
     };
-    let provider = source_as_provider(&scan.source).map_err(|e| e.to_string())?;
-    match (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() {
+    match TimelakeProvider::of_scan(scan) {
         Some(p) if p.kind() == Kind::Data && scan.filters.is_empty() && scan.fetch.is_none() => Ok(p.table().clone()),
         _ => Err(SHAPE.into()),
     }

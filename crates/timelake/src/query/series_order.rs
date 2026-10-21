@@ -21,12 +21,11 @@
 //! merging sorted files costs more than DataFusion's sort once there are several. `auto` (the
 //! default) merges when the files are in one time partition, `true` always, `false` never.
 
-use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::datasource::{provider_as_source, source_as_provider};
+use datafusion::datasource::provider_as_source;
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::expr::Sort;
@@ -102,7 +101,7 @@ impl OptimizerRule for SeriesOrder {
                 }
                 _ => return Ok(Transformed::no(node)),
             };
-            let marked = node.map_children(|child| child.transform_up(|n| mark(n, &wants)))?;
+            let marked = node.map_children(|child| child.transform_up(|n| Ok(mark(n, &wants))))?;
             Ok(Transformed::new(marked.data, marked.transformed, TreeNodeRecursion::Jump))
         })
     }
@@ -112,19 +111,16 @@ impl OptimizerRule for SeriesOrder {
 type Wants<'a> = dyn Fn(&TimelakeProvider) -> Option<Order> + 'a;
 
 /// `node` with its Timelake scan reading in series order, if `wants` says so.
-fn mark(node: LogicalPlan, wants: &Wants<'_>) -> DfResult<Transformed<LogicalPlan>> {
-    let LogicalPlan::TableScan(scan) = &node else { return Ok(Transformed::no(node)) };
-    let provider = source_as_provider(&scan.source)?;
-    let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>() else {
-        return Ok(Transformed::no(node));
-    };
+fn mark(node: LogicalPlan, wants: &Wants<'_>) -> Transformed<LogicalPlan> {
+    let LogicalPlan::TableScan(scan) = &node else { return Transformed::no(node) };
+    let Some(p) = TimelakeProvider::of_scan(scan) else { return Transformed::no(node) };
     if p.kind() != Kind::Data || p.reads_in_series_order() {
-        return Ok(Transformed::no(node));
+        return Transformed::no(node);
     }
-    let Some(order) = wants(p) else { return Ok(Transformed::no(node)) };
+    let Some(order) = wants(p) else { return Transformed::no(node) };
     let mut scan = scan.clone();
     scan.source = provider_as_source(Arc::new(p.in_series_order(order)));
-    Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
+    Transformed::yes(LogicalPlan::TableScan(scan))
 }
 
 /// The columns a window partitions by and the one it orders by, if it partitions by columns and

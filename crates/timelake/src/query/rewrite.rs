@@ -1,12 +1,13 @@
-//! Rewrites latest-row queries onto the last-value index (see the module docs of `query`).
+//! Answers latest-row queries from the last-value index: the newest row per series
+//! (`ROW_NUMBER() OVER (PARTITION BY <series key> ORDER BY <time> DESC) = 1`) and the newest row
+//! (`ORDER BY <time> DESC LIMIT 1`, filtered on the series key).
 
-use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::datasource::{provider_as_source, source_as_provider};
+use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::logical_expr::expr::{Sort, WindowFunction};
 use datafusion::logical_expr::utils::{conjunction, split_conjunction};
@@ -15,7 +16,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 
-use super::provider::{Kind, TimelakeProvider};
+use super::provider::{Kind, TimelakeProvider, scan_under};
 use crate::table::Table;
 
 /// The optimizer rule. Runs after DataFusion's own rules, so filters are already pushed into scans.
@@ -40,9 +41,7 @@ impl OptimizerRule for LatestRewrite {
 
 /// The Timelake data table behind a scan, if it has a last-value index.
 fn indexed_table(scan: &TableScan) -> Option<(Table, String)> {
-    let provider = source_as_provider(&scan.source).ok()?;
-    let any: &dyn Any = provider.as_ref();
-    let p = any.downcast_ref::<TimelakeProvider>()?;
+    let p = TimelakeProvider::of_scan(scan)?;
     let table = p.table();
     let time_column = table.contract().time_column.clone()?;
     (p.kind() == Kind::Data && table.last_value_index().is_some()).then(|| (table.clone(), time_column))
@@ -73,16 +72,6 @@ fn is_one(e: &Expr) -> bool {
             _
         )
     )
-}
-
-/// Skips pass-through projections (plain column references).
-fn through_projections(plan: &LogicalPlan) -> &LogicalPlan {
-    match plan {
-        LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => {
-            through_projections(&p.input)
-        }
-        other => other,
-    }
 }
 
 /// Splits `rn = 1` (either side), where `is_rn` says which column is `rn`, from the other
@@ -197,13 +186,15 @@ fn rewrite_top1(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
     if sort.fetch != Some(1) {
         return Ok(None);
     }
-    let mut current = through_projections(&sort.input);
     let mut filters: Vec<&Expr> = vec![];
-    if let LogicalPlan::Filter(f) = current {
-        filters.push(&f.predicate);
-        current = through_projections(&f.input);
-    }
-    let LogicalPlan::TableScan(scan) = current else { return Ok(None) };
+    let scan = scan_under(&sort.input, |node| match node {
+        LogicalPlan::Filter(f) if filters.is_empty() => {
+            filters.push(&f.predicate);
+            Some(&f.input)
+        }
+        _ => None,
+    });
+    let Some(scan) = scan else { return Ok(None) };
     if scan.fetch.is_some() {
         return Ok(None);
     }
@@ -269,8 +260,7 @@ mod tests {
         let mut found = false;
         plan.apply(|node| {
             if let LogicalPlan::TableScan(scan) = node
-                && let Ok(provider) = source_as_provider(&scan.source)
-                && let Some(p) = (provider.as_ref() as &dyn Any).downcast_ref::<TimelakeProvider>()
+                && let Some(p) = TimelakeProvider::of_scan(scan)
             {
                 found |= p.kind() == Kind::Latest;
             }

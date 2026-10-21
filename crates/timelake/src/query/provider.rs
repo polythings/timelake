@@ -1,5 +1,6 @@
 //! A Timelake table as a DataFusion table: pruned Parquet scans, or the last-value index.
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use datafusion::catalog::{Session as DfSession, TableProvider};
 use datafusion::common::stats::Precision;
 use datafusion::common::{DFSchema, ScalarValue, Statistics};
 use datafusion::common::{JoinType, NullEquality};
+use datafusion::datasource::DefaultTableSource;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::PartitionedFile;
@@ -21,7 +23,7 @@ use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::cache::cache_manager::CachedFileMetadataEntry;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
-use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{Expr, LogicalPlan, TableProviderFilterPushDown, TableScan, TableType};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
@@ -46,6 +48,24 @@ use super::settings::{FILTER_PUSHDOWN, IN_LIST_PRUNING, READ_DEDUP, READ_DEDUP_S
 use super::stats::{FileStats, file_statistics};
 use crate::summary;
 use crate::table::{LiveEntry, Table};
+
+/// The table scan under `plan`, walking down through aliases, projections of columns, and the
+/// nodes `through` gives the input of (recording what it passes); `None` if another node is in the
+/// way.
+pub(super) fn scan_under<'a>(
+    plan: &'a LogicalPlan,
+    mut through: impl FnMut(&'a LogicalPlan) -> Option<&'a LogicalPlan>,
+) -> Option<&'a TableScan> {
+    let mut node = plan;
+    loop {
+        node = match node {
+            LogicalPlan::TableScan(scan) => return Some(scan),
+            LogicalPlan::SubqueryAlias(alias) => &alias.input,
+            LogicalPlan::Projection(p) if p.expr.iter().all(|e| matches!(e, Expr::Column(_))) => &p.input,
+            other => through(other)?,
+        };
+    }
+}
 
 /// What a [`TimelakeProvider`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +127,12 @@ impl TimelakeProvider {
 
     pub(super) fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// The Timelake table `scan` reads, if it reads one.
+    pub(super) fn of_scan(scan: &TableScan) -> Option<&Self> {
+        let source = (scan.source.as_ref() as &dyn Any).downcast_ref::<DefaultTableSource>()?;
+        (source.table_provider.as_ref() as &dyn Any).downcast_ref()
     }
 
     /// Plans the scan of `table`, the version this provider was planned with or a newer one with
