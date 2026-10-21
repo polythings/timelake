@@ -23,10 +23,10 @@ use parquet::file::properties::WriterProperties;
 use crate::error::{WriteError, WriteResult};
 use crate::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
 use crate::head::{FILE_NAME, HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, encode};
-use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, ManifestFile, Status, partition_values, time_partition};
 use crate::metadata::{Metadata, TimelakeMetadata};
 use crate::rows::align_batch;
+use crate::store::Store;
 use crate::{Chunk, Contract, summary};
 
 pub use lakekit_iceberg::table::{hint_uri, metadata_uri};
@@ -59,9 +59,9 @@ pub fn head_uri(location: &str) -> String {
 
 impl TableState {
     /// The current version of the table at `location` (its root URI, without a trailing slash).
-    pub async fn load<H: Host>(host: &H, location: &str) -> WriteResult<Self> {
+    pub async fn load<S: Store>(store: &S, location: &str) -> WriteResult<Self> {
         let prefix = format!("{location}/metadata/v");
-        let (head, listed) = futures_util::future::join(host.get(&head_uri(location)), host.list(&prefix)).await;
+        let (head, listed) = futures_util::future::join(store.get(&head_uri(location)), store.list(&prefix)).await;
         let newest = listed?.iter().filter_map(|o| lakekit_iceberg::table::metadata_version(&o.uri)).max();
         let Some(newest) = newest else { return Err(WriteError::NotFound(location.to_string())) };
         if let Some(state) = head?.and_then(|bytes| decode_head(location, &bytes).ok())
@@ -69,13 +69,13 @@ impl TableState {
         {
             return Ok(state);
         }
-        Self::load_version(host, location, newest).await
+        Self::load_version(store, location, newest).await
     }
 
     /// Version `version` from its metadata file (without the head).
-    pub async fn load_version<H: Host>(host: &H, location: &str, version: u64) -> WriteResult<Self> {
+    pub async fn load_version<S: Store>(store: &S, location: &str, version: u64) -> WriteResult<Self> {
         let uri = metadata_uri(location, version);
-        let bytes = host.get(&uri).await?.ok_or_else(|| WriteError::NotFound(uri.clone()))?;
+        let bytes = store.get(&uri).await?.ok_or_else(|| WriteError::NotFound(uri.clone()))?;
         Self::from_metadata(location, version, Metadata::parse(&bytes)?)
     }
 
@@ -101,20 +101,20 @@ impl TableState {
     }
 
     /// The current snapshot's manifests.
-    pub async fn manifests<H: Host>(&self, host: &H) -> WriteResult<Vec<ManifestFile>> {
-        Ok(self.table().manifests(host).await?)
+    pub async fn manifests<S: Store>(&self, store: &S) -> WriteResult<Vec<ManifestFile>> {
+        Ok(self.table().manifests(store).await?)
     }
 
     /// The entries of `manifest`.
-    pub async fn manifest<H: Host>(host: &H, manifest: &ManifestFile) -> WriteResult<Vec<Entry>> {
-        Ok(Table::manifest(host, manifest).await?)
+    pub async fn manifest<S: Store>(store: &S, manifest: &ManifestFile) -> WriteResult<Vec<Entry>> {
+        Ok(Table::manifest(store, manifest).await?)
     }
 
     /// The live files, read from the manifests unless known.
-    pub async fn live_files<H: Host>(&mut self, host: &H) -> WriteResult<&[Entry]> {
+    pub async fn live_files<S: Store>(&mut self, store: &S) -> WriteResult<&[Entry]> {
         if self.files.is_none() {
             let mut table = self.table();
-            self.files = Some(table.live_files(host).await?.to_vec());
+            self.files = Some(table.live_files(store).await?.to_vec());
         }
         Ok(self.files.as_deref().unwrap_or_default())
     }
@@ -125,11 +125,11 @@ impl TableState {
     }
 
     /// The last-value index, read unless known.
-    pub async fn last_values<H: Host>(&mut self, host: &H) -> WriteResult<Option<RecordBatch>> {
+    pub async fn last_values<S: Store>(&mut self, store: &S) -> WriteResult<Option<RecordBatch>> {
         if self.last_values.is_none()
             && let Some(uri) = self.last_value_index()
         {
-            let bytes = host.get(&uri).await?.ok_or_else(|| WriteError::NotFound(uri.clone()))?;
+            let bytes = store.get(&uri).await?.ok_or_else(|| WriteError::NotFound(uri.clone()))?;
             self.last_values = Some(decode_index(&bytes, &self.schema)?);
         }
         Ok(self.last_values.clone())
@@ -137,13 +137,13 @@ impl TableState {
 
     /// Writes the head of this version unless the stored one is as new. Two writers racing can
     /// leave the older head; readers notice it is behind the listing and skip it.
-    pub async fn write_head<H: Host>(&self, host: &H) -> WriteResult<()> {
+    pub async fn write_head<S: Store>(&self, store: &S) -> WriteResult<()> {
         let uri = head_uri(&self.location);
         let Some(codec) = built_in(&self.contract.head_format) else {
             // Turned off, or a codec the shared writer doesn't have: leave no stale head behind.
-            return Ok(host.delete(&[uri]).await?);
+            return Ok(store.delete(&[uri]).await?);
         };
-        if let Ok(prefix) = host.get_range(&uri, 0, MAX_HEADER).await
+        if let Ok(prefix) = store.get_range(&uri, 0, MAX_HEADER).await
             && Header::parse(&prefix).is_some_and(|h| h.version >= self.version)
         {
             return Ok(());
@@ -168,7 +168,7 @@ impl TableState {
             doc.sections.insert(FOOTERS.into(), footers);
             bytes = encode(self.version, codec, &doc)?;
         }
-        Ok(host.put(&uri, bytes).await?)
+        Ok(store.put(&uri, bytes).await?)
     }
 }
 

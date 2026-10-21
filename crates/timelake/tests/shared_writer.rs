@@ -13,16 +13,16 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use common::{DAY, T0, batch, opts, rows, scalar_i64, schema, temp_lake};
-use lakekit_core::{Error as HostError, Result as HostResult};
+use lakekit_core::{Error as StoreError, Result as StoreResult};
 use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};
 use timelake_format::error::WriteError;
-use timelake_format::host::{Host, Listed, Upload, WriteHost};
+use timelake_format::store::{Env, Listed, Store, Upload, WriteEnv};
 use timelake_format::table::TableState;
 
 /// The shared writer's host over the engine's storage.
-struct EngineHost {
+struct EngineStore {
     storage: Storage,
     seed: AtomicU64,
     faults: Arc<Faults>,
@@ -48,17 +48,17 @@ const METADATA_LANDS_THEN_FAILS: usize = 2;
 const METADATA_FAILS: usize = 3;
 
 impl Faults {
-    fn data_write(&self, uri: &str) -> HostResult<()> {
+    fn data_write(&self, uri: &str) -> StoreResult<()> {
         let n = if uri.contains("/data/") { self.data_writes.fetch_add(1, Ordering::Relaxed) + 1 } else { 0 };
         if n > 0 && n == self.fail_data_write.load(Ordering::Relaxed) {
-            return Err(HostError::Store(format!("injected failure writing {uri}")));
+            return Err(StoreError::Store(format!("injected failure writing {uri}")));
         }
         Ok(())
     }
 }
 
-fn err(e: &timelake::Error) -> HostError {
-    HostError::Store(e.to_string())
+fn err(e: &timelake::Error) -> StoreError {
+    StoreError::Store(e.to_string())
 }
 
 struct BufferedUpload<'a> {
@@ -69,12 +69,12 @@ struct BufferedUpload<'a> {
 }
 
 impl Upload for BufferedUpload<'_> {
-    fn put_part(&mut self, bytes: Vec<u8>) -> impl Future<Output = HostResult<()>> {
+    fn put_part(&mut self, bytes: Vec<u8>) -> impl Future<Output = StoreResult<()>> {
         self.bytes.extend(bytes);
         std::future::ready(self.faults.data_write(&self.uri))
     }
 
-    async fn complete(self) -> HostResult<()> {
+    async fn complete(self) -> StoreResult<()> {
         self.faults.open_uploads.fetch_sub(1, Ordering::Relaxed);
         self.storage.write(&self.uri, Bytes::from(self.bytes)).await.map_err(|e| err(&e))
     }
@@ -84,57 +84,57 @@ impl Upload for BufferedUpload<'_> {
     }
 }
 
-impl EngineHost {
+impl EngineStore {
     fn new(lake: &Lake) -> Self {
         Self { storage: lake.storage().clone(), seed: AtomicU64::new(7), faults: Arc::default(), row_group_bytes: None }
     }
 }
 
-impl Host for &EngineHost {
+impl Store for &EngineStore {
     type Upload = BufferedUpload<'static>;
 
-    async fn get(&self, uri: &str) -> HostResult<Option<Vec<u8>>> {
+    async fn get(&self, uri: &str) -> StoreResult<Option<Vec<u8>>> {
         Ok(self.storage.read_opt(uri).await.map_err(|e| err(&e))?.map(|b| b.to_vec()))
     }
 
-    async fn get_range(&self, uri: &str, start: u64, len: u64) -> HostResult<Vec<u8>> {
+    async fn get_range(&self, uri: &str, start: u64, len: u64) -> StoreResult<Vec<u8>> {
         let bytes = self.storage.read(uri).await.map_err(|e| err(&e))?;
         let start = usize::try_from(start).unwrap().min(bytes.len());
         let end = start.saturating_add(usize::try_from(len).unwrap()).min(bytes.len());
         Ok(bytes[start..end].to_vec())
     }
 
-    async fn exists(&self, uri: &str) -> HostResult<bool> {
+    async fn exists(&self, uri: &str) -> StoreResult<bool> {
         self.storage.exists(uri).await.map_err(|e| err(&e))
     }
 
-    async fn put(&self, uri: &str, bytes: Vec<u8>) -> HostResult<()> {
+    async fn put(&self, uri: &str, bytes: Vec<u8>) -> StoreResult<()> {
         self.faults.data_write(uri)?;
         self.storage.write(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))
     }
 
-    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> HostResult<bool> {
+    async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> StoreResult<bool> {
         let fault =
             if uri.ends_with(".metadata.json") { self.faults.metadata_put.swap(0, Ordering::Relaxed) } else { 0 };
         if fault == METADATA_FAILS {
-            return Err(HostError::Store(format!("injected failure writing {uri}")));
+            return Err(StoreError::Store(format!("injected failure writing {uri}")));
         }
         let written = self.storage.write_if_absent(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))?;
         match fault {
             METADATA_LANDS_THEN_LOSES => Ok(false),
-            METADATA_LANDS_THEN_FAILS => Err(HostError::Store(format!("injected timeout writing {uri}"))),
+            METADATA_LANDS_THEN_FAILS => Err(StoreError::Store(format!("injected timeout writing {uri}"))),
             _ => Ok(written),
         }
     }
 
-    fn upload(&self, uri: &str) -> impl Future<Output = HostResult<BufferedUpload<'static>>> {
+    fn upload(&self, uri: &str) -> impl Future<Output = StoreResult<BufferedUpload<'static>>> {
         let storage: &'static Storage = Box::leak(Box::new(self.storage.clone()));
         self.faults.open_uploads.fetch_add(1, Ordering::Relaxed);
         let faults = self.faults.clone();
         std::future::ready(Ok(BufferedUpload { storage, uri: uri.to_string(), bytes: vec![], faults }))
     }
 
-    async fn list(&self, prefix: &str) -> HostResult<Vec<Listed>> {
+    async fn list(&self, prefix: &str) -> StoreResult<Vec<Listed>> {
         let dir = &prefix[..prefix.rfind('/').unwrap()];
         let listed = self.storage.list(dir).await.map_err(|e| err(&e))?;
         Ok(listed
@@ -144,10 +144,12 @@ impl Host for &EngineHost {
             .collect())
     }
 
-    async fn delete(&self, uris: &[String]) -> HostResult<()> {
+    async fn delete(&self, uris: &[String]) -> StoreResult<()> {
         self.storage.delete_many(uris.to_vec()).await.map(drop).map_err(|e| err(&e))
     }
+}
 
+impl Env for &EngineStore {
     fn now_ms(&self) -> i64 {
         chrono::Utc::now().timestamp_millis()
     }
@@ -162,7 +164,7 @@ impl Host for &EngineHost {
     }
 }
 
-impl WriteHost for &EngineHost {
+impl WriteEnv for &EngineStore {
     fn max_row_group_bytes(&self) -> Option<usize> {
         self.row_group_bytes
     }
@@ -189,7 +191,7 @@ async fn engine_and_shared_writer_take_turns() {
     // The engine appends one day of 10 devices.
     let (t, _) =
         t.append(&[batch(T0, 24, 3_600_000_000, 10, |d, i| f64::from(d) + i as f64)], no_maintenance()).await.unwrap();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     timelake::flush().await;
 
     // The shared writer loads that version from the head, and appends the next day plus a rewrite
@@ -253,7 +255,7 @@ async fn shared_maintenance_compacts_and_expires() {
     o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
     let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
     let location = t.location().to_string();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     let mut state = TableState::load(&&host, &location).await.unwrap();
     // Six small appends to one day with inline maintenance: the size tier merges at four files.
     let mut merged = 0;
@@ -321,7 +323,7 @@ async fn windowed_compaction_reads_every_row_once() {
     o.dedup = Some(false);
     let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
     let location = t.location().to_string();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     let mut state = TableState::load(&&host, &location).await.unwrap();
     // Noisy values, so 60,000-row files are a few MB and span several windows.
     for i in 0..3 {
@@ -367,7 +369,7 @@ async fn a_failed_write_deletes_the_files_it_finished() {
     let mut o = opts();
     o.properties.insert(timelake::property::TARGET_FILE_SIZE.into(), "1".into());
     let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     let state = TableState::load(&&host, t.location()).await.unwrap();
     let (day, batches) = aligned(&state, (0..3).map(|i| batch(T0 + i, 1, 1, 1, |_, _| 0.0)).collect());
     assert_eq!(write_files(&&host, &state, day, &batches).await.unwrap().len(), 3, "one file per batch");
@@ -388,7 +390,7 @@ async fn a_failed_write_aborts_its_multipart_upload() {
 
     let (_dir, lake) = temp_lake();
     let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-    let mut host = EngineHost::new(&lake);
+    let mut host = EngineStore::new(&lake);
     host.row_group_bytes = Some(1 << 20);
     host.faults.fail_data_write.store(2, Ordering::Relaxed);
     let state = TableState::load(&&host, t.location()).await.unwrap();
@@ -406,7 +408,7 @@ async fn a_shared_commit_whose_metadata_landed_is_the_commit() {
     for fault in [METADATA_LANDS_THEN_LOSES, METADATA_LANDS_THEN_FAILS] {
         let (dir, lake) = temp_lake();
         let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-        let host = EngineHost::new(&lake);
+        let host = EngineStore::new(&lake);
         let state = TableState::load(&&host, t.location()).await.unwrap();
         host.faults.metadata_put.store(fault, Ordering::Relaxed);
         let o = SharedAppend { batch_id: Some("b1".into()), ..shared_no_maintenance() };
@@ -421,7 +423,7 @@ async fn a_shared_commit_whose_metadata_landed_is_the_commit() {
 async fn an_unknown_shared_commit_outcome_deletes_nothing() {
     let (_dir, lake) = temp_lake();
     let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     let state = TableState::load(&&host, t.location()).await.unwrap();
     host.faults.metadata_put.store(METADATA_FAILS, Ordering::Relaxed);
     let err = append(&&host, state, &[batch(T0, 2, 1, 2, |_, _| 1.0)], &shared_no_maintenance()).await.unwrap_err();
@@ -440,7 +442,7 @@ async fn shared_expiry_deletes_nothing_when_a_kept_snapshot_is_broken() {
     o.properties.insert(timelake::property::SNAPSHOT_RETENTION.into(), "0s".into());
     o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
     let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-    let host = EngineHost::new(&lake);
+    let host = EngineStore::new(&lake);
     let mut state = TableState::load(&&host, t.location()).await.unwrap();
     for i in 0..3 {
         state = append(&&host, state, &[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], &shared_no_maintenance()).await.unwrap().0;

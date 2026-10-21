@@ -46,8 +46,8 @@ getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 # Until lakekit 0.1.0 is on crates.io (polythings/lakekit#7), as in the root Cargo.toml.
 [patch.crates-io]
-lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "a5db84b2fd591d591d20d3047055983a2274bdbb" }
-lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "a5db84b2fd591d591d20d3047055983a2274bdbb" }
+lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "ba5b89c59642d8619f3857e8fd22110888d7ded7" }
+lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "ba5b89c59642d8619f3857e8fd22110888d7ded7" }
 
 [profile.release]
 opt-level = "s"

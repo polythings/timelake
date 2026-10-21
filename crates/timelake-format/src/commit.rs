@@ -16,10 +16,10 @@ use arrow_select::filter::filter_record_batch;
 use lakekit_iceberg::{CommitHooks, CommitOptions, Extra, Table};
 
 use crate::error::{WriteError, WriteResult};
-use crate::host::{Host, uuid_v4};
 use crate::iceberg::{DataFile, Entry};
 use crate::metadata::TimelakeMetadata;
 use crate::rows::merge_latest;
+use crate::store::{Env, Store, uuid_v4};
 use crate::summary;
 use crate::table::{TableState, encode_index};
 
@@ -93,11 +93,11 @@ struct TimelakeHooks<'a, S> {
     index: Option<RecordBatch>,
 }
 
-impl<H: Host, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
+impl<H: Store + Env, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
     type Error = WriteError;
 
-    async fn reload(&mut self, host: &H, location: &str) -> WriteResult<Table> {
-        self.state = TableState::load(host, location).await?;
+    async fn reload(&mut self, store: &H, location: &str) -> WriteResult<Table> {
+        self.state = TableState::load(store, location).await?;
         Ok(self.state.table())
     }
 
@@ -106,7 +106,7 @@ impl<H: Host, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
             && self.props.get(summary::BATCH_ID).is_some_and(|id| base.metadata.history_has_batch(id))
     }
 
-    async fn extra(&mut self, host: &H, _: &Table, snapshot_id: i64) -> WriteResult<Extra> {
+    async fn extra(&mut self, store: &H, _: &Table, snapshot_id: i64) -> WriteResult<Extra> {
         let mut extra = Extra::default();
         // What a rollup reflects stays recorded until a refresh records something newer.
         let base_summary = self.state.metadata.summary();
@@ -115,9 +115,9 @@ impl<H: Host, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
                 extra.summary.insert(key.into(), v.clone());
             }
         }
-        self.index = new_index(host, &mut self.state, self.change).await?;
+        self.index = new_index(store, &mut self.state, self.change).await?;
         if let Some(index) = &self.index {
-            let uri = format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", self.state.location, uuid_v4(host));
+            let uri = format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", self.state.location, uuid_v4(store));
             extra.files.push((uri.clone(), encode_index(index)?));
             extra.summary.insert(summary::LAST_VALUE_INDEX.into(), uri);
         }
@@ -127,8 +127,8 @@ impl<H: Host, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
 
 /// Commits `change` on top of the newest version, retrying on conflicts. `props` go into the
 /// snapshot summary.
-pub async fn commit<H: Host, S: BuildHasher>(
-    host: &H,
+pub async fn commit<H: Store + Env, S: BuildHasher>(
+    store: &H,
     base: TableState,
     change: &Change,
     props: &HashMap<String, String, S>,
@@ -137,7 +137,7 @@ pub async fn commit<H: Host, S: BuildHasher>(
     let mut hooks = TimelakeHooks { state: base, change, props, index: None };
     let props: HashMap<String, String> = props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let (table, info) =
-        lakekit_iceberg::commit(host, table, &change.iceberg(), &props, &CommitOptions::default(), &mut hooks).await?;
+        lakekit_iceberg::commit(store, table, &change.iceberg(), &props, &CommitOptions::default(), &mut hooks).await?;
     let info = CommitInfo {
         snapshot_id: info.snapshot_id,
         version: info.version,
@@ -170,7 +170,7 @@ pub async fn commit<H: Host, S: BuildHasher>(
 }
 
 /// The last-value index of the new snapshot, if it changes: extended on append, trimmed on delete.
-async fn new_index<H: Host>(host: &H, base: &mut TableState, change: &Change) -> WriteResult<Option<RecordBatch>> {
+async fn new_index<S: Store>(store: &S, base: &mut TableState, change: &Change) -> WriteResult<Option<RecordBatch>> {
     match change {
         Change::Append { latest: Some(latest), .. } => {
             // Only extend an index that covers all existing rows.
@@ -179,7 +179,7 @@ async fn new_index<H: Host>(host: &H, base: &mut TableState, change: &Change) ->
             if base.last_value_index().is_none() && rows > 0 {
                 return Ok(None);
             }
-            let mut parts: Vec<RecordBatch> = base.last_values(host).await?.into_iter().collect();
+            let mut parts: Vec<RecordBatch> = base.last_values(store).await?.into_iter().collect();
             parts.push(latest.clone());
             merge_latest(&base.schema, &base.contract, &parts)
         }
@@ -188,7 +188,7 @@ async fn new_index<H: Host>(host: &H, base: &mut TableState, change: &Change) ->
             let (Some(cutoff), Some(time_column)) = (lvi_cutoff, base.contract.time_column.clone()) else {
                 return Ok(None);
             };
-            let Some(index) = base.last_values(host).await? else { return Ok(None) };
+            let Some(index) = base.last_values(store).await? else { return Ok(None) };
             let times = cast(index.column(index.schema().index_of(&time_column)?), &DataType::Int64)?;
             let keep = gt_eq(&times, &Int64Array::new_scalar(*cutoff))?;
             Ok(Some(filter_record_batch(&index, &keep)?))

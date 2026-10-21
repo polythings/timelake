@@ -21,11 +21,11 @@ use parquet::file::reader::{ChunkReader, Length};
 use crate::append::PartitionFiles;
 use crate::commit::{Change, commit, put_metadata};
 use crate::error::{WriteError, WriteResult};
-use crate::host::WriteHost;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list, time_partition};
 use crate::merge::{Merge, Step};
 use crate::metadata::TimelakeMetadata;
 use crate::rows::{align_batch, stable_sort};
+use crate::store::{Store, WriteEnv};
 use crate::table::{TableState, metadata_uri};
 
 /// Files smaller than this fraction of the target size count as small.
@@ -147,21 +147,21 @@ impl MaintainReport {
 }
 
 /// Runs maintenance: retention, then compaction, then snapshot expiry. Returns the new version.
-pub async fn maintain<H: WriteHost>(
-    host: &H,
+pub async fn maintain<H: Store + WriteEnv>(
+    store: &H,
     table: TableState,
     opts: &MaintainOptions,
 ) -> WriteResult<(TableState, MaintainReport)> {
     let mut report = MaintainReport::default();
     let mut table = table;
     if opts.retention {
-        table = retention(host, table, &mut report).await?;
+        table = retention(store, table, &mut report).await?;
     }
     if opts.compact {
-        table = compact(host, table, opts, &mut report).await?;
+        table = compact(store, table, opts, &mut report).await?;
     }
     if opts.expire {
-        table = expire(host, table, &mut report).await?;
+        table = expire(store, table, &mut report).await?;
     }
     Ok((table, report))
 }
@@ -171,16 +171,16 @@ fn micros(d: Duration) -> i64 {
 }
 
 /// Drops whole time partitions entirely older than the retention period.
-async fn retention<H: WriteHost>(
-    host: &H,
+async fn retention<H: Store + WriteEnv>(
+    store: &H,
     mut table: TableState,
     report: &mut MaintainReport,
 ) -> WriteResult<TableState> {
     let (Some(retention), Some(chunk)) = (table.contract.retention, table.contract.chunk) else { return Ok(table) };
-    let cutoff = host.now_ms().saturating_mul(1000).saturating_sub(micros(retention));
+    let cutoff = store.now_ms().saturating_mul(1000).saturating_sub(micros(retention));
     let expired = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
     let removed: Vec<Entry> = table
-        .live_files(host)
+        .live_files(store)
         .await?
         .iter()
         .filter(|e| time_partition(&e.file).is_some_and(expired))
@@ -192,18 +192,18 @@ async fn retention<H: WriteHost>(
     report.partitions_dropped += removed.iter().map(|e| time_partition(&e.file)).collect::<HashSet<_>>().len();
     report.files_dropped += removed.len();
     let change = Change::Delete { removed, lvi_cutoff: Some(cutoff) };
-    Ok(commit(host, table, &change, &HashMap::<String, String>::new()).await?.0)
+    Ok(commit(store, table, &change, &HashMap::<String, String>::new()).await?.0)
 }
 
 /// Rewrites groups of small (or unsorted) files into sorted files of the target size, removing
 /// duplicate `(series, time)` rows (latest write wins) when dedup is on.
-async fn compact<H: WriteHost>(
-    host: &H,
+async fn compact<H: Store + WriteEnv>(
+    store: &H,
     mut table: TableState,
     opts: &MaintainOptions,
     report: &mut MaintainReport,
 ) -> WriteResult<TableState> {
-    let plan = compaction_plan(host, &mut table, opts).await?;
+    let plan = compaction_plan(store, &mut table, opts).await?;
     // Groups larger than a merge takes are split into balanced parts, consecutive in commit order.
     let mut plan: Vec<(Option<i32>, Vec<Entry>)> = plan
         .into_iter()
@@ -233,7 +233,7 @@ async fn compact<H: WriteHost>(
     for (partition, files) in plan {
         // The files are a run in commit order; the new files take the run's place in that order.
         let sequence_number = files.iter().map(|f| f.sequence_number).max().unwrap_or_default();
-        match rewrite(host, &table, partition, &files, report).await {
+        match rewrite(store, &table, partition, &files, report).await {
             Ok(out) => {
                 for (file, footer) in out {
                     written.push((file.path.clone(), footer));
@@ -253,20 +253,20 @@ async fn compact<H: WriteHost>(
     let committed = match outcome {
         Ok(()) => {
             let change = Change::Replace { removed, added, sequence_numbers };
-            commit(host, table, &change, &HashMap::<String, String>::new()).await
+            commit(store, table, &change, &HashMap::<String, String>::new()).await
         }
         Err(e) => Err(e),
     };
     match committed {
         Ok((mut table, _)) => {
             table.footers.extend(written);
-            let _ = table.write_head(host).await;
+            let _ = table.write_head(store).await;
             Ok(table)
         }
         Err(e) => {
             // Unreferenced, unless the commit's outcome is unknown: a failed cleanup only wastes space.
             if !matches!(e, WriteError::CommitUnknown(_)) {
-                let _ = host.delete(&paths).await;
+                let _ = store.delete(&paths).await;
             }
             Err(e)
         }
@@ -282,8 +282,8 @@ fn time_field_id(table: &TableState) -> Option<i32> {
 
 /// Which files of which partitions to rewrite (the engine's plan). Each group is a run of files
 /// next to each other in commit order.
-async fn compaction_plan<H: WriteHost>(
-    host: &H,
+async fn compaction_plan<H: Store + WriteEnv>(
+    store: &H,
     table: &mut TableState,
     opts: &MaintainOptions,
 ) -> WriteResult<Vec<(Option<i32>, Vec<Entry>)>> {
@@ -294,7 +294,7 @@ async fn compaction_plan<H: WriteHost>(
     let sorted_table = !c.sort_columns().is_empty();
     let min_files = opts.min_small_files.max(2);
     let time_id = time_field_id(table);
-    let files = table.live_files(host).await?.to_vec();
+    let files = table.live_files(store).await?.to_vec();
 
     let cold: HashSet<Option<i32>> = match (opts.tiered, opts.cold_after, c.chunk, time_id) {
         (true, Some(cold_after), Some(chunk), Some(id)) => {
@@ -351,8 +351,8 @@ async fn compaction_plan<H: WriteHost>(
 }
 
 /// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files.
-async fn rewrite<H: WriteHost>(
-    host: &H,
+async fn rewrite<H: Store + WriteEnv>(
+    store: &H,
     table: &TableState,
     partition: Option<i32>,
     files: &[Entry],
@@ -366,19 +366,19 @@ async fn rewrite<H: WriteHost>(
     for e in files {
         let footer = match table.footers.get(&e.file.path) {
             Some(bytes) => decode_footer(bytes)?,
-            None => read_footer(host, &e.file.path, e.file.file_size).await?,
+            None => read_footer(store, &e.file.path, e.file.file_size).await?,
         };
         let sorted = order.is_empty() || e.file.sort_order_id == sort_order_id;
         inputs.push(Input::new(e.file.path.clone(), e.file.file_size, footer, sorted));
     }
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
     let mut merge = Merge::new(table.schema.clone(), &keys, unique, files.len(), MERGED_BATCH_ROWS)?;
-    let mut out = PartitionFiles::new(host, table, partition)?;
+    let mut out = PartitionFiles::new(store, table, partition)?;
     let merged = async {
         loop {
             match merge.step()? {
                 Step::Need(i) => {
-                    let batch = inputs[i].next(host, table, &order).await?;
+                    let batch = inputs[i].next(store, table, &order).await?;
                     merge.push(i, batch)?;
                 }
                 Step::Output(batch) => out.write(&batch).await?,
@@ -423,9 +423,9 @@ impl Input {
     }
 
     /// The next batch, aligned to the table schema; `None` at the end.
-    async fn next<H: WriteHost>(
+    async fn next<H: Store + WriteEnv>(
         &mut self,
-        host: &H,
+        store: &H,
         table: &TableState,
         order: &[String],
     ) -> WriteResult<Option<RecordBatch>> {
@@ -439,7 +439,7 @@ impl Input {
             }
             if !self.sorted {
                 // Another engine's file: read it whole and sort it on its own.
-                let all = read_row_groups(host, &self.path, self.size, &self.metadata, 0..groups).await?;
+                let all = read_row_groups(store, &self.path, self.size, &self.metadata, 0..groups).await?;
                 let aligned = all.map(|b| align_batch(&b?, &table.schema)).collect::<WriteResult<Vec<_>>>()?;
                 let sorted = stable_sort(&concat_batches(&table.schema, &aligned)?, order)?;
                 let n = sorted.num_rows();
@@ -457,12 +457,12 @@ impl Input {
             }
             if self.metadata.offset_index().is_none() {
                 let group = self.group..self.group + 1;
-                self.batches = read_row_groups(host, &self.path, self.size, &self.metadata, group).await?;
+                self.batches = read_row_groups(store, &self.path, self.size, &self.metadata, group).await?;
                 self.row = rows;
                 continue;
             }
             let end = (self.row + self.window_rows()).min(rows);
-            self.batches = self.read_window(host, self.row, end).await?;
+            self.batches = self.read_window(store, self.row, end).await?;
             self.row = end;
         }
     }
@@ -475,7 +475,7 @@ impl Input {
     }
 
     /// Rows `start..end` of the current row group, from the pages that cover them.
-    async fn read_window<H: WriteHost>(&mut self, host: &H, start: usize, end: usize) -> WriteResult<Batches> {
+    async fn read_window<H: Store + WriteEnv>(&mut self, store: &H, start: usize, end: usize) -> WriteResult<Batches> {
         let group = self.metadata.row_group(self.group);
         let rows = group.num_rows().unsigned_abs();
         let Some(index) = self.metadata.offset_index().and_then(|i| i.get(self.group)) else {
@@ -510,7 +510,7 @@ impl Input {
         }
         let path = self.path.as_str();
         let fetch = |(from, len): (u64, u64)| async move {
-            Ok::<_, crate::error::WriteError>((from, Bytes::from(host.get_range(path, from, len).await?)))
+            Ok::<_, crate::error::WriteError>((from, Bytes::from(store.get_range(path, from, len).await?)))
         };
         let (pages, new_dictionaries) = futures_util::future::join(
             futures_util::future::try_join_all(ranges.into_iter().map(fetch)),
@@ -572,8 +572,8 @@ impl Sparse {
 }
 
 /// The batches of row groups `groups` of the file at `path`, read with one ranged request.
-async fn read_row_groups<H: WriteHost>(
-    host: &H,
+async fn read_row_groups<H: Store + WriteEnv>(
+    store: &H,
     path: &str,
     file_len: u64,
     metadata: &Arc<ParquetMetaData>,
@@ -586,7 +586,7 @@ async fn read_row_groups<H: WriteHost>(
     if start >= end {
         return Ok(Box::new(std::iter::empty()));
     }
-    let bytes = Bytes::from(host.get_range(path, start, end - start).await?);
+    let bytes = Bytes::from(store.get_range(path, start, end - start).await?);
     let reader = Sparse { parts: vec![(start, bytes)], file_len };
     let options = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Skip);
     let reader_metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata), options)?;
@@ -610,10 +610,10 @@ fn decode_footer(bytes: &[u8]) -> WriteResult<Arc<ParquetMetaData>> {
 }
 
 /// Reads the footer of the file at `path` of `size` bytes (one request for typical files).
-async fn read_footer<H: WriteHost>(host: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
+async fn read_footer<H: Store + WriteEnv>(store: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
     let mut want = FOOTER_PREFETCH.min(size);
     loop {
-        let tail = Bytes::from(host.get_range(path, size - want, want).await?);
+        let tail = Bytes::from(store.get_range(path, size - want, want).await?);
         let mut reader = ParquetMetaDataReader::new()
             .with_column_index_policy(PageIndexPolicy::Skip)
             .with_offset_index_policy(PageIndexPolicy::Optional);
@@ -628,12 +628,16 @@ async fn read_footer<H: WriteHost>(host: &H, path: &str, size: u64) -> WriteResu
 // --- expiry ----------------------------------------------------------------------------------
 
 /// Expires old snapshots and deletes the files only they referenced.
-async fn expire<H: WriteHost>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
+async fn expire<H: Store + WriteEnv>(
+    store: &H,
+    table: TableState,
+    report: &mut MaintainReport,
+) -> WriteResult<TableState> {
     let mut table = table;
     loop {
         let mut snapshots = table.metadata.snapshot_list();
         snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
-        let expired = expired_snapshots(&table, &snapshots, host.now_ms());
+        let expired = expired_snapshots(&table, &snapshots, store.now_ms());
         if expired.is_empty() {
             return Ok(table);
         }
@@ -641,25 +645,25 @@ async fn expire<H: WriteHost>(host: &H, table: TableState, report: &mut Maintain
         // What the kept snapshots use, read in full before anything changes: a file left out
         // would be deleted.
         let remaining: Vec<_> = snapshots.iter().filter(|s| !ids.contains(&s.id)).cloned().collect();
-        let kept = reachable(host, &remaining, Missing::Error).await?;
+        let kept = reachable(store, &remaining, Missing::Error).await?;
         let previous = metadata_uri(&table.location, table.version);
-        let metadata = table.metadata.without_snapshots(&ids, &previous, host.now_ms())?;
+        let metadata = table.metadata.without_snapshots(&ids, &previous, store.now_ms())?;
         let version = table.version + 1;
-        if !put_metadata(host, &metadata_uri(&table.location, version), metadata.to_json().into_bytes()).await? {
-            table = TableState::load(host, &table.location).await?;
+        if !put_metadata(store, &metadata_uri(&table.location, version), metadata.to_json().into_bytes()).await? {
+            table = TableState::load(store, &table.location).await?;
             continue;
         }
         report.snapshots_expired += expired.len();
         let mut expired_table = table.clone();
         expired_table.version = version;
         expired_table.metadata = metadata;
-        let _ = host.put(&crate::table::hint_uri(&table.location), version.to_string().into_bytes()).await;
-        let gone = reachable(host, &expired, Missing::Skip).await?;
+        let _ = store.put(&crate::table::hint_uri(&table.location), version.to_string().into_bytes()).await;
+        let gone = reachable(store, &expired, Missing::Skip).await?;
         let doomed: Vec<String> = gone.difference(&kept).cloned().collect();
-        host.delete(&doomed).await?;
+        store.delete(&doomed).await?;
         report.objects_deleted += doomed.len();
-        report.objects_deleted += prune_metadata_files(host, &expired_table).await?;
-        let _ = expired_table.write_head(host).await;
+        report.objects_deleted += prune_metadata_files(store, &expired_table).await?;
+        let _ = expired_table.write_head(store).await;
         return Ok(expired_table);
     }
 }
@@ -698,8 +702,8 @@ enum Missing {
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
-async fn reachable<H: WriteHost>(
-    host: &H,
+async fn reachable<H: Store + WriteEnv>(
+    store: &H,
     snapshots: &[crate::metadata::SnapshotRef],
     missing: Missing,
 ) -> WriteResult<HashSet<String>> {
@@ -716,7 +720,7 @@ async fn reachable<H: WriteHost>(
         if let Some(index) = &s.last_value_index {
             out.insert(index.clone());
         }
-        let Some(bytes) = host.get(&s.manifest_list).await? else {
+        let Some(bytes) = store.get(&s.manifest_list).await? else {
             if missing == Missing::Error {
                 return Err(absent(s.id, &s.manifest_list));
             }
@@ -728,7 +732,7 @@ async fn reachable<H: WriteHost>(
         }
     }
     for (snapshot, m) in manifests.values() {
-        let Some(bytes) = host.get(&m.path).await? else {
+        let Some(bytes) = store.get(&m.path).await? else {
             if missing == Missing::Error {
                 return Err(absent(*snapshot, &m.path));
             }
@@ -745,9 +749,9 @@ async fn reachable<H: WriteHost>(
 }
 
 /// Keeps the newest metadata files (those in the metadata log plus the current one).
-async fn prune_metadata_files<H: WriteHost>(host: &H, table: &TableState) -> WriteResult<usize> {
+async fn prune_metadata_files<H: Store + WriteEnv>(store: &H, table: &TableState) -> WriteResult<usize> {
     let keep_from = table.version.saturating_sub(table.metadata.metadata_log_len() as u64 + 1);
-    let doomed: Vec<String> = host
+    let doomed: Vec<String> = store
         .list(&format!("{}/metadata/v", table.location))
         .await?
         .into_iter()
@@ -760,6 +764,6 @@ async fn prune_metadata_files<H: WriteHost>(host: &H, table: &TableState) -> Wri
                 .is_some_and(|v| v < keep_from)
         })
         .collect();
-    host.delete(&doomed).await?;
+    store.delete(&doomed).await?;
     Ok(doomed.len())
 }

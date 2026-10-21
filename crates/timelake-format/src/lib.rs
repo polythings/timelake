@@ -2,8 +2,8 @@
 //! WebAssembly reader and writer (`timelake-wasm`) share one definition: the table contract stored
 //! in `timelake.*` properties, time partition math, and Iceberg bound decoding. With the `write`
 //! feature, also the write path: preparing rows, writing Parquet with Iceberg statistics,
-//! manifests and table metadata, and appending and committing over a [`host::Host`] that the
-//! caller implements (spec 13).
+//! manifests and table metadata, and appending and committing over a [`store::Store`] and
+//! [`store::Env`] that the caller implements (spec 13).
 //!
 //! ```
 //! use std::collections::HashMap;
@@ -38,8 +38,6 @@ pub mod file;
 #[cfg(feature = "head")]
 pub mod head;
 #[cfg(feature = "write")]
-pub mod host;
-#[cfg(feature = "write")]
 pub mod iceberg;
 #[cfg(feature = "write")]
 pub mod maintain;
@@ -50,6 +48,8 @@ pub mod metadata;
 #[cfg(feature = "write")]
 pub mod rows;
 pub mod settings;
+#[cfg(feature = "write")]
+pub mod store;
 #[cfg(feature = "write")]
 pub mod table;
 pub mod version;

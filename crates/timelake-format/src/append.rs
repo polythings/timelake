@@ -10,10 +10,10 @@ use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataWriter};
 use crate::commit::{Change, CommitInfo, commit};
 use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
-use crate::host::{Upload, WriteHost, uuid_v7};
 use crate::iceberg::{DataFile, partition_values};
 use crate::maintain::{MaintainOptions, MaintainReport, maintain};
 use crate::rows::{latest_of_sorted, sort_and_split};
+use crate::store::{Store, Upload, WriteEnv, uuid_v7};
 use crate::summary;
 use crate::table::TableState;
 
@@ -52,13 +52,13 @@ pub struct AppendReport {
 }
 
 /// Appends `batches` to `table` as one commit; returns the new version.
-pub async fn append<H: WriteHost>(
-    host: &H,
+pub async fn append<H: Store + WriteEnv>(
+    store: &H,
     table: TableState,
     batches: &[RecordBatch],
     opts: &AppendOptions,
 ) -> WriteResult<(TableState, AppendReport)> {
-    let now_us = host.now_ms().saturating_mul(1000);
+    let now_us = store.now_ms().saturating_mul(1000);
     let partitions = sort_and_split(&table.schema, &table.contract, batches, now_us)?;
     let rows = partitions.iter().flat_map(|(_, b)| b).map(RecordBatch::num_rows).sum();
     let touched: HashSet<Option<i32>> = partitions.iter().map(|(p, _)| *p).collect();
@@ -67,7 +67,7 @@ pub async fn append<H: WriteHost>(
     let mut footers = vec![];
     let result = async {
         for (partition, batches) in &partitions {
-            for (file, footer) in write_files(host, &table, *partition, batches).await? {
+            for (file, footer) in write_files(store, &table, *partition, batches).await? {
                 footers.push((file.path.clone(), footer));
                 files.push(file);
             }
@@ -77,7 +77,7 @@ pub async fn append<H: WriteHost>(
     .await;
     let paths: Vec<String> = files.iter().map(|f: &DataFile| f.path.clone()).collect();
     if let Err(e) = result {
-        let _ = host.delete(&paths).await;
+        let _ = store.delete(&paths).await;
         return Err(e);
     }
     if files.is_empty() {
@@ -89,26 +89,26 @@ pub async fn append<H: WriteHost>(
     if let Some(id) = &opts.batch_id {
         props.insert(summary::BATCH_ID.into(), id.clone());
     }
-    let committed = commit(host, table, &Change::Append { files, latest }, &props).await;
+    let committed = commit(store, table, &Change::Append { files, latest }, &props).await;
     if !matches!(&committed, Ok((_, info)) if !info.duplicate)
         && !matches!(committed, Err(WriteError::CommitUnknown(_)))
     {
         // Nothing references the data files.
-        let _ = host.delete(&paths).await;
+        let _ = store.delete(&paths).await;
     }
     let (mut table, info) = committed?;
     if info.duplicate {
         return Ok((table, AppendReport { commit: info, ..AppendReport::default() }));
     }
     table.footers.extend(footers);
-    let _ = table.write_head(host).await;
+    let _ = table.write_head(store).await;
     let mut report = AppendReport { rows, files: n_files, bytes, commit: info, maintenance: None };
     if !opts.maintain.unwrap_or(table.contract.auto_maintain) {
         return Ok((table, report));
     }
-    let mut maintain_opts = MaintainOptions::inline(&table, touched, host.now_ms());
+    let mut maintain_opts = MaintainOptions::inline(&table, touched, store.now_ms());
     maintain_opts.max_bytes = opts.max_compact_bytes;
-    match maintain(host, table.clone(), &maintain_opts).await {
+    match maintain(store, table.clone(), &maintain_opts).await {
         Ok((maintained, done)) => {
             report.maintenance = (!done.is_noop()).then_some(Ok(done));
             Ok((maintained, report))
@@ -122,13 +122,13 @@ pub async fn append<H: WriteHost>(
 
 /// Writes the sorted rows of one partition as data files of the table's target size, each with its
 /// encoded footer (for the head).
-pub async fn write_files<H: WriteHost>(
-    host: &H,
+pub async fn write_files<H: Store + WriteEnv>(
+    store: &H,
     table: &TableState,
     partition: Option<i32>,
     batches: &[RecordBatch],
 ) -> WriteResult<Vec<(DataFile, Vec<u8>)>> {
-    let mut writer = PartitionFiles::new(host, table, partition)?;
+    let mut writer = PartitionFiles::new(store, table, partition)?;
     for rows in batches {
         if let Err(e) = writer.write(rows).await {
             writer.abort().await;
@@ -140,15 +140,15 @@ pub async fn write_files<H: WriteHost>(
 
 /// Writes sorted batches of one partition into files of the target size, uploading as they grow.
 /// After a failed [`write`](Self::write), [`abort`](Self::abort) removes what was written.
-pub struct PartitionFiles<'a, H: WriteHost> {
-    host: &'a H,
+pub struct PartitionFiles<'a, H: Store + WriteEnv> {
+    store: &'a H,
     table: &'a TableState,
     partition: Option<i32>,
     open: Option<OpenFile<H::Upload>>,
     done: Vec<(DataFile, Vec<u8>)>,
 }
 
-impl<H: WriteHost> std::fmt::Debug for PartitionFiles<'_, H> {
+impl<H: Store + WriteEnv> std::fmt::Debug for PartitionFiles<'_, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionFiles").field("partition", &self.partition).finish_non_exhaustive()
     }
@@ -196,10 +196,10 @@ impl Pending {
     }
 }
 
-impl<'a, H: WriteHost> PartitionFiles<'a, H> {
+impl<'a, H: Store + WriteEnv> PartitionFiles<'a, H> {
     /// A writer of `partition`'s files for `table`.
-    pub fn new(host: &'a H, table: &'a TableState, partition: Option<i32>) -> WriteResult<Self> {
-        Ok(Self { host, table, partition, open: None, done: vec![] })
+    pub fn new(store: &'a H, table: &'a TableState, partition: Option<i32>) -> WriteResult<Self> {
+        Ok(Self { store, table, partition, open: None, done: vec![] })
     }
 
     fn dir(&self) -> String {
@@ -220,12 +220,12 @@ impl<'a, H: WriteHost> PartitionFiles<'a, H> {
         let file = if let Some(f) = self.open.take() {
             f
         } else {
-            let page_rows = self.host.data_page_rows();
+            let page_rows = self.store.data_page_rows();
             let props = writer_properties(&self.table.schema, &self.table.contract, &created_by(), page_rows)?;
             OpenFile {
-                uri: format!("{}/{}.parquet", self.dir(), uuid_v7(self.host)),
+                uri: format!("{}/{}.parquet", self.dir(), uuid_v7(self.store)),
                 writer: FileWriter::new(self.table.schema.clone(), props)?
-                    .with_max_row_group_bytes(self.host.max_row_group_bytes()),
+                    .with_max_row_group_bytes(self.store.max_row_group_bytes()),
                 pending: Pending::default(),
                 upload: None,
             }
@@ -237,7 +237,7 @@ impl<'a, H: WriteHost> PartitionFiles<'a, H> {
         // Parts of exactly PART_BYTES: R2 requires every part but the last to have the same size.
         while file.pending.len >= PART_BYTES {
             if file.upload.is_none() {
-                file.upload = Some(self.host.upload(&file.uri).await?);
+                file.upload = Some(self.store.upload(&file.uri).await?);
             }
             if let Some(upload) = &mut file.upload {
                 upload.put_part(file.pending.take(PART_BYTES)).await?;
@@ -270,7 +270,7 @@ impl<'a, H: WriteHost> PartitionFiles<'a, H> {
             match sent {
                 Ok(stats) => {
                     if let Err(e) = u.complete().await {
-                        let _ = self.host.delete(std::slice::from_ref(&uri)).await;
+                        let _ = self.store.delete(std::slice::from_ref(&uri)).await;
                         return Err(e.into());
                     }
                     stats
@@ -284,8 +284,8 @@ impl<'a, H: WriteHost> PartitionFiles<'a, H> {
             let (rest, stats) = finished?;
             pending.extend(rest);
             let all = pending.len;
-            if let Err(e) = self.host.put(&uri, pending.take(all)).await {
-                let _ = self.host.delete(std::slice::from_ref(&uri)).await;
+            if let Err(e) = self.store.put(&uri, pending.take(all)).await {
+                let _ = self.store.delete(std::slice::from_ref(&uri)).await;
                 return Err(e.into());
             }
             stats
@@ -315,7 +315,7 @@ impl<'a, H: WriteHost> PartitionFiles<'a, H> {
         }
         let paths: Vec<String> = self.done.into_iter().map(|(f, _)| f.path).collect();
         if !paths.is_empty() {
-            let _ = self.host.delete(&paths).await;
+            let _ = self.store.delete(&paths).await;
         }
     }
 }
