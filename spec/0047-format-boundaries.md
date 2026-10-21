@@ -6,7 +6,7 @@ status: planned
 updated: 2026-10-21
 versions: []
 related: [1, 2, 7, 9, 12, 13, 21, 24]
-issues: [189, 190, 191]
+issues: [189, 190, 191, 193]
 ---
 
 # 47. Table and file formats behind boundaries
@@ -84,7 +84,7 @@ Iceberg reader.
 
 1. lakekit 0.1 is published and [#186](https://github.com/polythings/timelake/pull/186) is merged.
 2. [loko#2](https://github.com/polythings/loko/issues/2) gives `Send` futures, for the engine's multi-threaded executor.
-3. Arrow moves to the newest DataFusion's major, as lakekit's D17 has it. DataFusion 56 also brings a native
+3. Arrow moves to the newest DataFusion's major, as lakekit's D17 has it ([#193](https://github.com/polythings/timelake/issues/193)). DataFusion 56 also brings a native
    `ASOF JOIN`, after which Timelake's own (spec 28) can go.
 4. The table view: lakekit#13, here #189.
 5. File formats: lakekit#14, here #190.
@@ -104,6 +104,8 @@ Iceberg reader.
   instead of iceberg-rust
 - [#190](https://github.com/polythings/timelake/issues/190) Data files through a `FileFormat` trait, Parquet first
 - [#191](https://github.com/polythings/timelake/issues/191) Vortex data files, once Iceberg lists the format
+- [#193](https://github.com/polythings/timelake/issues/193) Follow the newest DataFusion's Arrow; on DataFusion 56,
+  replace our ASOF JOIN with DataFusion's
 
 ## History
 
