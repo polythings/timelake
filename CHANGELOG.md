@@ -329,6 +329,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: `timelake_format::rollup` holds a rollup's aggregates as `timelake.rollup-aggregates` stores them, each
   function a `RollupFunction` (the stored JSON is unchanged), and the settings registry checks that property against
   it.
+- Rust API: `timelake_format::IcebergType` names a column's Iceberg type: `bounds::decode` takes one and
+  `metadata::Column::iceberg_type` is one (`Nested` for structs, lists and maps). `NewSnapshot::operation` is an
+  `Operation`, which moved to `timelake_format::metadata` (still re-exported from `commit`).
 - Rust API: `timelake_format::FormatError` is an enum (`FormatError::Invalid` holds a message; Arrow and JSON errors
   of the head keep their cause), and `WriteError` reports its cause through `source()`, with Avro errors as
   `WriteError::Avro`. An append's `maintenance` error is the `WriteError` itself, not its message. Arrow errors are no

@@ -56,8 +56,9 @@ fn query(spec: Value) -> (usize, Value) {
 #[test]
 fn parses_metadata_and_manifests() {
     let (meta, files) = load();
-    let fields: Vec<_> = meta.schema.iter().map(|f| (f.name.as_str(), f.ty.as_str(), f.required)).collect();
-    assert_eq!(fields, [("time", "timestamptz", true), ("tags_id", "int", false), ("velocity", "double", false)]);
+    let fields: Vec<_> = meta.schema.iter().map(|f| (f.name.as_str(), f.ty.to_string(), f.required)).collect();
+    let types = [("time", "timestamptz", true), ("tags_id", "int", false), ("velocity", "double", false)];
+    assert_eq!(fields, types.map(|(name, ty, required)| (name, ty.to_string(), required)));
     assert_eq!(meta.time_column.as_deref(), Some("time"));
     assert_eq!(meta.series_key, ["tags_id"]);
     assert_eq!(meta.chunk.as_deref(), Some("day"));

@@ -32,11 +32,11 @@ use crate::schema::{UTC, normalize_schema};
 use crate::settings::{self, Level};
 use crate::storage::{Storage, warehouse_url};
 use crate::table::{FreshnessCheck, LiveEntry, Table};
-use timelake_format::INGEST_TIME_COLUMN;
 use timelake_format::iceberg::{Status, inherit_sequence};
 use timelake_format::layout::{
     hint_uri, metadata_prefix, metadata_uri, metadata_version, partition_field_name, table_location, tables_index_uri,
 };
+use timelake_format::{CompressionCodec, INGEST_TIME_COLUMN};
 
 /// Where a cold load starts.
 enum Start {
@@ -476,9 +476,9 @@ fn new_table_metadata(
     let mut props: HashMap<String, String> = HashMap::from([
         (property::FORMAT_VERSION.into(), timelake_format::FORMAT_VERSION.to_string()),
         ("write.format.default".into(), "parquet".into()),
-        ("write.parquet.compression-codec".into(), "zstd".into()),
+        (property::COMPRESSION_CODEC.into(), CompressionCodec::Zstd.to_string()),
         // Keep metadata.json small: it is read by every query.
-        ("write.metadata.previous-versions-max".into(), "20".into()),
+        (property::METADATA_PREVIOUS_VERSIONS_MAX.into(), "20".into()),
     ]);
     match &opts.time_column {
         Some(time_column) => {

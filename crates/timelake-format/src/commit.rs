@@ -83,27 +83,7 @@ pub enum Change<D, E> {
     },
 }
 
-/// Iceberg's snapshot operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Operation {
-    /// Only adds files.
-    Append,
-    /// Replaces files with files holding the same rows (or changes no data).
-    Replace,
-    /// Only removes files.
-    Delete,
-}
-
-impl Operation {
-    /// The name in the snapshot summary.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Append => "append",
-            Self::Replace => "replace",
-            Self::Delete => "delete",
-        }
-    }
-}
+pub use crate::metadata::Operation;
 
 /// What a commit does with the last-value index (the newest row per series).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -482,7 +462,7 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
             sequence_number,
             timestamp_ms: now,
             manifest_list: list_uri,
-            operation: change.operation().as_str().into(),
+            operation: change.operation(),
             summary,
         };
         let previous = metadata_uri(&base.location, base.version);

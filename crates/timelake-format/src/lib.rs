@@ -57,6 +57,7 @@ pub mod rows;
 pub mod settings;
 #[cfg(feature = "write")]
 pub mod table;
+pub mod types;
 pub mod value;
 pub mod version;
 
@@ -64,6 +65,7 @@ pub use contract::{
     Chunk, Contract, NO_HEAD, TableOptions, duration_micros, duration_millis, format_duration, parse_duration,
     parse_duration_or_off,
 };
+pub use types::IcebergType;
 pub use value::{AutoBool, Compression, CompressionCodec, FloatEncoding, ReadDedupStrategy, SeriesOrder};
 pub use version::FormatVersion;
 
@@ -148,10 +150,14 @@ pub mod property {
     pub const COMPRESSION_CODEC: &str = "write.parquet.compression-codec";
     /// Iceberg's Parquet compression level, for `zstd`, `gzip` and `brotli`.
     pub const COMPRESSION_LEVEL: &str = "write.parquet.compression-level";
+    /// Iceberg's count of earlier metadata files the metadata log keeps.
+    pub const METADATA_PREVIOUS_VERSIONS_MAX: &str = "write.metadata.previous-versions-max";
 }
 
 /// Snapshot summary keys: Timelake's own, and the standard Iceberg counters Timelake maintains.
 pub mod summary {
+    /// Iceberg's snapshot operation (`append`, `replace`, `delete`).
+    pub const OPERATION: &str = "operation";
     /// Location of the snapshot's last-value index.
     pub const LAST_VALUE_INDEX: &str = "timelake.last-value-index";
     /// The writer-supplied idempotency key of an append.

@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::error::{WriteError, WriteResult};
 use crate::iceberg::PartitionField;
 use crate::rows::UTC;
-use crate::{Chunk, Contract};
+use crate::{Chunk, Contract, IcebergType, property, summary};
 
 /// The Arrow metadata key carrying an Iceberg field id, as Parquet and iceberg-rust use it.
 pub const FIELD_ID_KEY: &str = "PARQUET:field_id";
@@ -86,7 +86,7 @@ impl Metadata {
     pub fn history_has_batch(&self, batch_id: &str) -> bool {
         let mut id = self.current_snapshot_id();
         while let Some(s) = id.and_then(|id| self.snapshot(id)) {
-            if s.pointer("/summary/timelake.batch-id").and_then(Value::as_str) == Some(batch_id) {
+            if s.get("summary").and_then(|m| m.get(summary::BATCH_ID)).and_then(Value::as_str) == Some(batch_id) {
                 return true;
             }
             id = s.get("parent-snapshot-id").and_then(Value::as_i64);
@@ -137,7 +137,7 @@ impl Metadata {
                         .and_then(Value::as_str)
                         .ok_or_else(|| corrupt("field without a name"))?
                         .to_string(),
-                    iceberg_type: f.get("type").and_then(Value::as_str).map(str::to_string),
+                    iceberg_type: f.get("type").and_then(Value::as_str).map_or(IcebergType::Nested, IcebergType::named),
                     required: f.get("required").and_then(Value::as_bool).unwrap_or(false),
                 })
             })
@@ -212,7 +212,8 @@ impl Metadata {
                     timestamp_ms: s.get("timestamp-ms").and_then(Value::as_i64).unwrap_or(0),
                     manifest_list: s.get("manifest-list")?.as_str()?.to_string(),
                     last_value_index: s
-                        .pointer("/summary/timelake.last-value-index")
+                        .get("summary")
+                        .and_then(|m| m.get(summary::LAST_VALUE_INDEX))
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     summary: string_map(s.get("summary")),
@@ -225,6 +226,16 @@ impl Metadata {
     pub fn referenced_snapshots(&self) -> HashSet<i64> {
         let Some(Value::Object(refs)) = self.0.get("refs") else { return HashSet::new() };
         refs.values().filter_map(|r| r.get("snapshot-id")?.as_i64()).collect()
+    }
+
+    /// How many earlier metadata files the metadata log keeps (Iceberg's
+    /// `write.metadata.previous-versions-max`), at least one.
+    fn previous_versions_max(&self) -> usize {
+        self.properties()
+            .get(property::METADATA_PREVIOUS_VERSIONS_MAX)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(PREVIOUS_VERSIONS_MAX)
+            .max(1)
     }
 
     /// Entries in the metadata log.
@@ -257,12 +268,7 @@ impl Metadata {
             *log = kept;
         }
         push(obj, "metadata-log", json!({"metadata-file": previous, "timestamp-ms": self.last_updated_ms()}));
-        let keep = self
-            .properties()
-            .get("write.metadata.previous-versions-max")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(PREVIOUS_VERSIONS_MAX)
-            .max(1);
+        let keep = self.previous_versions_max();
         if let Some(Value::Array(log)) = obj.get_mut("metadata-log")
             && log.len() > keep
         {
@@ -291,12 +297,7 @@ impl Metadata {
         push(obj, "snapshots", s);
         push(obj, "snapshot-log", json!({"snapshot-id": snapshot.snapshot_id, "timestamp-ms": snapshot.timestamp_ms}));
         push(obj, "metadata-log", json!({"metadata-file": previous, "timestamp-ms": self.last_updated_ms()}));
-        let keep = self
-            .properties()
-            .get("write.metadata.previous-versions-max")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(PREVIOUS_VERSIONS_MAX)
-            .max(1);
+        let keep = self.previous_versions_max();
         if let Some(Value::Array(log)) = obj.get_mut("metadata-log")
             && log.len() > keep
         {
@@ -335,8 +336,8 @@ pub struct Column {
     pub id: i32,
     /// Its name.
     pub name: String,
-    /// Its Iceberg type (`long`, `timestamptz`, …); `None` for structs, lists and maps.
-    pub iceberg_type: Option<String>,
+    /// Its Iceberg type ([`IcebergType::Nested`] for structs, lists and maps).
+    pub iceberg_type: IcebergType,
     /// Whether it has a value in every row.
     pub required: bool,
 }
@@ -356,6 +357,28 @@ pub struct SnapshotRef {
     pub summary: HashMap<String, String>,
 }
 
+/// Iceberg's snapshot operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    /// Only adds files.
+    Append,
+    /// Replaces files with files holding the same rows (or changes no data).
+    Replace,
+    /// Only removes files.
+    Delete,
+}
+
+impl Operation {
+    /// The name in the snapshot summary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Replace => "replace",
+            Self::Delete => "delete",
+        }
+    }
+}
+
 /// A snapshot to add (see [`Metadata::with_snapshot`]).
 #[derive(Clone, Debug)]
 pub struct NewSnapshot {
@@ -367,8 +390,8 @@ pub struct NewSnapshot {
     pub timestamp_ms: i64,
     /// Its manifest list.
     pub manifest_list: String,
-    /// `append`, `replace`, `overwrite` or `delete`.
-    pub operation: String,
+    /// What it does.
+    pub operation: Operation,
     /// Summary properties besides the operation.
     pub summary: HashMap<String, String>,
 }
@@ -376,7 +399,7 @@ pub struct NewSnapshot {
 impl NewSnapshot {
     fn summary_json(&self) -> Value {
         let mut s: Map<String, Value> = self.summary.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-        s.insert("operation".into(), json!(self.operation));
+        s.insert(summary::OPERATION.into(), json!(self.operation.as_str()));
         Value::Object(s)
     }
 }
@@ -396,7 +419,7 @@ fn field(f: &Value) -> WriteResult<Field> {
 
 fn data_type(t: &Value) -> WriteResult<DataType> {
     if let Some(name) = t.as_str() {
-        return primitive(name);
+        return primitive(&IcebergType::named(name));
     }
     match t.get("type").and_then(Value::as_str) {
         Some("struct") => Ok(DataType::Struct(Fields::from(struct_fields(t)?))),
@@ -428,33 +451,25 @@ fn data_type(t: &Value) -> WriteResult<DataType> {
     }
 }
 
-fn primitive(name: &str) -> WriteResult<DataType> {
-    Ok(match name {
-        "boolean" => DataType::Boolean,
-        "int" => DataType::Int32,
-        "long" => DataType::Int64,
-        "float" => DataType::Float32,
-        "double" => DataType::Float64,
-        "date" => DataType::Date32,
-        "time" => DataType::Time64(TimeUnit::Microsecond),
-        "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
-        "timestamptz" => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, None),
-        "timestamptz_ns" => DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC.into())),
-        "string" => DataType::Utf8,
-        "uuid" => DataType::FixedSizeBinary(16),
-        "binary" => DataType::LargeBinary,
-        other => {
-            if let Some(n) = other.strip_prefix("fixed[").and_then(|s| s.strip_suffix(']')) {
-                DataType::FixedSizeBinary(n.parse().map_err(|_| corrupt("fixed length"))?)
-            } else if let Some(ps) = other.strip_prefix("decimal(").and_then(|s| s.strip_suffix(')')) {
-                let (p, s) = ps.split_once(',').ok_or_else(|| corrupt("decimal"))?;
-                let p: u8 = p.trim().parse().map_err(|_| corrupt("decimal precision"))?;
-                let s: i8 = s.trim().parse().map_err(|_| corrupt("decimal scale"))?;
-                DataType::Decimal128(p, s)
-            } else {
-                return Err(corrupt(&format!("unknown type {other}")));
-            }
-        }
+fn primitive(t: &IcebergType) -> WriteResult<DataType> {
+    use IcebergType as T;
+    Ok(match t {
+        T::Boolean => DataType::Boolean,
+        T::Int => DataType::Int32,
+        T::Long => DataType::Int64,
+        T::Float => DataType::Float32,
+        T::Double => DataType::Float64,
+        T::Decimal { precision, scale } => DataType::Decimal128(*precision, *scale),
+        T::Date => DataType::Date32,
+        T::Time => DataType::Time64(TimeUnit::Microsecond),
+        T::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+        T::Timestamptz => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        T::TimestampNs => DataType::Timestamp(TimeUnit::Nanosecond, None),
+        T::TimestamptzNs => DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC.into())),
+        T::String => DataType::Utf8,
+        T::Uuid => DataType::FixedSizeBinary(16),
+        T::Fixed(length) => DataType::FixedSizeBinary(i32::try_from(*length).map_err(|_| corrupt("fixed length"))?),
+        T::Binary => DataType::LargeBinary,
+        T::Nested | T::Other(_) => return Err(corrupt(&format!("unknown type {t}"))),
     })
 }

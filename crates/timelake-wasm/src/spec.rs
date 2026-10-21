@@ -175,8 +175,12 @@ mod tests {
 
     #[test]
     fn columns_the_table_lacks_are_errors() {
-        let schema =
-            ["time", "tag", "v"].map(|name| Field { id: 1, name: name.into(), ty: "long".into(), required: false });
+        let schema = ["time", "tag", "v"].map(|name| Field {
+            id: 1,
+            name: name.into(),
+            ty: timelake_format::IcebergType::Long,
+            required: false,
+        });
         let check = |v: serde_json::Value| serde_json::from_value::<QuerySpec>(v).unwrap().check_columns(&schema);
         assert!(check(json!({ "timeColumn": "time", "series": { "tag": [1] }, "columns": ["v"] })).is_ok());
         let bucket = json!({ "every": 1, "by": ["tag"], "aggs": [{ "column": "*", "op": "count" }] });

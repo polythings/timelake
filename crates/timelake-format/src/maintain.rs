@@ -168,10 +168,11 @@ async fn plan_compaction<H: Host>(
 /// A live file as compaction planning sees it; `time_id` is the time column's field id.
 fn plan_file(e: &Entry, time_id: Option<i32>) -> PlanFile<'_> {
     // Every timestamp bound is a long in Iceberg's encoding, whatever its unit.
-    let newest_time = time_id.and_then(|id| match bounds::decode("timestamptz", e.file.upper_bounds.get(&id)?) {
-        Some(Bound::Int(t)) => Some(t),
-        _ => None,
-    });
+    let newest_time =
+        time_id.and_then(|id| match bounds::decode(&crate::IcebergType::Timestamptz, e.file.upper_bounds.get(&id)?) {
+            Some(Bound::Int(t)) => Some(t),
+            _ => None,
+        });
     PlanFile {
         path: &e.file.path,
         partition: e.file.partition,

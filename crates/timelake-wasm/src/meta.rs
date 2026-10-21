@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use parquet::basic::TimeUnit;
 use serde::Serialize;
-use timelake_format::Contract;
 use timelake_format::bounds::{Bound, decode};
 use timelake_format::iceberg::{Content, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 use timelake_format::metadata::{Metadata, SnapshotRef};
+use timelake_format::{Contract, IcebergType, summary};
 
 use crate::error::{Error, Result};
 use crate::prune::scale_to_micros;
@@ -25,9 +25,10 @@ pub const MAX_SNAPSHOTS: usize = 50;
 pub struct Field {
     pub id: i32,
     pub name: String,
-    /// Iceberg type name for primitives (`long`, `timestamptz`, …); nested types are `"nested"`.
+    /// The Iceberg type, as JavaScript sees its name (`long`, `timestamptz`, …; `nested` for
+    /// structs, lists and maps).
     #[serde(rename = "type")]
-    pub ty: String,
+    pub ty: IcebergType,
     pub required: bool,
 }
 
@@ -46,7 +47,7 @@ impl From<&SnapshotRef> for SnapshotInfo {
         Self {
             id: s.id.to_string(),
             timestamp_ms: s.timestamp_ms,
-            operation: s.summary.get("operation").cloned().unwrap_or_default(),
+            operation: s.summary.get(summary::OPERATION).cloned().unwrap_or_default(),
             summary: s.summary.clone(),
         }
     }
@@ -88,12 +89,7 @@ impl TableMeta {
         let schema = metadata
             .columns()?
             .into_iter()
-            .map(|c| Field {
-                id: c.id,
-                name: c.name,
-                ty: c.iceberg_type.unwrap_or_else(|| "nested".into()),
-                required: c.required,
-            })
+            .map(|c| Field { id: c.id, name: c.name, ty: c.iceberg_type, required: c.required })
             .collect();
         let all = metadata.snapshot_list();
         let current = metadata.current_snapshot_id().and_then(|id| all.iter().find(|s| s.id == id));
@@ -198,9 +194,9 @@ impl DataFile {
 /// nanosecond timestamps in microseconds, as queries give times (rounded outward, so the bounds
 /// still contain every row).
 pub(crate) fn decode_bound(f: &Field, bytes: &[u8], upper: bool) -> Option<Bound> {
-    Some(match (f.ty.as_str(), decode(&f.ty, bytes)?) {
-        ("timestamp_ns" | "timestamptz_ns", Bound::Int(x)) => Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper)),
-        (_, bound) => bound,
+    Some(match decode(&f.ty, bytes)? {
+        Bound::Int(x) if f.ty.is_nanos() => Bound::Int(scale_to_micros(x, TimeUnit::NANOS, upper)),
+        bound => bound,
     })
 }
 
@@ -227,8 +223,8 @@ mod tests {
     #[test]
     fn nanosecond_bounds_are_microseconds() {
         let fields = [
-            Field { id: 1, name: "ns".into(), ty: "timestamptz_ns".into(), required: true },
-            Field { id: 2, name: "us".into(), ty: "timestamptz".into(), required: true },
+            Field { id: 1, name: "ns".into(), ty: IcebergType::TimestamptzNs, required: true },
+            Field { id: 2, name: "us".into(), ty: IcebergType::Timestamptz, required: true },
         ];
         let bound = |x: i64| x.to_le_bytes().to_vec();
         let bounds = BTreeMap::from([(1, bound(1_500_001)), (2, bound(1_500_001)), (3, bound(7))]);
