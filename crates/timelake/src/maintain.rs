@@ -13,6 +13,7 @@ use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotR
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::properties::WriterProperties;
+use timelake_format::layout::{metadata_dir, metadata_version};
 use timelake_format::merge::{Merge, Step};
 use tokio::sync::mpsc;
 
@@ -514,17 +515,11 @@ async fn prune_metadata_files(table: &Table) -> Result<usize> {
     let keep_from = table.version().saturating_sub(table.metadata().metadata_log().len() as u64 + 1);
     let storage = table.lake().storage();
     let doomed = storage
-        .list(&format!("{}/metadata", table.location()))
+        .list(&metadata_dir(table.location()))
         .await?
         .into_iter()
         .map(|o| o.uri)
-        .filter(|uri| {
-            let name = uri.rsplit('/').next().unwrap_or_default();
-            name.strip_prefix('v')
-                .and_then(|s| s.strip_suffix(".metadata.json"))
-                .and_then(|s| s.parse::<u64>().ok())
-                .is_some_and(|v| v < keep_from)
-        })
+        .filter(|uri| metadata_version(uri).is_some_and(|v| v < keep_from))
         .collect();
     storage.delete_many(doomed).await
 }

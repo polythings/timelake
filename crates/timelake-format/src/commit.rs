@@ -20,10 +20,11 @@ use crate::iceberg::{
     DataFile, Entry, ManifestContext, ManifestFile, ManifestWrite, Status, manifest_file, write_manifest,
     write_manifest_list,
 };
+use crate::layout::{hint_uri, last_value_index_uri, manifest_list_uri, manifest_uri, metadata_uri};
 use crate::metadata::NewSnapshot;
 use crate::rows::merge_latest;
 use crate::summary;
-use crate::table::{TableState, encode_index, hint_uri, metadata_uri};
+use crate::table::{TableState, encode_index};
 
 /// Above this many manifests, an append merges the existing ones into one.
 const MERGE_MANIFESTS_AT: usize = 8;
@@ -186,7 +187,7 @@ async fn attempt_commit<H: Host, S: BuildHasher>(
     let result = async {
         let manifests = write_manifests(host, base, change, snapshot_id, &mut uploads).await?;
         let index = new_index(host, base, change, snapshot_id, &mut uploads).await?;
-        let list_uri = format!("{}/metadata/snap-{snapshot_id}-{}.avro", base.location, uuid_v4(host));
+        let list_uri = manifest_list_uri(&base.location, snapshot_id, uuid_v4(host));
         let list = write_manifest_list(&manifests, snapshot_id, base.metadata.current_snapshot_id(), sequence_number)?;
         uploads.push((list_uri.clone(), list));
         let puts = uploads.iter().map(|(uri, bytes)| host.put(uri, bytes.clone()));
@@ -289,7 +290,7 @@ async fn write_manifests<H: Host>(
         partition: partition.as_ref(),
     };
     let mut write = |kind: &str, entries: &[ManifestWrite]| -> WriteResult<ManifestFile> {
-        let uri = format!("{}/metadata/{}-{kind}-m.avro", base.location, uuid_v4(host));
+        let uri = manifest_uri(&base.location, uuid_v4(host), kind);
         let bytes = write_manifest(&ctx, entries)?;
         let mf = manifest_file(&uri, &bytes, spec_id, snapshot_id, entries, partition.is_some());
         uploads.push((uri, bytes));
@@ -403,7 +404,7 @@ async fn new_index<H: Host>(
         }
     };
     let Some(index) = index else { return Ok(none) };
-    let uri = format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", base.location, uuid_v4(host));
+    let uri = last_value_index_uri(&base.location, snapshot_id, uuid_v4(host));
     uploads.push((uri.clone(), encode_index(&index)?));
     Ok(NewIndex { location: Some(uri), written: Some(index) })
 }

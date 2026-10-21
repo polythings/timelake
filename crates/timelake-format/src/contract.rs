@@ -39,6 +39,21 @@ impl Chunk {
         }
     }
 
+    /// The Iceberg partition transform that partitions by this chunk (`hour`, `day` or `month`).
+    pub fn transform_name(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Month => "month",
+        }
+    }
+
+    /// The chunk an Iceberg partition transform partitions by; `None` for transforms other than
+    /// `hour`, `day` and `month`.
+    pub fn from_transform(transform: &str) -> Option<Self> {
+        [Self::Hour, Self::Day, Self::Month].into_iter().find(|c| c.transform_name() == transform)
+    }
+
     /// Iceberg transform value (hours/days/months since the epoch) of a timestamp in microseconds.
     pub fn value(self, micros: i64) -> Result<i32> {
         let out_of_range = || FormatError::new(format!("timestamp {micros}µs is out of range for {self} partitions"));
@@ -409,6 +424,10 @@ mod tests {
             assert_eq!(c.start_micros(v).unwrap(), T, "{c:?}");
             assert!(c.end_micros(v).unwrap() > T);
         }
+        for c in [Chunk::Hour, Chunk::Day, Chunk::Month] {
+            assert_eq!(Chunk::from_transform(c.transform_name()), Some(c));
+        }
+        assert_eq!(Chunk::from_transform("bucket[16]"), None);
         assert_eq!(Chunk::Day.label(Chunk::Day.value(T).unwrap()), "2026-01-01");
         assert_eq!(Chunk::Hour.label(Chunk::Hour.value(T).unwrap()), "2026-01-01-00");
         assert_eq!(Chunk::Month.label(Chunk::Month.value(T).unwrap()), "2026-01");

@@ -10,9 +10,9 @@ use datafusion::error::Result as DfResult;
 
 use super::PLANNING_REUSE;
 use super::provider::TimelakeProvider;
+use crate::TableName;
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::name::TableName;
 
 pub(super) const INFORMATION_SCHEMA: &str = "information_schema";
 

@@ -9,10 +9,10 @@ use iceberg::spec::{
     TableMetadataBuilder,
 };
 
+use crate::TableName;
 use crate::contract::Contract;
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::name::TableName;
 use crate::summary;
 
 /// A table at one committed version. Cheap to clone; call [`Table::refresh`] to see newer commits.
@@ -85,7 +85,7 @@ impl Table {
     /// A builder of the next version's metadata: this version's, with this version's file as the
     /// previous one.
     pub(crate) fn next_metadata(&self) -> TableMetadataBuilder {
-        let previous = Some(crate::lake::metadata_uri(self.location(), self.version()));
+        let previous = Some(timelake_format::layout::metadata_uri(self.location(), self.version()));
         TableMetadataBuilder::new_from_metadata(self.metadata().clone(), previous)
     }
 

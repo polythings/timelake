@@ -26,8 +26,9 @@ use iceberg::spec::{
 
 use futures::future::BoxFuture;
 
+use timelake_format::layout::{hint_uri, manifest_list_uri, manifest_uri, metadata_uri};
+
 use crate::error::{Error, Result};
-use crate::lake::{hint_uri, metadata_uri};
 use crate::storage::Uploads;
 use crate::table::{LiveEntry, Table};
 use crate::{background, head, lvi, summary};
@@ -438,7 +439,7 @@ impl<'a> SnapshotWriter<'a> {
     }
 
     fn manifest_writer(&self, kind: &str) -> (String, ManifestWriter) {
-        let uri = format!("{}/metadata/{}-{kind}-m.avro", self.base.location(), uuid::Uuid::new_v4());
+        let uri = manifest_uri(self.base.location(), uuid::Uuid::new_v4(), kind);
         self.track(&uri);
         let metadata = self.base.metadata();
         let writer = ManifestWriterBuilder::new(
@@ -554,7 +555,7 @@ impl<'a> SnapshotWriter<'a> {
 
     async fn write_manifest_list(&self, manifests: &[ManifestFile]) -> Result<String> {
         let base = self.base;
-        let uri = format!("{}/metadata/snap-{}-{}.avro", base.location(), self.snapshot_id, uuid::Uuid::new_v4());
+        let uri = manifest_list_uri(base.location(), self.snapshot_id, uuid::Uuid::new_v4());
         self.track(&uri);
         let output = base.lake().storage().deferred_output_file(&uri, &self.uploads).writer().await?;
         let parent = base.metadata().current_snapshot_id();
@@ -617,6 +618,8 @@ impl<'a> SnapshotWriter<'a> {
 mod tests {
     use std::time::Duration;
 
+    use timelake_format::layout::{hint_uri, metadata_uri};
+
     use crate::testing::{Op, T0, batch, faulty_lake, opts, reopen, schema};
     use crate::{AppendOptions, Error};
 
@@ -674,14 +677,14 @@ mod tests {
         assert_eq!(lake.table("iot.patch").await.unwrap().version(), t.version());
         // A newer one does.
         let props = [(crate::property::FORMAT_VERSION.to_string(), newer(0, 1))].into();
-        let previous = Some(crate::lake::metadata_uri(t.location(), t.version()));
+        let previous = Some(metadata_uri(t.location(), t.version()));
         let metadata = iceberg::spec::TableMetadataBuilder::new_from_metadata(t.metadata().clone(), previous)
             .set_properties(props)
             .unwrap()
             .build()
             .unwrap()
             .metadata;
-        let uri = crate::lake::metadata_uri(t.location(), t.version() + 1);
+        let uri = metadata_uri(t.location(), t.version() + 1);
         lake.storage().write(&uri, serde_json::to_vec(&metadata).unwrap().into()).await.unwrap();
         let err = lake.table("iot.patch").await.map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Invalid(ref m) if m.contains("newer than this Timelake reads")), "{err}");
@@ -708,7 +711,7 @@ mod tests {
         let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
         let (t, _) = t.append(&[batch(&[(T0, 1, 1.0)])], no_maintenance()).await.unwrap();
         crate::flush().await;
-        let hint = lake.storage().read(&crate::lake::hint_uri(t.location())).await.unwrap();
+        let hint = lake.storage().read(&hint_uri(t.location())).await.unwrap();
         assert_eq!(hint.as_ref(), b"2");
         assert!(store.paths().await.iter().any(|p| p.ends_with("v2.metadata.json")));
     }

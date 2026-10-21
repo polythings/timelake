@@ -21,9 +21,10 @@ use parquet::file::properties::WriterProperties;
 
 use crate::error::{WriteError, WriteResult};
 use crate::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
-use crate::head::{FILE_NAME, HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, encode};
+use crate::head::{HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, encode};
 use crate::host::Host;
 use crate::iceberg::{Content, DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
+use crate::layout::{head_uri, metadata_prefix, metadata_uri, metadata_version};
 use crate::metadata::Metadata;
 use crate::rows::align_batch;
 use crate::{Contract, summary};
@@ -49,30 +50,11 @@ pub struct TableState {
     pub footers: BTreeMap<String, Vec<u8>>,
 }
 
-/// `<location>/metadata/v<version>.metadata.json`.
-pub fn metadata_uri(location: &str, version: u64) -> String {
-    format!("{location}/metadata/v{version}.metadata.json")
-}
-
-/// `<location>/metadata/version-hint.text`.
-pub fn hint_uri(location: &str) -> String {
-    format!("{location}/metadata/version-hint.text")
-}
-
-/// `<location>/metadata/timelake-head`.
-pub fn head_uri(location: &str) -> String {
-    format!("{location}/metadata/{FILE_NAME}")
-}
-
-fn metadata_version(uri: &str) -> Option<u64> {
-    uri.rsplit('/').next()?.strip_prefix('v')?.strip_suffix(".metadata.json")?.parse().ok()
-}
-
 impl TableState {
     /// The current version of the table at `location` (its root URI, without a trailing slash).
     pub async fn load<H: Host>(host: &H, location: &str) -> WriteResult<Self> {
-        let prefix = format!("{location}/metadata/v");
-        let (head, listed) = futures_util::future::join(host.get(&head_uri(location)), host.list(&prefix)).await;
+        let (head, prefix) = (head_uri(location), metadata_prefix(location));
+        let (head, listed) = futures_util::future::join(host.get(&head), host.list(&prefix)).await;
         let newest = listed?.iter().filter_map(|o| metadata_version(&o.uri)).max();
         let Some(newest) = newest else { return Err(WriteError::NotFound(location.to_string())) };
         if let Some(state) = head?.and_then(|bytes| decode_head(location, &bytes).ok())

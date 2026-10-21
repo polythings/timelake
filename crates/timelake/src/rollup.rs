@@ -16,12 +16,12 @@ use arrow::datatypes::DataType;
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use serde::{Deserialize, Serialize};
 
+use crate::TableName;
 use crate::alter::update_properties;
 use crate::append::AppendOptions;
 use crate::commit::{Change, commit};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::name::TableName;
 use crate::storage::Uploads;
 use crate::table::{LiveEntry, Table};
 use crate::{format_duration, parse_duration, property, summary};

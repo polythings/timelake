@@ -1,18 +1,10 @@
 //! [`Lake`]: a warehouse location, and the object-store-only catalog of its tables.
 //!
-//! Catalog layout (Hadoop-catalog compatible, so `DuckDB` `iceberg_scan('<table dir>')` and Spark's
-//! `HadoopCatalog` can read it):
-//!
-//! ```text
-//! <warehouse>/<namespace>/<table>/metadata/v<N>.metadata.json   committed with put-if-absent
-//! <warehouse>/<namespace>/<table>/metadata/version-hint.text    "<N>", best-effort pointer
-//! <warehouse>/<namespace>/<table>/metadata/timelake-head        state of version N for readers
-//! <warehouse>/<namespace>/<table>/data/<partition>/<file>.parquet
-//! ```
-//!
-//! A commit is "create `v<N+1>.metadata.json` if it doesn't exist". Exactly one writer wins; the
-//! others get [`Error::Conflict`] and rebase. No database or catalog server is involved. The
-//! version hint and the head (see [`crate::head`]) are written after the commit, as shortcuts.
+//! Tables are laid out as a Hadoop catalog (see [`timelake_format::layout`]), so `DuckDB`
+//! `iceberg_scan('<table dir>')` and Spark's `HadoopCatalog` can read them. A commit is "create
+//! `v<N+1>.metadata.json` if it doesn't exist". Exactly one writer wins; the others get
+//! [`Error::Conflict`] and rebase. No database or catalog server is involved. The version hint and
+//! the head (see [`crate::head`]) are written after the commit, as shortcuts.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -29,19 +21,21 @@ use iceberg::spec::{
     SortOrder, TableMetadata, TableMetadataBuilder, Transform, UnboundPartitionSpec,
 };
 
+use crate::TableName;
 use crate::alter::property_key;
 use crate::cache::Caches;
 use crate::contract::{Chunk, Contract, TableOptions, format_duration};
 use crate::error::{Error, Result};
 use crate::head::{self, Codecs, HeadCodec};
-use crate::name::TableName;
 use crate::property;
 use crate::schema::{UTC, normalize_schema};
 use crate::settings::{self, Level};
 use crate::storage::{Storage, warehouse_url};
 use crate::table::{FreshnessCheck, LiveEntry, Table};
 use timelake_format::INGEST_TIME_COLUMN;
-use timelake_format::iceberg::avro_name;
+use timelake_format::layout::{
+    hint_uri, metadata_prefix, metadata_uri, metadata_version, partition_field_name, table_location, tables_index_uri,
+};
 
 /// Where a cold load starts.
 enum Start {
@@ -125,7 +119,7 @@ impl Lake {
 
     /// Where a table lives: `<warehouse>/<namespace>/<table>`.
     pub fn table_location(&self, name: &TableName) -> String {
-        format!("{}/{}/{}", self.inner.root, name.namespace(), name.name())
+        table_location(&self.inner.root, name)
     }
 
     /// Namespaces in the warehouse, sorted.
@@ -173,11 +167,11 @@ impl Lake {
     async fn indexed_tables(&self) -> Result<Vec<TableName>> {
         let Some(bytes) = self.storage().read_opt(&self.tables_index_uri()).await? else { return Ok(vec![]) };
         let names: Vec<String> = serde_json::from_slice(&bytes)?;
-        names.iter().map(|n| n.parse()).collect()
+        Ok(names.iter().map(|n| n.parse()).collect::<Result<_, _>>()?)
     }
 
     fn tables_index_uri(&self) -> String {
-        format!("{}/{}", self.inner.root, timelake_format::TABLES_INDEX)
+        tables_index_uri(&self.inner.root)
     }
 
     /// Rewrites `timelake-tables.json`, the table index used by readers that cannot list (HTTPS,
@@ -325,7 +319,7 @@ impl Lake {
     /// `timelake_version_lookup=hint`) the version hint.
     async fn newest_version(&self, location: &str, hint_uri: &str) -> Result<Newest> {
         if self.storage().list_on_load()
-            && let Some(listed) = self.storage().list_prefix(&format!("{location}/metadata/v")).await?
+            && let Some(listed) = self.storage().list_prefix(&metadata_prefix(location)).await?
         {
             return Ok(Newest::Listed(listed.iter().filter_map(|uri| metadata_version(uri)).max()));
         }
@@ -449,21 +443,8 @@ impl fmt::Debug for Lake {
     }
 }
 
-pub(crate) fn metadata_uri(location: &str, version: u64) -> String {
-    format!("{location}/metadata/v{version}.metadata.json")
-}
-
 fn next_metadata_uri(table: &Table) -> String {
     metadata_uri(table.location(), table.version() + 1)
-}
-
-/// The version of a `…/v<N>.metadata.json` URI.
-fn metadata_version(uri: &str) -> Option<u64> {
-    uri.rsplit('/').next()?.strip_prefix('v')?.strip_suffix(".metadata.json")?.parse().ok()
-}
-
-pub(crate) fn hint_uri(location: &str) -> String {
-    format!("{location}/metadata/version-hint.text")
 }
 
 /// Metadata of a new table: schema, partitioning and sort order from the options, and the
@@ -554,15 +535,10 @@ fn time_series_layout(
         other => return Err(Error::invalid(format!("time column {time_column:?} must be a timestamp, got {other}"))),
     }
     let chunk = opts.chunk.unwrap_or(Chunk::Day);
-    let transform = match chunk {
-        Chunk::Hour => Transform::Hour,
-        Chunk::Day => Transform::Day,
-        Chunk::Month => Transform::Month,
-    };
+    let transform: Transform = chunk.transform_name().parse()?;
     creation.partition_spec = Some(
         UnboundPartitionSpec::builder()
-            // A valid Avro name: manifests record it as an Avro field, which readers reject otherwise.
-            .add_partition_field(time_id, avro_name(&format!("{time_column}_{chunk}")), transform)?
+            .add_partition_field(time_id, partition_field_name(time_column, chunk), transform)?
             .build(),
     );
     let mut order = SortOrder::builder();

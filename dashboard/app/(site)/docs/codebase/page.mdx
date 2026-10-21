@@ -30,7 +30,7 @@ What lives where, which technologies are used and why, and how a write and a que
 | Path | Language | What it is |
 | --- | --- | --- |
 | `crates/timelake` | Rust | The engine: storage, catalog, writer, commits, maintenance, and the SQL reader. Everything else wraps or mirrors it. |
-| `crates/timelake-format` | Rust | Shared rules with no I/O: the table contract (time column, series key, …), time-partition math, decoding Iceberg min/max values. Used by the engine and the WASM reader. |
+| `crates/timelake-format` | Rust | Shared rules with no I/O: the table contract (time column, series key, …), table names and where a table's objects live (`layout`), time-partition math, decoding Iceberg min/max values, and the shared write path. Used by the engine and the WASM reader and writer. |
 | `crates/timelake-cli` | Rust | The timelake command. Parses arguments, reads CSV/Parquet, calls the engine, prints results. |
 | `crates/timelake-py` | Rust + Python | The Python package. Thin bindings over the engine (PyO3), built with maturin. |
 | `crates/timelake-wasm` | Rust | A small read-only engine for browsers and JavaScript, compiled to WebAssembly. It does no network I/O itself. |
@@ -73,7 +73,6 @@ What lives where, which technologies are used and why, and how a write and a que
 | File | What it does |
 | --- | --- |
 | `lib.rs` | The public API: `Lake`, `Table`, `Session`, options, and results, with a short example. |
-| `name.rs` | `TableName`: parses and validates `namespace.table` once, at the boundary. |
 | `storage.rs` | Opens the right object store for a URL (`s3://`, `gs://`, `az://`, `https://`, local). Read, write, `write_if_absent` (the conditional write), list, and delete; `Uploads`, a queue of files a commit sends all at once; also adapts the store to iceberg-rust's file interface. |
 | `lake.rs` | The catalog. `Lake` is a warehouse: `create_table` writes `v1.metadata.json`, `table()` finds the current version (the head and a listing of the metadata files at once, or a check for the next version of one it already has), `tables()` lists them. |
 | `table.rs` | `Table`: one version of a table (name, metadata, contract, schema) and `files()`, the live data files (from the head, or from its manifests). |

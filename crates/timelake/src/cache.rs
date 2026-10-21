@@ -11,7 +11,7 @@ use arrow::array::RecordBatch;
 use bytes::Bytes;
 use iceberg::spec::ManifestFile;
 
-use crate::name::TableName;
+use crate::TableName;
 use crate::table::{LiveEntry, Table};
 
 /// The caches of one [`Lake`](crate::Lake).

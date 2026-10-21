@@ -9,6 +9,7 @@ use iceberg::spec::{
 };
 use parquet::file::properties::WriterProperties;
 use timelake_format::file::{FileStats, FileWriter};
+use timelake_format::layout::{data_file_uri, partition_dir};
 
 use crate::error::{Error, Result};
 use crate::storage::{DeferredWriter, Uploads};
@@ -87,12 +88,7 @@ impl<'a> PartitionWriter<'a> {
         uploads: &'a Uploads,
     ) -> Self {
         let contract = table.contract();
-        let dir = match (partition, &contract.time_column, contract.chunk) {
-            (Some(v), Some(time_column), Some(chunk)) => {
-                format!("{}/data/{time_column}_{chunk}={}", table.location(), chunk.label(v))
-            }
-            _ => format!("{}/data", table.location()),
-        };
+        let dir = partition_dir(table.location(), contract, partition);
         let props = props.clone();
         Self { table, partition, props, uploads, dir, target: contract.target_file_size, open: None, files: vec![] }
     }
@@ -105,7 +101,7 @@ impl<'a> PartitionWriter<'a> {
         }
         // Kept in `open` while it is written, so `abort` finds its upload if anything fails.
         if self.open.is_none() {
-            let uri = format!("{}/{}.parquet", self.dir, uuid::Uuid::now_v7());
+            let uri = data_file_uri(&self.dir, uuid::Uuid::now_v7());
             let writer = FileWriter::new(self.table.schema(), self.props.clone())?;
             let upload = self.table.lake().storage().deferred_writer(&uri, self.uploads)?;
             self.open = Some((uri, writer, upload));

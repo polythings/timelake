@@ -21,9 +21,9 @@ use super::settings::SessionSettings;
 use super::statement::{self, RollupStatement, Statement};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::name::{DEFAULT_NAMESPACE, TableName};
 use crate::rollup::{Definition, RollupRefresh};
 use crate::{Chunk, TableOptions, parse_duration, property};
+use crate::{DEFAULT_NAMESPACE, TableName};
 
 /// Name of the helper column of [`Session::latest`]'s fallback query.
 const ROW_NUMBER: &str = "__timelake_row_number";
@@ -271,8 +271,8 @@ impl Session {
     /// A table name, in the session's default namespace when it has none.
     fn table_name(&self, name: &str) -> Result<TableName> {
         match name.split_once('.') {
-            Some((namespace, table)) => TableName::new(namespace, table),
-            None => TableName::new(&self.ctx.state().config().options().catalog.default_schema, name),
+            Some((namespace, table)) => Ok(TableName::new(namespace, table)?),
+            None => Ok(TableName::new(&self.ctx.state().config().options().catalog.default_schema, name)?),
         }
     }
 

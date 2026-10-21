@@ -41,12 +41,14 @@ pub mod head;
 pub mod host;
 #[cfg(feature = "write")]
 pub mod iceberg;
+pub mod layout;
 #[cfg(feature = "write")]
 pub mod maintain;
 #[cfg(feature = "write")]
 pub mod merge;
 #[cfg(feature = "write")]
 pub mod metadata;
+pub mod name;
 #[cfg(feature = "write")]
 pub mod rows;
 pub mod settings;

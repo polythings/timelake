@@ -12,6 +12,7 @@ use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
 use crate::host::{Host, Upload, uuid_v7};
 use crate::iceberg::DataFile;
+use crate::layout::{data_file_uri, partition_dir};
 use crate::maintain::{MaintainOptions, MaintainReport, maintain};
 use crate::rows::{latest_of_sorted, sort_and_split};
 use crate::summary;
@@ -202,16 +203,6 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
         Ok(Self { host, table, partition, open: None, done: vec![] })
     }
 
-    fn dir(&self) -> String {
-        let c = &self.table.contract;
-        match (self.partition, &c.time_column, c.chunk) {
-            (Some(v), Some(time_column), Some(chunk)) => {
-                format!("{}/data/{time_column}_{chunk}={}", self.table.location, chunk.label(v))
-            }
-            _ => format!("{}/data", self.table.location),
-        }
-    }
-
     /// Writes rows that sort after every row written so far.
     pub async fn write(&mut self, batch: &RecordBatch) -> WriteResult<()> {
         if batch.num_rows() == 0 {
@@ -223,7 +214,10 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
             let page_rows = self.host.data_page_rows();
             let props = writer_properties(&self.table.schema, &self.table.contract, &created_by(), page_rows)?;
             OpenFile {
-                uri: format!("{}/{}.parquet", self.dir(), uuid_v7(self.host)),
+                uri: data_file_uri(
+                    &partition_dir(&self.table.location, &self.table.contract, self.partition),
+                    uuid_v7(self.host),
+                ),
                 writer: FileWriter::new(self.table.schema.clone(), props)?
                     .with_max_row_group_bytes(self.host.max_row_group_bytes()),
                 pending: Pending::default(),

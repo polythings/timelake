@@ -223,7 +223,7 @@ mod tests {
         let props = [(property::HEAD_FORMAT.into(), "arrow".to_string())];
         let t = write_properties(&t, &props, &[]).await.unwrap();
         crate::flush().await;
-        lake.storage().delete(&head::uri(t.location())).await.unwrap();
+        lake.storage().delete(&timelake_format::layout::head_uri(t.location())).await.unwrap();
         (lake, t)
     }
 

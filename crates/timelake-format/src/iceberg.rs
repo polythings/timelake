@@ -3,7 +3,6 @@
 //! and header metadata. The engine's tests check that iceberg-rust reads what this writes.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use apache_avro::types::Value;
@@ -11,6 +10,7 @@ use apache_avro::{Codec, Reader, Schema, Writer};
 
 use crate::Chunk;
 use crate::error::{WriteError, WriteResult};
+use crate::layout::avro_name;
 
 /// Whether a manifest entry adds, keeps or removes its file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,25 +145,6 @@ pub struct PartitionField {
     pub field_id: i32,
     /// The time transform.
     pub chunk: Chunk,
-}
-
-/// `name` as a valid Avro name, by the rule Iceberg's Avro schemas use: a leading digit gets a
-/// `_` before it, and any other character outside `[A-Za-z0-9_]` becomes `_x` and its code in
-/// uppercase hex (`event-time` → `event_x2Dtime`). Valid names are unchanged.
-pub fn avro_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for (i, c) in name.chars().enumerate() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '_' => out.push(c),
-            '0'..='9' if i > 0 => out.push(c),
-            '0'..='9' => {
-                out.push('_');
-                out.push(c);
-            }
-            _ => write!(out, "_x{:X}", u32::from(c)).expect("writing to a String can't fail"),
-        }
-    }
-    out
 }
 
 /// The Avro schema of manifest entries for a table partitioned as `partition`.
@@ -688,13 +669,5 @@ mod tests {
         let ctx = ManifestContext { partition: Some(&odd), ..ctx };
         let bytes = write_manifest(&ctx, &entries).unwrap();
         assert_eq!(read_manifest(&mf, &bytes).unwrap()[0].file.partition, Some(20_000));
-    }
-
-    #[test]
-    fn avro_names() {
-        assert_eq!(avro_name("time_day"), "time_day");
-        assert_eq!(avro_name("event-time_day"), "event_x2Dtime_day");
-        assert_eq!(avro_name("1st"), "_1st");
-        assert_eq!(avro_name("a b\"é"), "a_x20b_x22_xE9");
     }
 }

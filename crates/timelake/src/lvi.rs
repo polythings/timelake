@@ -50,7 +50,7 @@ pub(crate) async fn read(table: &Table, uri: &str) -> Result<RecordBatch> {
 
 /// A fresh location for the index of a new snapshot.
 pub(crate) fn new_uri(table: &Table, snapshot_id: i64) -> String {
-    format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", table.location(), uuid::Uuid::new_v4())
+    timelake_format::layout::last_value_index_uri(table.location(), snapshot_id, uuid::Uuid::new_v4())
 }
 
 /// The index as a Parquet file.

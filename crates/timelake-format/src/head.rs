@@ -28,8 +28,6 @@ use crate::FormatError;
 /// `Result` of head encoding and decoding.
 pub type Result<T, E = FormatError> = std::result::Result<T, E>;
 
-/// Name of the head object in a table's `metadata/` directory.
-pub const FILE_NAME: &str = "timelake-head";
 /// `timelake.head-format` value that turns the head off.
 pub const NO_HEAD: &str = "none";
 const MAGIC: &[u8; 4] = b"TLHD";

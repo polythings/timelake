@@ -31,10 +31,10 @@ use bytes::Bytes;
 use iceberg::spec::{DataContentType, DataFileBuilder, DataFileFormat, Datum, ManifestStatus, TableMetadata};
 
 pub(crate) use self::codec::Codecs;
+use crate::TableName;
 use crate::background;
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::name::TableName;
 use crate::schema::align_batch;
 use crate::storage::{Storage, VersionedWrite};
 use crate::table::{LiveEntry, Table};
@@ -43,17 +43,13 @@ use crate::{footer, lvi};
 pub use timelake_format::FormatError;
 use timelake_format::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
 pub use timelake_format::head::{ArrowCodec, HeadCodec, HeadDoc, JsonCodec};
-use timelake_format::head::{FILE_NAME, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, encode};
+use timelake_format::head::{Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, encode};
+use timelake_format::layout::head_uri;
 
 /// Attempts to replace a head that other writers keep changing; they write newer ones anyway.
 const WRITE_ATTEMPTS: usize = 5;
 /// Footers read from the store at once while writing a head.
 const FOOTER_READS: usize = 16;
-
-/// Location of a table's head.
-pub(crate) fn uri(location: &str) -> String {
-    format!("{location}/metadata/{FILE_NAME}")
-}
 
 /// Writes `table`'s head in the background. Failures are ignored: readers fall back to the
 /// metadata chain, and the next commit writes a new head.
@@ -66,7 +62,7 @@ pub(crate) fn update(table: &Table) {
 
 /// The table version the stored head describes, if there is a head this process can parse.
 pub(crate) async fn stored_version(table: &Table) -> Result<Option<u64>> {
-    let prefix = table.lake().storage().read_prefix_versioned(&uri(table.location()), MAX_HEADER).await?;
+    let prefix = table.lake().storage().read_prefix_versioned(&head_uri(table.location()), MAX_HEADER).await?;
     Ok(prefix.and_then(|(bytes, _)| Header::parse(&bytes).map(|h| h.version)))
 }
 
@@ -77,7 +73,7 @@ pub(crate) async fn write(table: &Table) -> Result<()> {
         return Ok(());
     }
     let storage = lake.storage();
-    let uri = uri(table.location());
+    let uri = head_uri(table.location());
     let contract = table.contract();
     let deleted = &lake.caches().deleted_heads;
     let Some(codec) = lake.head_codecs().get(&contract.head_format) else {
@@ -162,7 +158,7 @@ async fn write_if_newer(storage: &Storage, uri: &str, version: u64, bytes: Bytes
 /// Loads a table from its head, without checking for newer versions. `None` if the table has no
 /// head, or one this process can't decode (an unknown codec or layout).
 pub(crate) async fn read(lake: &Lake, name: &TableName, location: &str) -> Result<Option<Table>> {
-    let Some(bytes) = lake.storage().read_opt(&uri(location)).await? else { return Ok(None) };
+    let Some(bytes) = lake.storage().read_opt(&head_uri(location)).await? else { return Ok(None) };
     Ok(decode(lake, name, location, &bytes).ok())
 }
 
@@ -431,7 +427,7 @@ mod tests {
     }
 
     async fn stored_header(lake: &Lake, table: &Table) -> Option<(u64, String)> {
-        let bytes = lake.storage().read_opt(&uri(table.location())).await.unwrap()?;
+        let bytes = lake.storage().read_opt(&head_uri(table.location())).await.unwrap()?;
         let h = Header::parse(&bytes).unwrap();
         Some((h.version, h.codec.to_string()))
     }
@@ -656,7 +652,7 @@ mod tests {
         let (t, _) = t.append(&[batch(&[(T0 + 1, 1, 1.0)])], no_maintenance()).await.unwrap();
         t.append(&[batch(&[(T0 + 2, 1, 1.0)])], no_maintenance()).await.unwrap();
         crate::flush().await;
-        let head = uri(t.location());
+        let head = head_uri(t.location());
         let head = head.trim_start_matches("memory://test/");
         assert!(store.deleted().iter().filter(|p| *p == head).count() <= 1, "{:?}", store.deleted());
 

@@ -23,9 +23,10 @@ use crate::commit::{Change, commit, put_metadata};
 use crate::error::{WriteError, WriteResult};
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
+use crate::layout::{hint_uri, metadata_prefix, metadata_uri, metadata_version};
 use crate::merge::{Merge, Step};
 use crate::rows::{align_batch, stable_sort};
-use crate::table::{TableState, metadata_uri};
+use crate::table::TableState;
 
 /// Files smaller than this fraction of the target size count as small.
 const SMALL_FILE_NUMERATOR: u64 = 3;
@@ -644,7 +645,7 @@ async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainRepor
         let mut expired_table = table.clone();
         expired_table.version = version;
         expired_table.metadata = metadata;
-        let _ = host.put(&crate::table::hint_uri(&table.location), version.to_string().into_bytes()).await;
+        let _ = host.put(&hint_uri(&table.location), version.to_string().into_bytes()).await;
         let gone = reachable(host, &expired, Missing::Skip).await?;
         let doomed: Vec<String> = gone.difference(&kept).cloned().collect();
         host.delete(&doomed).await?;
@@ -744,17 +745,11 @@ async fn reachable<H: Host>(
 async fn prune_metadata_files<H: Host>(host: &H, table: &TableState) -> WriteResult<usize> {
     let keep_from = table.version.saturating_sub(table.metadata.metadata_log_len() as u64 + 1);
     let doomed: Vec<String> = host
-        .list(&format!("{}/metadata/v", table.location))
+        .list(&metadata_prefix(&table.location))
         .await?
         .into_iter()
         .map(|o| o.uri)
-        .filter(|uri| {
-            let name = uri.rsplit('/').next().unwrap_or_default();
-            name.strip_prefix('v')
-                .and_then(|s| s.strip_suffix(".metadata.json"))
-                .and_then(|s| s.parse::<u64>().ok())
-                .is_some_and(|v| v < keep_from)
-        })
+        .filter(|uri| metadata_version(uri).is_some_and(|v| v < keep_from))
         .collect();
     host.delete(&doomed).await?;
     Ok(doomed.len())

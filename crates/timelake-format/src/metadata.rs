@@ -155,11 +155,9 @@ impl Metadata {
                 )));
             }
         };
-        let chunk = match field.get("transform").and_then(Value::as_str) {
-            Some("hour") => Chunk::Hour,
-            Some("day") => Chunk::Day,
-            Some("month") => Chunk::Month,
-            other => return Err(WriteError::invalid(format!("unsupported partition transform {other:?}"))),
+        let transform = field.get("transform").and_then(Value::as_str);
+        let Some(chunk) = transform.and_then(Chunk::from_transform) else {
+            return Err(WriteError::invalid(format!("unsupported partition transform {transform:?}")));
         };
         let name = field.get("name").and_then(Value::as_str).ok_or_else(|| corrupt("partition field name"))?;
         let field_id = field
