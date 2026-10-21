@@ -145,15 +145,18 @@ impl Table {
     /// data is that snapshot's. Later snapshots stay in the history until they expire, so a
     /// rollback can be rolled back too. Returns the new version.
     pub async fn rollback(&self, snapshot_id: i64) -> Result<Table> {
-        let build = async |base: &Table| {
-            if base.metadata().snapshot_by_id(snapshot_id).is_none() {
-                return Err(Error::NotFound(format!("{}: snapshot {snapshot_id}", base.name())));
-            }
-            let reference = SnapshotReference::new(snapshot_id, SnapshotRetention::branch(None, None, None));
-            let metadata = base.next_metadata().set_ref(MAIN_BRANCH, reference)?.build()?.metadata;
-            Ok(Some((metadata, None, ())))
-        };
-        Ok(publish_retrying(&self.refresh().await?, build).await?.0)
+        Ok(publish_retrying(&self.refresh().await?, |base| {
+            Box::pin(async move {
+                if base.metadata().snapshot_by_id(snapshot_id).is_none() {
+                    return Err(Error::NotFound(format!("{}: snapshot {snapshot_id}", base.name())));
+                }
+                let reference = SnapshotReference::new(snapshot_id, SnapshotRetention::branch(None, None, None));
+                let metadata = base.next_metadata().set_ref(MAIN_BRANCH, reference)?.build()?.metadata;
+                Ok(Some((metadata, None, ())))
+            })
+        })
+        .await?
+        .0)
     }
 }
 

@@ -24,6 +24,8 @@ use iceberg::spec::{
     Snapshot, Summary, TableMetadata, UNASSIGNED_SEQUENCE_NUMBER,
 };
 
+use futures::future::BoxFuture;
+
 use crate::error::{Error, Result};
 use crate::lake::{hint_uri, metadata_uri};
 use crate::storage::Uploads;
@@ -189,7 +191,8 @@ pub(crate) type Next<T> = (TableMetadata, Option<Arc<Vec<LiveEntry>>>, T);
 /// `build` has nothing to change, the version it looked at.
 pub(crate) async fn publish_retrying<T>(
     table: &Table,
-    mut build: impl AsyncFnMut(&Table) -> Result<Option<Next<T>>>,
+    // A boxed future rather than an async closure, so the caller's future stays `Send`.
+    mut build: impl for<'a> FnMut(&'a Table) -> BoxFuture<'a, Result<Option<Next<T>>>>,
 ) -> Result<(Table, Option<T>)> {
     let mut base = table.clone();
     for attempt in 1..=MAX_ATTEMPTS {

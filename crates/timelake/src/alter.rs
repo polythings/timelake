@@ -76,17 +76,20 @@ pub(crate) async fn update_properties(
     table: &Table,
     change: impl Fn(&Table) -> (Vec<(String, String)>, Vec<String>),
 ) -> Result<Table> {
-    let build = async |base: &Table| {
+    Ok(publish_retrying(table, |base| {
         let (set, remove) = change(base);
-        let metadata = base
-            .next_metadata()
-            .set_properties(set.into_iter().collect())?
-            .remove_properties(&remove)?
-            .build()?
-            .metadata;
-        Ok(Some((metadata, base.known_files().cloned(), ())))
-    };
-    Ok(publish_retrying(table, build).await?.0)
+        Box::pin(async move {
+            let metadata = base
+                .next_metadata()
+                .set_properties(set.into_iter().collect())?
+                .remove_properties(&remove)?
+                .build()?
+                .metadata;
+            Ok(Some((metadata, base.known_files().cloned(), ())))
+        })
+    })
+    .await?
+    .0)
 }
 
 #[cfg(test)]

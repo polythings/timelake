@@ -434,6 +434,14 @@ mod tests {
         assert!(prepared());
     }
 
+    /// Planning can run on a multi-threaded runtime (the Python package's does), DDL included.
+    #[tokio::test]
+    async fn sql_future_is_send() {
+        fn assert_send<T: Send>(_: &T) {}
+        let s = Session::new(faulty_lake().0);
+        assert_send(&s.sql("DROP MATERIALIZED ROLLUP iot.r_1h"));
+    }
+
     #[tokio::test]
     async fn parse_splits_statements_outside_literals() {
         let (lake, _store) = faulty_lake();

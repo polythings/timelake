@@ -390,24 +390,27 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
 /// Expires old snapshots and deletes the files only they referenced.
 async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
     // Built again on the newer version when another writer publishes first.
-    let build = async |base: &Table| {
-        let mut snapshots: Vec<SnapshotRef> = base.metadata().snapshots().cloned().collect();
-        snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
-        let expired = expired_snapshots(base, &snapshots)?;
-        if expired.is_empty() {
-            return Ok(None);
-        }
-        let ids: Vec<i64> = expired.iter().map(|s| s.snapshot_id()).collect();
-        // What the kept snapshots use, read in full before anything changes: a file left out
-        // would be deleted.
-        let remaining: Vec<SnapshotRef> =
-            snapshots.iter().filter(|s| !ids.contains(&s.snapshot_id())).cloned().collect();
-        let kept = reachable(base, &remaining, Missing::Error).await?;
-        let metadata = base.next_metadata().remove_snapshots(&ids).build()?.metadata;
-        // Expiry keeps the current snapshot, so its files stay the same.
-        Ok(Some((metadata, base.known_files().cloned(), (base.clone(), expired, kept))))
-    };
-    let (expired_table, Some((base, expired, kept))) = publish_retrying(table, build).await? else {
+    let (expired_table, Some((base, expired, kept))) = publish_retrying(table, |base| {
+        Box::pin(async move {
+            let mut snapshots: Vec<SnapshotRef> = base.metadata().snapshots().cloned().collect();
+            snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
+            let expired = expired_snapshots(base, &snapshots)?;
+            if expired.is_empty() {
+                return Ok(None);
+            }
+            let ids: Vec<i64> = expired.iter().map(|s| s.snapshot_id()).collect();
+            // What the kept snapshots use, read in full before anything changes: a file left out
+            // would be deleted.
+            let remaining: Vec<SnapshotRef> =
+                snapshots.iter().filter(|s| !ids.contains(&s.snapshot_id())).cloned().collect();
+            let kept = reachable(base, &remaining, Missing::Error).await?;
+            let metadata = base.next_metadata().remove_snapshots(&ids).build()?.metadata;
+            // Expiry keeps the current snapshot, so its files stay the same.
+            Ok(Some((metadata, base.known_files().cloned(), (base.clone(), expired, kept))))
+        })
+    })
+    .await?
+    else {
         return Ok(table.clone());
     };
     report.snapshots_expired += expired.len();
