@@ -9,6 +9,11 @@ import path from "node:path"
 /** The CLI binary; build it with `cargo build -p timelake-cli` at the repo root. */
 const CLI = process.env.TIMELAKE_CLI ?? path.resolve(import.meta.dir, "../../../target/debug/timelake")
 
+// macOS checks a newly built executable on its first run: about 4 s for the debug CLI, which would
+// count against the 5 s timeout of the first `beforeAll` that builds a fixture. Run it once here,
+// when the test files import this module, where no timeout applies.
+if (existsSync(CLI)) spawnSync(CLI, ["--version"])
+
 export const SERIES = 12
 export const START = Date.parse("2026-01-01T00:00:00Z")
 export const STEP_MS = 5 * 60_000
