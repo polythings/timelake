@@ -76,3 +76,6 @@ commit layer on iceberg-rust's public types (D13). Details: `spikes/iceberg-writ
 - 2026-10-19: moved from SPEC.md into spec 3, then into this spec when the specs were regrouped one per feature.
 - 2026-10-20: uncertain outcomes: a failed or refused metadata write is read back before anything is deleted (#21,
   #165).
+- 2026-10-20: the protocol's rules (summaries, last-value index, manifest plan, read-back, backoff) defined once in
+  `timelake_format::commit` for the engine and the WASM writer; the WASM writer loads new metadata before it commits
+  it, as the engine does.

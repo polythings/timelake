@@ -107,7 +107,8 @@ pub async fn append<H: Host>(
     if !opts.maintain.unwrap_or(table.contract.auto_maintain) {
         return Ok((table, report));
     }
-    let mut maintain_opts = MaintainOptions::inline(&table, touched, host.now_ms());
+    let snapshot_times = table.metadata.snapshot_list().into_iter().map(|s| s.timestamp_ms);
+    let mut maintain_opts = MaintainOptions::inline(&table.contract, snapshot_times, touched, host.now_ms());
     maintain_opts.max_bytes = opts.max_compact_bytes;
     match maintain(host, table.clone(), &maintain_opts).await {
         Ok((maintained, done)) => {

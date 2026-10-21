@@ -3,15 +3,15 @@ number: 19
 title: Compaction
 area: Maintenance
 status: done
-updated: 2026-10-17
-versions: [0.1.0, 0.5.0, 0.6.0, 0.7.0]
+updated: 2026-10-20
+versions: [0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased]
 related: [5, 12, 13, 20]
 issues: [12, 49, 52, 61, 66, 68, 69, 70, 77, 135]
 ---
 
 # 19. Compaction
 
-**Done** · updated 2026-10-17 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0 · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Exact answers before compaction](milestones/exact-before-compaction.md), [Writes from JavaScript](milestones/javascript-writes.md)
+**Done** · updated 2026-10-20 · versions 0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased · milestones: [v0: a maintenance-free time-series table on S3](milestones/v0.md), [Exact answers before compaction](milestones/exact-before-compaction.md), [Writes from JavaScript](milestones/javascript-writes.md)
 · related: [spec 5](0005-file-layout.md), [spec 12](0012-late-data-and-dedup.md), [spec 13](0013-wasm-writes.md), [spec 20](0020-maintenance.md)
 
 ## Summary
@@ -41,8 +41,10 @@ one file.
 IoT, 72 hourly files into 3 days: 3.65 → 2.37 s, peak memory 1.95 → 0.53 GB, identical output
 ([`bench/results/PERFORMANCE.md`](../bench/results/PERFORMANCE.md)). Per open input about 10 MB (its row group).
 Writing was 80% of the time on one thread; the shared file writer (`timelake_format::file`) now encodes columns in
-parallel: 2.37 → 1.17 s, byte-identical files. The shared maintenance (WASM) adds the byte cap per run, page-window
-reads by the offset index, and at most 24 files per merge ([spec 13](0013-wasm-writes.md)). On inputs that alternate
+parallel: 2.37 → 1.17 s, byte-identical files. The shared maintenance (WASM) adds the byte cap per run and page-window
+reads by the offset index ([spec 13](0013-wasm-writes.md)). Both writers merge at most 24 files at once (a larger group
+in balanced parts, which the next run merges; unreleased in the engine), planned by the same function
+(`timelake_format::maintain::compaction_plan`), so a table compacts to the same files whichever writer runs it. On inputs that alternate
 series by series (5-minute batches of every device), gathering rows in one pass and galloping over runs made the merge
 up to 5× faster (10 M rows of two inputs 13.9 → 2.6 s, 0.7.0).
 
@@ -106,3 +108,4 @@ them ignore them):
 - 2026-10-17: streaming compaction, columns encoded in parallel
 - 2026-10-18: merge up to 5× faster on interleaved inputs
 - 2026-10-19: moved from SPEC.md into spec 15, then into this spec when the specs were regrouped one per feature.
+- 2026-10-20: one compaction plan for both writers; the engine merges at most 24 files at once too.

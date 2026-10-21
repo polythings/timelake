@@ -5,7 +5,7 @@
 //! (7 days by default). Within that time, [`Table::rollback`] returns the table to the snapshot it
 //! had before the upgrade.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -127,10 +127,7 @@ impl Table {
         for step in &report.steps {
             table = match step {
                 UpgradeStep::BuildLastValueIndex => build_index(&table).await?,
-                UpgradeStep::Compact { .. } => {
-                    let o = MaintainOptions { retention: false, expire: false, ..Default::default() };
-                    table.maintain(o).await?.0
-                }
+                UpgradeStep::Compact { .. } => compact(table).await?,
                 UpgradeStep::SetFormatVersion { .. } | UpgradeStep::WriteHead => table,
             };
         }
@@ -159,6 +156,19 @@ impl Table {
     }
 }
 
+/// Compacts `table` until no run has more to merge (a group of more files than one merge takes is
+/// merged in parts).
+async fn compact(mut table: Table) -> Result<Table> {
+    loop {
+        let o = MaintainOptions { retention: false, expire: false, ..Default::default() };
+        let (compacted, report) = table.maintain(o).await?;
+        table = compacted;
+        if !report.more_to_compact || report.files_rewritten == 0 {
+            return Ok(table);
+        }
+    }
+}
+
 /// The steps `table` needs.
 async fn plan(table: &Table, opts: &UpgradeOptions) -> Result<Vec<UpgradeStep>> {
     let c = table.contract();
@@ -172,10 +182,11 @@ async fn plan(table: &Table, opts: &UpgradeOptions) -> Result<Vec<UpgradeStep>> 
     }
     if opts.compact {
         let o = MaintainOptions { retention: false, expire: false, ..Default::default() };
-        let compaction = compaction_plan(table, &o).await?;
+        let compaction = compaction_plan(table, &o).await?.groups;
         if !compaction.is_empty() {
             let files = compaction.iter().map(|(_, files)| files.len()).sum();
-            steps.push(UpgradeStep::Compact { partitions: compaction.len(), files });
+            let partitions = compaction.iter().map(|(p, _)| p).collect::<HashSet<_>>().len();
+            steps.push(UpgradeStep::Compact { partitions, files });
         }
     }
     let head_current = head::stored_version(table).await? == Some(table.version());

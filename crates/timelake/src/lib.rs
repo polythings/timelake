@@ -50,7 +50,7 @@ pub use background::flush;
 pub use commit::CommitInfo;
 pub use error::{Error, Result};
 pub use lake::Lake;
-pub use maintain::{MaintainOptions, MaintainReport};
+pub use maintain::{MaintainOptions, MaintainReport, MaintainSteps};
 pub use query::{RollupStatement, Session, SessionSettings, Statement, session_key};
 pub use rollup::RollupRefresh;
 pub use table::{LiveEntry, Table};

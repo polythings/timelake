@@ -661,3 +661,106 @@ async fn a_time_column_named_outside_avro_names() {
     t.maintain(MaintainOptions::default()).await.unwrap();
     assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 6);
 }
+
+/// Both writers merge a partition of more files than one merge takes in parts, to the same
+/// layout, and say there is more to do; the next run merges the parts.
+#[tokio::test(flavor = "multi_thread")]
+async fn both_writers_merge_large_groups_in_parts() {
+    use timelake_format::maintain::{MAX_MERGE_INPUTS, maintain};
+
+    let compact_only = MaintainOptions { retention: false, expire: false, ..MaintainOptions::default() };
+    let mut layouts = vec![];
+    for shared in [false, true] {
+        let (dir, lake) = temp_lake();
+        let mut t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        for i in 0..=MAX_MERGE_INPUTS {
+            let b = batch(T0 + i64::try_from(i).unwrap(), 1, 1, 2, |_, _| 1.0);
+            t = t.append(&[b], no_maintenance()).await.unwrap().0;
+        }
+        let mut runs = vec![];
+        for _ in 0..2 {
+            let report = if shared {
+                let host = EngineHost::new(&lake);
+                let state = TableState::load(&&host, t.location()).await.unwrap();
+                maintain(&&host, state, &compact_only).await.unwrap().1
+            } else {
+                t.maintain(compact_only.clone()).await.unwrap().1
+            };
+            t = reopen(&dir).table("iot.r").await.unwrap();
+            runs.push((report.files_rewritten, report.files_written, report.more_to_compact));
+        }
+        assert_eq!(t.files().await.unwrap().len(), 1, "shared: {shared}");
+        assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 50);
+        layouts.push(runs);
+    }
+    assert_eq!(layouts[0], [(MAX_MERGE_INPUTS + 1, 2, true), (2, 1, false)]);
+    assert_eq!(layouts[0], layouts[1], "the same layout from either writer");
+
+    // The engine stops at max_bytes too.
+    let (_dir, lake) = temp_lake();
+    let mut t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+    for day in 0..2 {
+        for i in 0..2 {
+            t = t.append(&[batch(T0 + day * DAY + i, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap().0;
+        }
+    }
+    let capped = MaintainOptions { max_bytes: Some(1), ..compact_only };
+    let (_, report) = t.maintain(capped).await.unwrap();
+    assert_eq!((report.partitions_compacted, report.files_rewritten, report.more_to_compact), (1, 2, true));
+}
+
+/// An expiry interrupted after deleting some of an expired snapshot's manifests is finished by
+/// the next one, by either writer; a manifest a kept snapshot needs stops it.
+#[tokio::test(flavor = "multi_thread")]
+async fn expiry_skips_what_an_interrupted_expiry_deleted() {
+    use timelake_format::iceberg::read_manifest_list;
+    use timelake_format::maintain::maintain;
+
+    for shared in [false, true] {
+        let (dir, lake) = temp_lake();
+        let mut o = opts();
+        o.properties.insert(timelake::property::SNAPSHOT_RETENTION.into(), "0s".into());
+        o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
+        let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+        for i in 0..3 {
+            t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap().0;
+        }
+        let compact_only = MaintainOptions { retention: false, expire: false, ..MaintainOptions::default() };
+        let (t, _) = t.maintain(compact_only).await.unwrap();
+        // The first append's manifest: only expired snapshots use it now.
+        let first_manifest = |list: String| {
+            let storage = lake.storage().clone();
+            async move { read_manifest_list(&storage.read(&list).await.unwrap()).unwrap()[0].path.clone() }
+        };
+        let first = t.metadata().snapshots().min_by_key(|s| s.sequence_number()).unwrap().clone();
+        let manifest = first_manifest(first.manifest_list().to_string()).await;
+        lake.storage().delete(&manifest).await.unwrap();
+
+        let expire_only = MaintainOptions { compact: false, retention: false, ..MaintainOptions::default() };
+        let report = if shared {
+            let host = EngineHost::new(&lake);
+            let state = TableState::load(&&host, t.location()).await.unwrap();
+            maintain(&&host, state, &expire_only).await.unwrap().1
+        } else {
+            reopen(&dir).table("iot.r").await.unwrap().maintain(expire_only.clone()).await.unwrap().1
+        };
+        assert_eq!(report.snapshots_expired, 3, "shared: {shared}");
+        let t = reopen(&dir).table("iot.r").await.unwrap();
+        assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 6);
+
+        // A kept snapshot's manifest is missing: an error naming it, and nothing expires.
+        let (t, _) = t.append(&[batch(T0 + DAY, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap();
+        let current = t.metadata().current_snapshot().unwrap().clone();
+        let manifest = first_manifest(current.manifest_list().to_string()).await;
+        lake.storage().delete(&manifest).await.unwrap();
+        let err = if shared {
+            let host = EngineHost::new(&lake);
+            let state = TableState::load(&&host, t.location()).await.unwrap();
+            maintain(&&host, state, &expire_only).await.unwrap_err().to_string()
+        } else {
+            reopen(&dir).table("iot.r").await.unwrap().maintain(expire_only).await.unwrap_err().to_string()
+        };
+        assert!(err.contains(&manifest) && err.contains(&current.snapshot_id().to_string()), "{err}");
+        assert_eq!(reopen(&dir).table("iot.r").await.unwrap().metadata().snapshots().count(), 2, "shared: {shared}");
+    }
+}

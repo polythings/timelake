@@ -185,18 +185,7 @@ fn windows(ranges: &[(i64, i64)], width: i64) -> Ranges {
     out
 }
 
-/// Which rollups a refresh brings up to date.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RollupRefresh {
-    /// Every rollup (`timelake maintain`).
-    #[default]
-    Always,
-    /// Those whose last refresh is older than their `timelake.rollup-refresh-interval` (inline
-    /// maintenance after an append).
-    Due,
-    /// None.
-    Never,
-}
+pub use timelake_format::maintain::RollupRefresh;
 
 /// What refreshing a table's rollups did.
 #[derive(Clone, Copy, Debug, Default)]

@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- Snapshot expiry in the engine stopped with an error when a manifest only expired snapshots used was already gone (an
+  earlier expiry was interrupted). It skips it now, as the TypeScript writer did; a missing manifest of a snapshot it
+  keeps still stops it.
 - The TypeScript client and `TableWriter` let every manifest entry without a sequence number take its manifest's,
   where Iceberg gives it only to files the manifest's snapshot added. Such an entry from another writer now counts as
   the oldest data, as in the engine, so of two rows with the same key and time the newer write wins in both.
@@ -250,6 +253,17 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Maintenance in the engine (`timelake maintain`, Python's `maintain()`, Rust) merges at most 24 files at once, as the
+  TypeScript writer does, so a merge's memory stays bounded. A partition with more files to merge is merged in parts,
+  the report's `more_to_compact` says so, and the next run finishes it (`timelake upgrade` runs until it is done). A
+  table now compacts to the same files whichever writer runs maintenance.
+- Rust's `MaintainReport` gains `bytes_rewritten` and `more_to_compact`, and `partitions_compacted` counts each
+  partition once, not each merged group.
+- Rust: `MaintainOptions` has a `max_bytes` field in the engine too, the bytes one compaction run reads at most, and
+  `MaintainSteps` builds options from the steps to run. `MaintainOptions`, `MaintainReport` and `RollupRefresh` are
+  `timelake_format`'s, re-exported from `timelake` as before.
+- Snapshot expiry lists only the table's metadata files (`metadata/v…`) to find old versions to delete, not the whole
+  metadata directory with every manifest.
 - Appends convert a column to the table's type only where no value is lost. A value that doesn't fit (an integer out
   of range, text that doesn't parse, a fraction for an integer column, an integer above 2^53 for a double) is an error
   naming the column; it used to be written as NULL or truncated without a word. Conversions that are never exact, such

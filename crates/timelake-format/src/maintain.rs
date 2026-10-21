@@ -1,8 +1,8 @@
 //! Maintenance for the shared write path (the WASM writer): retention, compaction by streaming
-//! merge (spec 19), and snapshot expiry with file cleanup, as the engine's `maintain` does them.
-//! Compaction reads each input one row group at a time through ranged reads, so memory is a row
-//! group per input and the row group being written; a cap on the bytes one run rewrites keeps a
-//! run within a request's CPU time.
+//! merge (spec 19), and snapshot expiry with file cleanup, planned as the engine's `maintain`
+//! plans them ([`plan`]). Compaction reads each input a window of pages at a time through ranged
+//! reads, so memory is a window per input and the row group being written; a cap on the bytes one
+//! run rewrites keeps a run within a request's CPU time. Rollups are left to the engine.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -21,138 +21,36 @@ use parquet::file::reader::{ChunkReader, Length};
 use crate::append::PartitionFiles;
 use crate::bounds::{self, Bound};
 use crate::commit::{Change, commit, put_metadata};
-use crate::duration_micros;
 use crate::error::{WriteError, WriteResult};
 use crate::footer;
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
-use crate::layout::{hint_uri, metadata_prefix, metadata_uri, metadata_version};
+use crate::layout::{hint_uri, metadata_prefix, metadata_uri};
 use crate::merge::{Merge, Step};
 use crate::rows::{align_batch, stable_sort};
 use crate::table::TableState;
 
-/// Files smaller than this fraction of the target size count as small.
-const SMALL_FILE_NUMERATOR: u64 = 3;
-const SMALL_FILE_DENOMINATOR: u64 = 4;
-/// Size tiers of small files: tier `n` holds files of `2^16 × 4^n` bytes and up.
-const TIER_BASE_SHIFT: u32 = 16;
-const TIER_GROWTH: u64 = 4;
-/// A partition holding at most this many target sizes is rewritten whole.
-const REWRITE_WHOLE_PARTITION_TARGETS: u64 = 2;
-/// Rows per batch read from an input, and per batch the merge hands the writer. Small, because a
-/// merge holds a batch per input (measured: 1,024 and 8,192 rows peak at 77 MiB merging 24 files
-/// of 50,000 TSBS rows, against 97 MiB with 4,096 and 65,536, for 15% more time).
+mod plan;
+
+pub use plan::*;
+
+/// Rows per batch read from an input, and per batch the merge hands the writer: the WebAssembly
+/// writer's, small because a merge holds a batch per input (measured: 1,024 and 8,192 rows peak at
+/// 77 MiB merging 24 files of 50,000 TSBS rows, against 97 MiB with the engine's 4,096 and 65,536,
+/// for 15% more time).
 const READ_BATCH_ROWS: usize = 1024;
 const MERGED_BATCH_ROWS: usize = 8 * 1024;
-/// The most files one merge reads at once: a merge holds a window of each, so this bounds its
-/// memory. A larger group is merged in parts, which later runs merge again.
-const MAX_MERGE_INPUTS: usize = 24;
 /// Compressed bytes of an input read per window (the pages covering a window's rows).
 const WINDOW_BYTES: u64 = 128 << 10;
-/// Inline maintenance expires snapshots in batches of about this many.
-const EXPIRE_BATCH: usize = 20;
 
-/// Options for [`maintain`]. The default does everything, rewriting each partition into sorted
-/// files of the target size.
-#[derive(Clone, Debug)]
-pub struct MaintainOptions {
-    /// Merge small or unsorted files.
-    pub compact: bool,
-    /// Drop partitions older than the table's retention.
-    pub retention: bool,
-    /// Expire old snapshots and delete the files only they used.
-    pub expire: bool,
-    /// Compact a partition once it has this many small files.
-    pub min_small_files: usize,
-    /// Only consider these partitions (`None`: all).
-    pub partitions: Option<HashSet<Option<i32>>>,
-    /// Merge size tiers of small files instead of rewriting whole partitions.
-    pub tiered: bool,
-    /// In tiered mode, rewrite partitions this far behind the newest data whole.
-    pub cold_after: Option<Duration>,
-    /// Stop compacting once the inputs of this run reach this many bytes (at least one group of
-    /// files is compacted); the next run continues.
-    pub max_bytes: Option<u64>,
-}
-
-impl Default for MaintainOptions {
-    fn default() -> Self {
-        Self {
-            compact: true,
-            retention: true,
-            expire: true,
-            min_small_files: 2,
-            partitions: None,
-            tiered: false,
-            cold_after: None,
-            max_bytes: None,
-        }
-    }
-}
-
-impl MaintainOptions {
-    /// What maintenance runs inline after an append that touched `partitions`: size tiers of those
-    /// partitions and cold ones, retention, and expiry in batches (the engine's choices).
-    pub fn inline(table: &TableState, partitions: HashSet<Option<i32>>, now_ms: i64) -> Self {
-        let c = &table.contract;
-        let snapshots = table.metadata.snapshot_list();
-        let oldest = snapshots.iter().map(|s| s.timestamp_ms).min().unwrap_or(i64::MAX);
-        let cutoff = c.snapshot_cutoff_ms(now_ms);
-        let n = snapshots.len();
-        Self {
-            compact: true,
-            retention: c.retention.is_some(),
-            expire: n >= c.max_snapshots.saturating_add(EXPIRE_BATCH)
-                || (n >= c.min_snapshots.saturating_add(EXPIRE_BATCH) && oldest < cutoff),
-            min_small_files: c.compact_min_files,
-            partitions: Some(partitions),
-            tiered: true,
-            cold_after: c.compact_cold_after,
-            max_bytes: None,
-        }
-    }
-}
-
-/// What [`maintain`] did.
-#[derive(Clone, Debug, Default)]
-pub struct MaintainReport {
-    /// Partitions compacted.
-    pub partitions_compacted: usize,
-    /// Data files replaced by compaction.
-    pub files_rewritten: usize,
-    /// Data files compaction wrote.
-    pub files_written: usize,
-    /// Rows read by compaction.
-    pub rows_rewritten: u64,
-    /// Bytes of the files compaction read.
-    pub bytes_rewritten: u64,
-    /// Duplicate `(series, time)` rows compaction removed.
-    pub duplicates_removed: u64,
-    /// Compaction stopped at `max_bytes` with more left to do.
-    pub more_to_compact: bool,
-    /// Partitions dropped by retention.
-    pub partitions_dropped: usize,
-    /// Data files dropped by retention.
-    pub files_dropped: usize,
-    /// Snapshots expired.
-    pub snapshots_expired: usize,
-    /// Objects deleted after expiry.
-    pub objects_deleted: usize,
-}
-
-impl MaintainReport {
-    /// Whether nothing changed.
-    pub fn is_noop(&self) -> bool {
-        self.files_rewritten == 0 && self.files_dropped == 0 && self.snapshots_expired == 0 && self.objects_deleted == 0
-    }
-}
-
-/// Runs maintenance: retention, then compaction, then snapshot expiry. Returns the new version.
+/// Runs maintenance: retention, then compaction, then snapshot expiry (not rollups: `opts.rollups`
+/// is the engine's). Returns the new version.
 pub async fn maintain<H: Host>(
     host: &H,
     table: TableState,
     opts: &MaintainOptions,
 ) -> WriteResult<(TableState, MaintainReport)> {
+    let started = host.now_ms();
     let mut report = MaintainReport::default();
     let mut table = table;
     if opts.retention {
@@ -164,24 +62,24 @@ pub async fn maintain<H: Host>(
     if opts.expire {
         table = expire(host, table, &mut report).await?;
     }
+    report.duration = Duration::from_millis(u64::try_from(host.now_ms().saturating_sub(started)).unwrap_or(0));
     Ok((table, report))
 }
 
 /// Drops whole time partitions entirely older than the retention period.
 async fn retention<H: Host>(host: &H, mut table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
     let now_micros = host.now_ms().saturating_mul(1000);
-    let (Some(cutoff), Some(chunk)) = (table.contract.retention_cutoff(now_micros), table.contract.chunk) else {
+    let files = table.live_files(host).await?.to_vec();
+    let Some(plan) = retention_plan(&table.contract, now_micros, files.iter().map(|e| e.file.partition)) else {
         return Ok(table);
     };
-    let expired = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
-    let removed: Vec<Entry> =
-        table.live_files(host).await?.iter().filter(|e| e.file.partition.is_some_and(expired)).cloned().collect();
-    if removed.is_empty() {
+    if plan.files.is_empty() {
         return Ok(table);
     }
-    report.partitions_dropped += removed.iter().map(|e| e.file.partition).collect::<HashSet<_>>().len();
+    let removed: Vec<Entry> = plan.files.iter().map(|&i| files[i].clone()).collect();
+    report.partitions_dropped += plan.partitions;
     report.files_dropped += removed.len();
-    let change = Change::Delete { removed, lvi_cutoff: Some(cutoff) };
+    let change = Change::Delete { removed, lvi_cutoff: Some(plan.cutoff) };
     Ok(commit(host, table, &change, &HashMap::<String, String>::new()).await?.0)
 }
 
@@ -193,37 +91,20 @@ async fn compact<H: Host>(
     opts: &MaintainOptions,
     report: &mut MaintainReport,
 ) -> WriteResult<TableState> {
-    let plan = compaction_plan(host, &mut table, opts).await?;
-    // Groups larger than a merge takes are split into balanced parts, consecutive in commit order.
-    let mut plan: Vec<(Option<i32>, Vec<Entry>)> = plan
-        .into_iter()
-        .flat_map(|(p, files)| {
-            let size = files.len().div_ceil(files.len().div_ceil(MAX_MERGE_INPUTS));
-            files.chunks(size.max(1)).map(|c| (p, c.to_vec())).collect::<Vec<_>>()
-        })
-        .collect();
-    if let Some(max) = opts.max_bytes {
-        let mut total = 0;
-        let keep = plan
-            .iter()
-            .take_while(|(_, files)| {
-                let first = total == 0;
-                total += files.iter().map(|e| e.file.file_size).sum::<u64>();
-                first || total <= max
-            })
-            .count();
-        report.more_to_compact = keep < plan.len();
-        plan.truncate(keep);
-    }
-    if plan.is_empty() {
+    let plan = plan_compaction(host, &mut table, opts).await?;
+    report.more_to_compact = plan.more_to_compact;
+    if plan.groups.is_empty() {
         return Ok(table);
     }
+    report.partitions_compacted += plan.groups.iter().map(|g| g.partition).collect::<HashSet<_>>().len();
+    let files = table.live_files(host).await?.to_vec();
     let (mut removed, mut added, mut sequence_numbers, mut written) = (vec![], vec![], vec![], vec![]);
     let mut outcome = Ok(());
-    for (partition, files) in plan {
+    for group in plan.groups {
+        let files: Vec<Entry> = group.files.iter().map(|&i| files[i].clone()).collect();
         // The files are a run in commit order; the new files take the run's place in that order.
         let sequence_number = files.iter().map(|f| f.sequence_number).max().unwrap_or_default();
-        match rewrite(host, &table, partition, &files, report).await {
+        match rewrite(host, &table, group.partition, &files, report).await {
             Ok(out) => {
                 for (file, footer) in out {
                     written.push((file.path.clone(), footer));
@@ -270,75 +151,34 @@ fn time_field_id(table: &TableState) -> Option<i32> {
     field.metadata().get(crate::metadata::FIELD_ID_KEY)?.parse().ok()
 }
 
-/// Which files of which partitions to rewrite (the engine's plan). Each group is a run of files
-/// next to each other in commit order.
-async fn compaction_plan<H: Host>(
+/// Which live files to merge ([`compaction_plan`]); groups index [`TableState::live_files`].
+async fn plan_compaction<H: Host>(
     host: &H,
     table: &mut TableState,
     opts: &MaintainOptions,
-) -> WriteResult<Vec<(Option<i32>, Vec<Entry>)>> {
-    let c = table.contract.clone();
-    let small = c.target_file_size / SMALL_FILE_DENOMINATOR * SMALL_FILE_NUMERATOR;
-    let is_small = |e: &Entry| e.file.file_size < small;
-    let sort_order_id = Some(table.metadata.sort_order_id());
-    let sorted_table = !c.sort_columns().is_empty();
-    let min_files = opts.min_small_files.max(2);
+) -> WriteResult<CompactionPlan> {
     let time_id = time_field_id(table);
-    let files = table.live_files(host).await?.to_vec();
+    let sort_order_id = Some(table.metadata.sort_order_id());
+    let contract = table.contract.clone();
+    let files: Vec<PlanFile<'_>> = table.live_files(host).await?.iter().map(|e| plan_file(e, time_id)).collect();
+    Ok(compaction_plan(&contract, sort_order_id, &files, opts))
+}
 
-    let cold: HashSet<Option<i32>> = match (opts.tiered, opts.cold_after, c.chunk, time_id) {
-        (true, Some(cold_after), Some(chunk), Some(id)) => {
-            // Every timestamp bound is a long in Iceberg's encoding, whatever its unit.
-            let newest = files
-                .iter()
-                .filter_map(|f| match bounds::decode("timestamptz", f.file.upper_bounds.get(&id)?) {
-                    Some(Bound::Int(t)) => Some(t),
-                    _ => None,
-                })
-                .max();
-            newest.map_or_else(HashSet::new, |newest| {
-                let cutoff = newest.saturating_sub(duration_micros(cold_after));
-                let ended = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
-                files.iter().filter_map(|f| f.file.partition).filter(|&p| ended(p)).map(Some).collect()
-            })
-        }
-        _ => HashSet::new(),
-    };
-    let mut by_partition: BTreeMap<Option<i32>, Vec<Entry>> = BTreeMap::new();
-    for e in files {
-        let p = e.file.partition;
-        if opts.partitions.as_ref().is_none_or(|ps| ps.contains(&p)) || cold.contains(&p) {
-            by_partition.entry(p).or_default().push(e);
-        }
+/// A live file as compaction planning sees it; `time_id` is the time column's field id.
+fn plan_file(e: &Entry, time_id: Option<i32>) -> PlanFile<'_> {
+    // Every timestamp bound is a long in Iceberg's encoding, whatever its unit.
+    let newest_time = time_id.and_then(|id| match bounds::decode("timestamptz", e.file.upper_bounds.get(&id)?) {
+        Some(Bound::Int(t)) => Some(t),
+        _ => None,
+    });
+    PlanFile {
+        path: &e.file.path,
+        partition: e.file.partition,
+        size: e.file.file_size,
+        sequence_number: e.sequence_number,
+        sort_order_id: e.file.sort_order_id,
+        newest_time,
     }
-    let mut plan = vec![];
-    for (partition, mut files) in by_partition {
-        files.sort_by(|a, b| (a.sequence_number, a.file.path.as_str()).cmp(&(b.sequence_number, b.file.path.as_str())));
-        let is_cold = cold.contains(&partition);
-        let min_files = if is_cold { 2 } else { min_files };
-        if opts.tiered && !is_cold {
-            let tier = |e: &Entry| is_small(e).then(|| (e.file.file_size >> TIER_BASE_SHIFT).max(1).ilog(TIER_GROWTH));
-            let runs = files.chunk_by(|a, b| tier(a) == tier(b));
-            plan.extend(
-                runs.filter(|run| tier(&run[0]).is_some() && run.len() >= min_files)
-                    .map(|run| (partition, run.to_vec())),
-            );
-            continue;
-        }
-        let n_small = files.iter().filter(|e| is_small(e)).count();
-        let unsorted = sorted_table && files.iter().any(|e| e.file.sort_order_id != sort_order_id);
-        if n_small < min_files && !(unsorted && min_files <= 2) {
-            continue;
-        }
-        let total: u64 = files.iter().map(|e| e.file.file_size).sum();
-        if total <= REWRITE_WHOLE_PARTITION_TARGETS.saturating_mul(c.target_file_size) || unsorted {
-            plan.push((partition, files));
-            continue;
-        }
-        let runs = files.chunk_by(|a, b| is_small(a) == is_small(b)).filter(|run| is_small(&run[0]) && run.len() >= 2);
-        plan.extend(runs.map(|run| (partition, run.to_vec())));
-    }
-    Ok(plan)
 }
 
 /// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files.
@@ -383,11 +223,7 @@ async fn rewrite<H: Host>(
         return Err(e);
     }
     let (rows_in, rows_out, _) = merge.stats();
-    report.duplicates_removed += rows_in - rows_out;
-    report.rows_rewritten += rows_in;
-    report.bytes_rewritten += files.iter().map(|e| e.file.file_size).sum::<u64>();
-    report.partitions_compacted += 1;
-    report.files_rewritten += files.len();
+    report.merged(files.len(), files.iter().map(|e| e.file.file_size).sum(), rows_in, rows_out);
     out.finish().await
 }
 
@@ -614,16 +450,17 @@ async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Ar
 async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
     let mut table = table;
     loop {
-        let mut snapshots = table.metadata.snapshot_list();
-        snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
-        let expired = expired_snapshots(&table, &snapshots, host.now_ms());
-        if expired.is_empty() {
+        let snapshots = table.metadata.snapshot_list();
+        let times: Vec<SnapshotTime> =
+            snapshots.iter().map(|s| SnapshotTime { id: s.id, timestamp_ms: s.timestamp_ms }).collect();
+        let (current, referenced) = (table.metadata.current_snapshot_id(), table.metadata.referenced_snapshots());
+        let ids = expired_snapshots(&table.contract, &times, current, &referenced, host.now_ms());
+        if ids.is_empty() {
             return Ok(table);
         }
-        let ids: Vec<i64> = expired.iter().map(|s| s.id).collect();
+        let (expired, remaining): (Vec<_>, Vec<_>) = snapshots.into_iter().partition(|s| ids.contains(&s.id));
         // What the kept snapshots use, read in full before anything changes: a file left out
         // would be deleted.
-        let remaining: Vec<_> = snapshots.iter().filter(|s| !ids.contains(&s.id)).cloned().collect();
         let kept = reachable(host, &remaining, Missing::Error).await?;
         let previous = metadata_uri(&table.location, table.version);
         let metadata = table.metadata.without_snapshots(&ids, &previous, host.now_ms())?;
@@ -647,55 +484,14 @@ async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainRepor
     }
 }
 
-/// Snapshots (newest first) to expire: past the newest `min_snapshots`, and either older than the
-/// snapshot retention or beyond `max_snapshots`. The current snapshot, and any a branch or tag
-/// points at (another engine's), always stay.
-fn expired_snapshots(
-    table: &TableState,
-    newest_first: &[crate::metadata::SnapshotRef],
-    now_ms: i64,
-) -> Vec<crate::metadata::SnapshotRef> {
-    let c = &table.contract;
-    if c.keep_snapshots_until.is_some_and(|until| now_ms < until) {
-        return vec![];
-    }
-    let current = table.metadata.current_snapshot_id();
-    let referenced = table.metadata.referenced_snapshots();
-    let cutoff = c.snapshot_cutoff_ms(now_ms);
-    newest_first
-        .iter()
-        .enumerate()
-        .filter(|(i, s)| {
-            Some(s.id) != current
-                && !referenced.contains(&s.id)
-                && *i >= c.min_snapshots
-                && (s.timestamp_ms < cutoff || *i >= c.max_snapshots)
-        })
-        .map(|(_, s)| s.clone())
-        .collect()
-}
-
-/// What [`reachable`] does with a manifest list or manifest that isn't there.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Missing {
-    /// Already deleted by an earlier, interrupted expiry: nothing more to find.
-    Skip,
-    /// A snapshot that is kept can't be read: an error, so that nothing is deleted.
-    Error,
-}
-
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
 async fn reachable<H: Host>(
     host: &H,
     snapshots: &[crate::metadata::SnapshotRef],
     missing: Missing,
 ) -> WriteResult<HashSet<String>> {
-    let absent = |snapshot: i64, uri: &str| {
-        WriteError::NotFound(format!(
-            "{uri}, used by snapshot {snapshot}, is missing, so expiry deletes nothing; roll back past the snapshot or \
-             restore the file"
-        ))
-    };
+    let absent =
+        |snapshot: i64, uri: &str| missing.check(snapshot, uri).map_err(|e| WriteError::NotFound(e.to_string()));
     let mut out = HashSet::new();
     let mut manifests = BTreeMap::new();
     for s in snapshots {
@@ -704,9 +500,7 @@ async fn reachable<H: Host>(
             out.insert(index.clone());
         }
         let Some(bytes) = host.get(&s.manifest_list).await? else {
-            if missing == Missing::Error {
-                return Err(absent(s.id, &s.manifest_list));
-            }
+            absent(s.id, &s.manifest_list)?;
             continue;
         };
         for m in read_manifest_list(&bytes)? {
@@ -716,9 +510,7 @@ async fn reachable<H: Host>(
     }
     for (snapshot, m) in manifests.values() {
         let Some(bytes) = host.get(&m.path).await? else {
-            if missing == Missing::Error {
-                return Err(absent(*snapshot, &m.path));
-            }
+            absent(*snapshot, &m.path)?;
             continue;
         };
         for e in read_manifest(m, &bytes)? {
@@ -731,16 +523,10 @@ async fn reachable<H: Host>(
     Ok(out)
 }
 
-/// Keeps the newest metadata files (those in the metadata log plus the current one).
+/// Deletes the metadata files older than the metadata log ([`pruned_metadata`]).
 async fn prune_metadata_files<H: Host>(host: &H, table: &TableState) -> WriteResult<usize> {
-    let keep_from = table.version.saturating_sub(table.metadata.metadata_log_len() as u64 + 1);
-    let doomed: Vec<String> = host
-        .list(&metadata_prefix(&table.location))
-        .await?
-        .into_iter()
-        .map(|o| o.uri)
-        .filter(|uri| metadata_version(uri).is_some_and(|v| v < keep_from))
-        .collect();
+    let listed = host.list(&metadata_prefix(&table.location)).await?.into_iter().map(|o| o.uri);
+    let doomed = pruned_metadata(listed, table.version, table.metadata.metadata_log_len());
     host.delete(&doomed).await?;
     Ok(doomed.len())
 }

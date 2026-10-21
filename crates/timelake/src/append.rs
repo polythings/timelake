@@ -11,7 +11,6 @@ use iceberg::spec::DataFile;
 use crate::commit::{Change, CommitInfo, commit};
 use crate::error::{Error, Result};
 use crate::maintain::{MaintainOptions, MaintainReport};
-use crate::rollup::RollupRefresh;
 use crate::storage::Uploads;
 use crate::summary;
 use crate::table::Table;
@@ -21,8 +20,6 @@ use crate::write::{row_groups, write_partition, writer_properties};
 
 /// How many partitions an append writes at once.
 const CONCURRENT_PARTITION_WRITES: usize = 8;
-/// Inline maintenance expires snapshots in batches of about this many, not after every commit.
-const EXPIRE_BATCH: usize = 20;
 
 /// Options for [`Table::append`].
 #[derive(Clone, Debug, Default)]
@@ -111,7 +108,10 @@ impl Table {
         if !opts.maintain.unwrap_or(table.contract().auto_maintain) {
             return Ok((table, result));
         }
-        match table.maintain(table.auto_maintain_options(touched)).await {
+        let snapshot_times = table.metadata().snapshots().map(|s| s.timestamp_ms());
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let opts = MaintainOptions::inline(table.contract(), snapshot_times, touched, now_ms);
+        match table.maintain(opts).await {
             Ok((maintained, report)) => {
                 result.maintenance = (!report.is_noop()).then_some(Ok(report));
                 Ok((maintained, result))
@@ -140,26 +140,6 @@ impl Table {
         let files: Vec<Result<Vec<DataFile>>> =
             futures::stream::iter(writes).buffered(CONCURRENT_PARTITION_WRITES).collect().await;
         Ok(files.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten().collect())
-    }
-
-    /// Cheap checks after an append: compact size tiers of the touched partitions that crossed
-    /// the threshold, apply retention, and expire snapshots in batches.
-    fn auto_maintain_options(&self, touched: HashSet<Option<i32>>) -> MaintainOptions {
-        let c = self.contract();
-        let snapshots = self.metadata().snapshots().len();
-        let oldest = self.metadata().snapshots().map(|s| s.timestamp_ms()).min().unwrap_or(i64::MAX);
-        let cutoff = c.snapshot_cutoff_ms(chrono::Utc::now().timestamp_millis());
-        MaintainOptions {
-            compact: true,
-            retention: c.retention.is_some(),
-            expire: snapshots >= c.max_snapshots.saturating_add(EXPIRE_BATCH)
-                || (snapshots >= c.min_snapshots.saturating_add(EXPIRE_BATCH) && oldest < cutoff),
-            min_small_files: c.compact_min_files,
-            partitions: Some(touched),
-            tiered: true,
-            cold_after: c.compact_cold_after,
-            rollups: RollupRefresh::Due,
-        }
     }
 }
 

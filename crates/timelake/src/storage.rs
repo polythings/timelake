@@ -360,17 +360,40 @@ impl Storage {
     /// request where the store lists by raw prefix. `None` if the store can't list, or the result
     /// doesn't fit one page.
     pub(crate) async fn list_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
+        self.list_prefix_pages(prefix, Some(1)).await
+    }
+
+    /// URIs of every object whose URI starts with `prefix`, however many pages that takes. An
+    /// error if the store can't list.
+    pub(crate) async fn list_prefix_all(&self, prefix: &str) -> Result<Vec<String>> {
+        self.list_prefix_pages(prefix, None)
+            .await?
+            .ok_or_else(|| Error::config(format!("{prefix}: this store can't list objects")))
+    }
+
+    /// Objects whose URI starts with `prefix`, in at most `max_pages` requests where the store
+    /// lists by raw prefix (`None` if more are needed, or the store can't list).
+    async fn list_prefix_pages(&self, prefix: &str, max_pages: Option<usize>) -> Result<Option<Vec<String>>> {
         let rest = prefix
             .strip_prefix(&self.base)
             .ok_or_else(|| Error::config(format!("{prefix} is not under {}", self.base)))?;
         let key_prefix = rest.trim_start_matches('/');
         let uri = |location: &Path| format!("{}/{location}", self.base);
         if let Some(Lister(lister)) = &self.lister {
-            let listed = lister.list_paginated(Some(key_prefix), PaginatedListOptions::default()).await?;
-            if listed.page_token.is_some() {
-                return Ok(None);
+            let (mut out, mut page_token, mut pages) = (vec![], None, 0);
+            loop {
+                if max_pages.is_some_and(|max| pages >= max) {
+                    return Ok(None);
+                }
+                let opts = PaginatedListOptions { page_token, ..Default::default() };
+                let listed = lister.list_paginated(Some(key_prefix), opts).await?;
+                out.extend(listed.result.objects.iter().map(|o| uri(&o.location)));
+                pages += 1;
+                match listed.page_token {
+                    Some(token) => page_token = Some(token),
+                    None => return Ok(Some(out)),
+                }
             }
-            return Ok(Some(listed.result.objects.iter().map(|o| uri(&o.location)).collect()));
         }
         if !self.listable {
             return Ok(None);

@@ -25,7 +25,7 @@ are no longer written are compacted sooner so dedup on read only touches recent 
 | # | Spec | Status | Versions |
 |---:|---|---|---|
 | 12 | [Late data and dedup on read](../0012-late-data-and-dedup.md) | Done | 0.5.0 |
-| 19 | [Compaction](../0019-compaction.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0 |
+| 19 | [Compaction](../0019-compaction.md) | Done | 0.1.0, 0.5.0, 0.6.0, 0.7.0, unreleased |
 
 <!-- specs:end -->
 
