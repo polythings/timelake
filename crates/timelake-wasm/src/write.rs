@@ -18,7 +18,7 @@ use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
 use timelake_format::file::WASM_DATA_PAGE_ROWS;
 use timelake_format::host::{Host, Listed, Upload};
-use timelake_format::maintain::{MaintainOptions, MaintainReport, maintain};
+use timelake_format::maintain::{MaintainOptions, MaintainReport, MaintainSteps, maintain};
 use timelake_format::table::TableState;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
@@ -216,41 +216,35 @@ struct JsMaintainOptions {
     max_bytes: Option<f64>,
 }
 
-/// What maintenance did, for JavaScript.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct JsMaintainReport {
-    partitions_compacted: usize,
-    files_rewritten: usize,
-    files_written: usize,
-    rows_rewritten: u64,
-    bytes_rewritten: u64,
-    duplicates_removed: u64,
-    more_to_compact: bool,
-    partitions_dropped: usize,
-    files_dropped: usize,
-    snapshots_expired: usize,
-    objects_deleted: usize,
-    version: u64,
+/// What maintenance did, for JavaScript: the fields of `timelake_format`'s report with camelCase
+/// keys (the TypeScript `MaintainReport`), and the table version after it.
+fn maintain_report(report: &MaintainReport, version: u64) -> serde_json::Value {
+    let mut value = camel_case_keys(serde_json::to_value(report).unwrap_or_default());
+    if let serde_json::Value::Object(fields) = &mut value {
+        fields.insert("version".into(), version.into());
+    }
+    value
 }
 
-impl JsMaintainReport {
-    fn new(r: &MaintainReport, version: u64) -> Self {
-        Self {
-            partitions_compacted: r.partitions_compacted,
-            files_rewritten: r.files_rewritten,
-            files_written: r.files_written,
-            rows_rewritten: r.rows_rewritten,
-            bytes_rewritten: r.bytes_rewritten,
-            duplicates_removed: r.duplicates_removed,
-            more_to_compact: r.more_to_compact,
-            partitions_dropped: r.partitions_dropped,
-            files_dropped: r.files_dropped,
-            snapshots_expired: r.snapshots_expired,
-            objects_deleted: r.objects_deleted,
-            version,
-        }
-    }
+/// `value` with its object keys (not nested ones) from `snake_case` to `camelCase`.
+fn camel_case_keys(value: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(fields) = value else { return value };
+    let camel = |key: &str| {
+        let mut parts = key.split('_');
+        let first = parts.next().unwrap_or_default().to_string();
+        parts.fold(first, |mut out, part| {
+            let mut chars = part.chars();
+            out.extend(chars.next().map(|c| c.to_ascii_uppercase()));
+            out.push_str(chars.as_str());
+            out
+        })
+    };
+    fields.into_iter().map(|(k, v)| (camel(&k), v)).collect()
+}
+
+/// `value` as a plain JavaScript value: objects (not `Map`s) for JSON objects.
+fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    value.serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(Into::into)
 }
 
 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a byte count from JavaScript")]
@@ -272,7 +266,7 @@ struct JsAppendReport {
     duplicate: bool,
     /// Inline maintenance, if it did something; an error message if it failed (the append is
     /// committed either way).
-    maintenance: Option<JsMaintainReport>,
+    maintenance: Option<serde_json::Value>,
     maintenance_error: Option<String>,
 }
 
@@ -321,23 +315,23 @@ impl Writer {
             } else {
                 serde_wasm_bindgen::from_value(options).map_err(|e| JsValue::from_str(&format!("bad options: {e}")))?
             };
-            let defaults = MaintainOptions::default();
-            let opts = MaintainOptions {
-                compact: o.compact.unwrap_or(defaults.compact),
-                retention: o.retention.unwrap_or(defaults.retention),
-                expire: o.expire.unwrap_or(defaults.expire),
-                max_bytes: o.max_bytes.map(byte_count),
-                ..defaults
+            let all = MaintainSteps::default();
+            let steps = MaintainSteps {
+                compact: o.compact.unwrap_or(all.compact),
+                retention: o.retention.unwrap_or(all.retention),
+                expire: o.expire.unwrap_or(all.expire),
+                ..all
             };
+            let opts = MaintainOptions { max_bytes: o.max_bytes.map(byte_count), ..steps.into() };
             // Maintenance works on the newest version.
             let table = TableState::load(&host, &location).await.map_err(|e| to_js_err(&e))?;
             let (table, report) = maintain(&host, table, &opts).await.map_err(|e| {
                 *state.borrow_mut() = None;
                 to_js_err(&e)
             })?;
-            let report = JsMaintainReport::new(&report, table.version);
+            let report = maintain_report(&report, table.version);
             advance(&state, table);
-            serde_wasm_bindgen::to_value(&report).map_err(Into::into)
+            to_js(&report)
         })
     }
 
@@ -388,7 +382,7 @@ impl Writer {
             let version = table.version;
             advance(&state, table);
             let (maintenance, maintenance_error) = match &report.maintenance {
-                Some(Ok(m)) => (Some(JsMaintainReport::new(m, version)), None),
+                Some(Ok(m)) => (Some(maintain_report(m, version)), None),
                 Some(Err(e)) => (None, Some(e.clone())),
                 None => (None, None),
             };
@@ -403,7 +397,7 @@ impl Writer {
                 maintenance,
                 maintenance_error,
             };
-            serde_wasm_bindgen::to_value(&report).map_err(Into::into)
+            to_js(&report)
         })
     }
 }
@@ -499,5 +493,16 @@ mod tests {
         assert_eq!(state.borrow().as_ref().map(|t| t.version), Some(5));
         advance(&state, at(6));
         assert_eq!(state.borrow().as_ref().map(|t| t.version), Some(6));
+    }
+
+    /// JavaScript gets every field of the shared report, in camelCase, with the version.
+    #[test]
+    fn maintenance_reports_have_camel_case_keys() {
+        let report = MaintainReport { files_dropped: 2, more_to_compact: true, ..MaintainReport::default() };
+        let js = maintain_report(&report, 7);
+        assert_eq!((js["filesDropped"].as_u64(), js["moreToCompact"].as_bool()), (Some(2), Some(true)));
+        assert_eq!((js["version"].as_u64(), js["seconds"].as_f64()), (Some(7), Some(0.0)));
+        let fields = serde_json::to_value(&report).unwrap().as_object().unwrap().len();
+        assert_eq!(js.as_object().unwrap().len(), fields + 1);
     }
 }

@@ -257,8 +257,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   TypeScript writer does, so a merge's memory stays bounded. A partition with more files to merge is merged in parts,
   the report's `more_to_compact` says so, and the next run finishes it (`timelake upgrade` runs until it is done). A
   table now compacts to the same files whichever writer runs maintenance.
-- Rust's `MaintainReport` gains `bytes_rewritten` and `more_to_compact`, and `partitions_compacted` counts each
-  partition once, not each merged group.
+- Maintenance reports have the same fields everywhere. Rust's `MaintainReport` gains `bytes_rewritten` and
+  `more_to_compact`; Python's dict gains those and `files_dropped`; the TypeScript `MaintainReport` gains
+  `rollupsRefreshed`, `rollupRows` (always 0 there: only the engine refreshes rollups) and `seconds`.
+  `partitions_compacted` counts each partition once, not each merged group. `timelake maintain` also prints the files
+  retention dropped, the megabytes compaction read, and when to run again.
 - Rust: `MaintainOptions` has a `max_bytes` field in the engine too, the bytes one compaction run reads at most, and
   `MaintainSteps` builds options from the steps to run. `MaintainOptions`, `MaintainReport` and `RollupRefresh` are
   `timelake_format`'s, re-exported from `timelake` as before.

@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 timelake.workspace = true
 pyo3.workspace = true
+pythonize.workspace = true
 arrow-pyarrow.workspace = true
 arrow-array.workspace = true
 tokio.workspace = true

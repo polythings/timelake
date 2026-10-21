@@ -16,7 +16,7 @@ use timelake::arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader
 use timelake::arrow::datatypes::Schema;
 use timelake::arrow::error::ArrowError;
 use timelake::datafusion::prelude::{DataFrame, SessionConfig};
-use timelake::{AppendOptions, Chunk, Error, MaintainOptions, RollupRefresh, Session, TableOptions, UpgradeOptions};
+use timelake::{AppendOptions, Chunk, Error, MaintainSteps, Session, TableOptions, UpgradeOptions};
 
 create_exception!(
     timelake,
@@ -316,7 +316,7 @@ impl Table {
         let dict = summary.into_pyobject(py)?;
         // A failed inline maintenance doesn't undo the committed append; report it instead of raising.
         match &result.maintenance {
-            Some(Ok(report)) => dict.set_item("maintenance", MaintainSummary::from(report))?,
+            Some(Ok(report)) => dict.set_item("maintenance", report_dict(py, report)?)?,
             Some(Err(err)) => dict.set_item("maintenance_error", err.to_string())?,
             None => {}
         }
@@ -327,20 +327,19 @@ impl Table {
     /// done.
     #[pyo3(signature = (compact=true, retention=true, expire=true, rollups=true))]
     #[expect(clippy::fn_params_excessive_bools, reason = "Python keyword arguments, each a step to skip")]
-    fn maintain(
+    fn maintain<'py>(
         &self,
-        py: Python<'_>,
+        py: Python<'py>,
         compact: bool,
         retention: bool,
         expire: bool,
         rollups: bool,
-    ) -> PyResult<MaintainSummary> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let table = self.get();
-        let rollups = if rollups { RollupRefresh::Always } else { RollupRefresh::Never };
-        let options = MaintainOptions { compact, retention, expire, rollups, ..MaintainOptions::default() };
+        let options = MaintainSteps { compact, retention, rollups, expire }.into();
         let (table, report) = run(py, async move { table.maintain(options).await })?;
         self.set(table);
-        Ok(MaintainSummary::from(&report))
+        report_dict(py, &report)
     }
 
     /// Brings the table to the current format; returns the steps and how to undo them.
@@ -435,38 +434,10 @@ struct AppendSummary {
     duplicate: bool,
 }
 
-/// `Table.maintain` result, also `maintenance` in an append result.
-#[derive(IntoPyObject)]
-struct MaintainSummary {
-    partitions_compacted: usize,
-    files_rewritten: usize,
-    files_written: usize,
-    rows_rewritten: u64,
-    duplicates_removed: u64,
-    partitions_dropped: usize,
-    snapshots_expired: usize,
-    objects_deleted: usize,
-    rollups_refreshed: usize,
-    rollup_rows: u64,
-    seconds: f64,
-}
-
-impl From<&timelake::MaintainReport> for MaintainSummary {
-    fn from(report: &timelake::MaintainReport) -> Self {
-        Self {
-            partitions_compacted: report.partitions_compacted,
-            files_rewritten: report.files_rewritten,
-            files_written: report.files_written,
-            rows_rewritten: report.rows_rewritten,
-            duplicates_removed: report.duplicates_removed,
-            partitions_dropped: report.partitions_dropped,
-            snapshots_expired: report.snapshots_expired,
-            objects_deleted: report.objects_deleted,
-            rollups_refreshed: report.rollups_refreshed,
-            rollup_rows: report.rollup_rows,
-            seconds: report.duration.as_secs_f64(),
-        }
-    }
+/// `Table.maintain` result, also `maintenance` in an append result: the report's fields, as
+/// `timelake_format` serializes them (`duration` as `seconds`).
+fn report_dict<'py>(py: Python<'py>, report: &timelake::MaintainReport) -> PyResult<Bound<'py, PyAny>> {
+    Ok(pythonize::pythonize(py, report)?)
 }
 
 /// `Lake.cache_stats` result.

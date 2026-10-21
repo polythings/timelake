@@ -141,7 +141,7 @@ Both readings for 10:10 are in the table for now. `maintain` tidies the table: i
 
 ```console
 $ timelake maintain iot.readings
-iot.readings: compacted 1 partitions (2 → 1 files, 8 rows, 1 duplicates removed), … → v4
+iot.readings: compacted 1 partitions (2 → 1 files, 8 rows, 1 duplicates removed, 0.0 MB read), … → v4
 
 $ timelake sql "SELECT * FROM iot.readings WHERE device_id = 'pump-1' ORDER BY time"
 +---------------------+-----------+------+----------+

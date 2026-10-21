@@ -156,7 +156,8 @@ impl TableInfo {
     }
 }
 
-fn megabytes(bytes: u64) -> f64 {
+/// Bytes in (decimal) megabytes.
+pub(crate) fn megabytes(bytes: u64) -> f64 {
     bytes as f64 / 1e6
 }
 

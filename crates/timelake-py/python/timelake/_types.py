@@ -39,18 +39,25 @@ class ArrowStreamExportable(Protocol):
 
 
 class MaintainReport(TypedDict):
-    """What a maintenance run did."""
+    """What a maintenance run did: the fields of the Rust ``MaintainReport``, as in the TypeScript client.
+
+    ``more_to_compact`` says compaction left files a later run merges: a group of more files than one merge reads
+    was merged in parts. ``seconds`` is the time the run took.
+    """
 
     partitions_compacted: int
     files_rewritten: int
     files_written: int
     rows_rewritten: int
+    bytes_rewritten: int
     duplicates_removed: int
+    more_to_compact: bool
     partitions_dropped: int
-    snapshots_expired: int
-    objects_deleted: int
+    files_dropped: int
     rollups_refreshed: int
     rollup_rows: int
+    snapshots_expired: int
+    objects_deleted: int
     seconds: float
 
 

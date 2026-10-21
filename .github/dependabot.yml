@@ -27,14 +27,15 @@ updates:
       cargo: { update-types: [minor, patch] }
     ignore:
       # iceberg (pinned with =) fixes the Arrow, Parquet and Avro versions; DataFusion, object_store and PyO3 (through
-      # arrow-pyarrow) follow Arrow. Dependabot proposes iceberg itself: move these with it, by hand. Before 1.0 a
-      # minor version (0.13 → 0.14) is breaking.
+      # arrow-pyarrow, with pythonize) follow Arrow. Dependabot proposes iceberg itself: move these with it, by hand.
+      # Before 1.0 a minor version (0.13 → 0.14) is breaking.
       - { dependency-name: "arrow*", update-types: [version-update:semver-major] }
       - { dependency-name: "parquet", update-types: [version-update:semver-major] }
       - { dependency-name: "datafusion*", update-types: [version-update:semver-major] }
       - { dependency-name: "object_store", update-types: [version-update:semver-major, version-update:semver-minor] }
       - { dependency-name: "apache-avro", update-types: [version-update:semver-major, version-update:semver-minor] }
       - { dependency-name: "pyo3", update-types: [version-update:semver-major, version-update:semver-minor] }
+      - { dependency-name: "pythonize", update-types: [version-update:semver-major, version-update:semver-minor] }
 
   # The WASM crate's toolchain is the root one plus its target: one pull request updates both.
   - package-ecosystem: rust-toolchain

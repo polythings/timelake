@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use timelake::datafusion::prelude::DataFrame;
-use timelake::{Lake, MaintainOptions, RollupRefresh, Session, TableName, UpgradeOptions};
+use timelake::{Lake, MaintainOptions, MaintainReport, MaintainSteps, Session, TableName, UpgradeOptions};
 
 use crate::info::TableInfo;
 use crate::load::{LoadArgs, TableDef};
@@ -207,14 +207,13 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Sql(args) => sql(lake, args, started).await,
         Cmd::Latest { table, format } => print_df(Session::new(lake).latest(&table).await?, format).await,
         Cmd::Maintain { tables, no_compact, no_retention, no_expire, no_rollups } => {
-            let opts = MaintainOptions {
+            let steps = MaintainSteps {
                 compact: !no_compact,
                 retention: !no_retention,
+                rollups: !no_rollups,
                 expire: !no_expire,
-                rollups: if no_rollups { RollupRefresh::Never } else { RollupRefresh::Always },
-                ..Default::default()
             };
-            maintain(&lake, tables, opts).await
+            maintain(&lake, tables, steps.into()).await
         }
         Cmd::Upgrade { tables, dry_run, no_compact, keep_snapshots } => {
             let opts = UpgradeOptions { dry_run, compact: !no_compact, keep_snapshots };
@@ -347,23 +346,31 @@ async fn upgrade(lake: &Lake, tables: Vec<String>, opts: &UpgradeOptions) -> Res
 async fn maintain(lake: &Lake, tables: Vec<String>, opts: MaintainOptions) -> Result<()> {
     for (name, label) in targets(lake, tables).await? {
         let (t, r) = lake.table(name).await?.maintain(opts.clone()).await?;
-        println!(
-            "{label}: compacted {} partitions ({} → {} files, {} rows, {} duplicates removed), dropped {} partitions, refreshed {} rollups ({} rows), expired {} snapshots, deleted {} objects in {:.2}s → v{}",
-            r.partitions_compacted,
-            r.files_rewritten,
-            r.files_written,
-            r.rows_rewritten,
-            r.duplicates_removed,
-            r.partitions_dropped,
-            r.rollups_refreshed,
-            r.rollup_rows,
-            r.snapshots_expired,
-            r.objects_deleted,
-            r.duration.as_secs_f64(),
-            t.version()
-        );
+        println!("{label}: {} → v{}", maintained(&r), t.version());
     }
     Ok(())
+}
+
+/// What a maintenance run did, in one line.
+fn maintained(r: &MaintainReport) -> String {
+    let more = if r.more_to_compact { "; more to compact, run again" } else { "" };
+    format!(
+        "compacted {} partitions ({} → {} files, {} rows, {} duplicates removed, {:.1} MB read{more}), dropped {} \
+         partitions ({} files), refreshed {} rollups ({} rows), expired {} snapshots, deleted {} objects in {:.2}s",
+        r.partitions_compacted,
+        r.files_rewritten,
+        r.files_written,
+        r.rows_rewritten,
+        r.duplicates_removed,
+        info::megabytes(r.bytes_rewritten),
+        r.partitions_dropped,
+        r.files_dropped,
+        r.rollups_refreshed,
+        r.rollup_rows,
+        r.snapshots_expired,
+        r.objects_deleted,
+        r.duration.as_secs_f64(),
+    )
 }
 
 async fn ls(lake: &Lake, json: bool) -> Result<()> {
@@ -436,6 +443,20 @@ async fn print_df(df: DataFrame, format: Format) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The maintenance line counts dropped files and says when compaction left work for a next run.
+    #[test]
+    fn maintenance_lines_say_what_each_step_did() {
+        let r = MaintainReport {
+            files_dropped: 3,
+            bytes_rewritten: 2_500_000,
+            more_to_compact: true,
+            ..Default::default()
+        };
+        let line = maintained(&r);
+        assert!(line.contains("2.5 MB read; more to compact, run again)"), "{line}");
+        assert!(line.contains("dropped 0 partitions (3 files)"), "{line}");
+    }
 
     /// A cause the message before it ends with is left out; one that only appears inside it is kept.
     #[test]

@@ -101,6 +101,8 @@ timelake maintain iot.readings --no-expire
 | `--no-expire` | Skip snapshot expiry and file cleanup. |
 | `--no-rollups` | Skip refreshing the tables' [rollups](/docs/rollups). |
 
+Each table gets a line saying what each step did: partitions and files compacted, rows, duplicates removed and megabytes read, partitions and files dropped, rollups refreshed, snapshots expired, and objects deleted. One merge reads at most 24 files; when a partition needed more, the line ends its compaction part with "more to compact, run again".
+
 ## upgrade
 
 Bring tables to the current format: record the format version, build a missing last-value index, rewrite unsorted or small files, write the head. Every step is a commit, and no snapshot expires for `--keep-snapshots`, so `rollback` undoes it. All tables if none are given. See [Upgrading](/docs/upgrading).

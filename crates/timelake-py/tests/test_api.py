@@ -184,19 +184,8 @@ def test_maintain_compacts_partitions(table: timelake.Table) -> None:
 
 
 def test_maintain_report_has_documented_keys(table: timelake.Table) -> None:
-    assert set(table.maintain()) == {
-        "partitions_compacted",
-        "files_rewritten",
-        "files_written",
-        "rows_rewritten",
-        "duplicates_removed",
-        "partitions_dropped",
-        "snapshots_expired",
-        "objects_deleted",
-        "rollups_refreshed",
-        "rollup_rows",
-        "seconds",
-    }
+    assert set(table.maintain()) == set(timelake.MaintainReport.__annotations__)
+    assert "more_to_compact" in timelake.MaintainReport.__annotations__
 
 
 def as_written_by_timelake_0_2(lake: timelake.Lake, table: timelake.Table) -> timelake.Table:
