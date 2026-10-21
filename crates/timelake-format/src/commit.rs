@@ -21,10 +21,11 @@ use crate::iceberg::{
     write_manifest_list,
 };
 use crate::layout::{hint_uri, last_value_index_uri, manifest_list_uri, manifest_uri, metadata_uri};
+use crate::lvi;
 use crate::metadata::NewSnapshot;
 use crate::rows::merge_latest;
 use crate::summary;
-use crate::table::{TableState, encode_index};
+use crate::table::TableState;
 
 /// Above this many manifests, an append merges the existing ones into one.
 const MERGE_MANIFESTS_AT: usize = 8;
@@ -405,7 +406,7 @@ async fn new_index<H: Host>(
     };
     let Some(index) = index else { return Ok(none) };
     let uri = last_value_index_uri(&base.location, snapshot_id, uuid_v4(host));
-    uploads.push((uri.clone(), encode_index(&index)?));
+    uploads.push((uri.clone(), lvi::encode(&index)?));
     Ok(NewIndex { location: Some(uri), written: Some(index) })
 }
 

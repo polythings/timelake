@@ -72,6 +72,12 @@ pub fn compression(codec: &str, level: Option<&str>) -> Result<Compression, Parq
 /// Rows per data page when the table doesn't set `data-page-rows`: Parquet's own default.
 pub const DATA_PAGE_ROWS: usize = 20_000;
 
+/// What data files record as their writer (`created_by`): the engine and the WASM writer write
+/// the same bytes.
+pub fn created_by() -> String {
+    format!("timelake {}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Parquet settings for a table's data files: ZSTD, page statistics and page index (for row-group
 /// and page pruning), delta encoding for the time column, dictionary encoding for everything else
 /// (floats falling back to byte-stream-split, or byte-stream-split only, by `float-encoding`), and
@@ -80,7 +86,6 @@ pub const DATA_PAGE_ROWS: usize = 20_000;
 pub fn writer_properties(
     schema: &SchemaRef,
     contract: &Contract,
-    created_by: &str,
     default_page_rows: usize,
 ) -> Result<WriterProperties, ParquetError> {
     let mut b = WriterProperties::builder()
@@ -88,7 +93,7 @@ pub fn writer_properties(
         .set_max_row_group_row_count(Some(contract.row_group_rows))
         .set_statistics_enabled(EnabledStatistics::Page)
         .set_data_page_row_count_limit(contract.data_page_rows.unwrap_or(default_page_rows).max(1))
-        .set_created_by(created_by.to_string());
+        .set_created_by(created_by());
     for f in schema.fields() {
         let path = ColumnPath::from(f.name().as_str());
         match f.data_type() {
@@ -569,7 +574,7 @@ mod tests {
             ("timelake.row-group-rows".to_string(), rows.to_string()),
         ]))
         .unwrap();
-        writer_properties(&schema(), &contract, "test", DATA_PAGE_ROWS).unwrap()
+        writer_properties(&schema(), &contract, DATA_PAGE_ROWS).unwrap()
     }
 
     fn write(parallel: bool, rows: usize) -> (Vec<u8>, FileStats) {
@@ -635,8 +640,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(values)]).unwrap();
         let contract = Contract::from_properties(&HashMap::new()).unwrap();
         let mut w =
-            FileWriter::new(schema.clone(), writer_properties(&schema, &contract, "test", DATA_PAGE_ROWS).unwrap())
-                .unwrap();
+            FileWriter::new(schema.clone(), writer_properties(&schema, &contract, DATA_PAGE_ROWS).unwrap()).unwrap();
         w.write(&batch).unwrap();
         let (_, stats) = w.finish().unwrap();
         assert_eq!(stats.lower_bounds[&1], [0xff, 0x7f]);
@@ -662,7 +666,7 @@ mod tests {
             let properties: HashMap<String, String> =
                 value.map(|v| (crate::property::FLOAT_ENCODING.to_string(), v.to_string())).into_iter().collect();
             let contract = Contract::from_properties(&properties).unwrap();
-            let props = writer_properties(&schema, &contract, "test", DATA_PAGE_ROWS).unwrap();
+            let props = writer_properties(&schema, &contract, DATA_PAGE_ROWS).unwrap();
             assert_eq!(props.dictionary_enabled(&path), dictionary, "{value:?}");
             assert_eq!(props.encoding(&path), Some(Encoding::BYTE_STREAM_SPLIT), "{value:?}");
         }

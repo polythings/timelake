@@ -34,6 +34,8 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{Datum, PrimitiveLiteral};
+use parquet::file::metadata::PageIndexPolicy;
+use timelake_format::footer;
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
@@ -770,7 +772,8 @@ async fn prefetch_footers(
         let location = &pf.object_meta.location;
         match known.get(&format!("{base}/{location}")) {
             Some(bytes) => {
-                let metadata = Arc::new(CachedParquetMetaData::new(crate::footer::decode(&bytes)?));
+                let footer = Arc::new(footer::decode(&bytes, PageIndexPolicy::Optional)?);
+                let metadata = Arc::new(CachedParquetMetaData::new(footer));
                 cache.put(location, CachedFileMetadataEntry::new(pf.object_meta.clone(), metadata));
             }
             None => fetch.push(pf),

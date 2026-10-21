@@ -23,6 +23,7 @@ use crate::bounds::{self, Bound};
 use crate::commit::{Change, commit, put_metadata};
 use crate::duration_micros;
 use crate::error::{WriteError, WriteResult};
+use crate::footer;
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
 use crate::layout::{hint_uri, metadata_prefix, metadata_uri, metadata_version};
@@ -48,8 +49,6 @@ const MERGED_BATCH_ROWS: usize = 8 * 1024;
 const MAX_MERGE_INPUTS: usize = 24;
 /// Compressed bytes of an input read per window (the pages covering a window's rows).
 const WINDOW_BYTES: u64 = 128 << 10;
-/// Bytes read from the end of a file to find its footer.
-const FOOTER_PREFETCH: u64 = 64 << 10;
 /// Inline maintenance expires snapshots in batches of about this many.
 const EXPIRE_BATCH: usize = 20;
 
@@ -357,7 +356,7 @@ async fn rewrite<H: Host>(
     let mut inputs = Vec::with_capacity(files.len());
     for e in files {
         let footer = match table.footers.get(&e.file.path) {
-            Some(bytes) => decode_footer(bytes)?,
+            Some(bytes) => Arc::new(footer::decode(&Bytes::copy_from_slice(bytes), PageIndexPolicy::Skip)?),
             None => read_footer(host, &e.file.path, e.file.file_size).await?,
         };
         let sorted = order.is_empty() || e.file.sort_order_id == sort_order_id;
@@ -593,17 +592,9 @@ async fn read_row_groups<H: Host>(
 /// Batches decoded on demand.
 type Batches = Box<dyn Iterator<Item = Result<RecordBatch, arrow_schema::ArrowError>>>;
 
-/// A footer as the head stores it.
-fn decode_footer(bytes: &[u8]) -> WriteResult<Arc<ParquetMetaData>> {
-    let reader = ParquetMetaDataReader::new()
-        .with_column_index_policy(PageIndexPolicy::Skip)
-        .with_offset_index_policy(PageIndexPolicy::Optional);
-    Ok(Arc::new(reader.parse_and_finish(&Bytes::copy_from_slice(bytes))?))
-}
-
 /// Reads the footer of the file at `path` of `size` bytes (one request for typical files).
 async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
-    let mut want = FOOTER_PREFETCH.min(size);
+    let mut want = footer::PREFETCH.min(size);
     loop {
         let tail = Bytes::from(host.get_range(path, size - want, want).await?);
         let mut reader = ParquetMetaDataReader::new()

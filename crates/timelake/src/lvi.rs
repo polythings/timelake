@@ -7,17 +7,10 @@
 //! summary (`timelake.last-value-index`), and plain Parquet, so `DuckDB` can read it too.
 
 use arrow::array::RecordBatch;
-use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
-use bytes::Bytes;
-use parquet::arrow::ArrowWriter;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::basic::{Compression, ZstdLevel};
-use parquet::file::properties::WriterProperties;
 
 use crate::contract::Contract;
 use crate::error::Result;
-use crate::schema::align_batch;
 use crate::table::Table;
 
 /// Newest row per series among `batches`, or `None` without a time column or rows. On equal
@@ -38,12 +31,7 @@ pub(crate) async fn read(table: &Table, uri: &str) -> Result<RecordBatch> {
         return Ok(batch);
     }
     let bytes = table.lake().storage().read(uri).await?;
-    let schema = table.schema();
-    let batches = ParquetRecordBatchReaderBuilder::try_new(bytes)?
-        .build()?
-        .map(|b| align_batch(&b?, &schema))
-        .collect::<Result<Vec<_>>>()?;
-    let batch = concat_batches(&schema, &batches)?;
+    let batch = timelake_format::lvi::decode(bytes, &table.schema())?;
     cache.insert(uri.to_string(), batch.clone());
     Ok(batch)
 }
@@ -51,16 +39,6 @@ pub(crate) async fn read(table: &Table, uri: &str) -> Result<RecordBatch> {
 /// A fresh location for the index of a new snapshot.
 pub(crate) fn new_uri(table: &Table, snapshot_id: i64) -> String {
     timelake_format::layout::last_value_index_uri(table.location(), snapshot_id, uuid::Uuid::new_v4())
-}
-
-/// The index as a Parquet file.
-pub(crate) fn encode(batch: &RecordBatch) -> Result<Bytes> {
-    let props = WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?)).build();
-    let mut buf = vec![];
-    let mut w = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
-    w.write(batch)?;
-    w.close()?;
-    Ok(Bytes::from(buf))
 }
 
 /// The index for a new snapshot: the base snapshot's index merged with the newest rows of the

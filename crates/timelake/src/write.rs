@@ -33,9 +33,8 @@ pub(crate) fn with_ingest_time(batch: &RecordBatch, column: &str, now: i64) -> R
 
 /// Parquet settings for the table's data files (see `timelake_format::file::writer_properties`).
 pub(crate) fn writer_properties(table: &Table) -> Result<WriterProperties> {
-    let created_by = format!("timelake {}", env!("CARGO_PKG_VERSION"));
     let page_rows = timelake_format::file::DATA_PAGE_ROWS;
-    Ok(timelake_format::file::writer_properties(&table.schema(), table.contract(), &created_by, page_rows)?)
+    Ok(timelake_format::file::writer_properties(&table.schema(), table.contract(), page_rows)?)
 }
 
 /// Partition value of a data file written by Timelake (`None` if unpartitioned).

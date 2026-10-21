@@ -12,12 +12,7 @@ use arrow_array::{
     UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use arrow_select::concat::concat_batches;
 use bytes::Bytes;
-use parquet::arrow::ArrowWriter;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::basic::{Compression, ZstdLevel};
-use parquet::file::properties::WriterProperties;
 
 use crate::error::{WriteError, WriteResult};
 use crate::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
@@ -25,6 +20,7 @@ use crate::head::{HeadDoc, Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, built_in, enc
 use crate::host::Host;
 use crate::iceberg::{Content, DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 use crate::layout::{head_uri, metadata_prefix, metadata_uri, metadata_version};
+use crate::lvi;
 use crate::metadata::Metadata;
 use crate::rows::align_batch;
 use crate::{Contract, summary};
@@ -134,7 +130,7 @@ impl TableState {
             && let Some(uri) = self.last_value_index()
         {
             let bytes = host.get(&uri).await?.ok_or_else(|| WriteError::NotFound(uri.clone()))?;
-            self.last_values = Some(decode_index(&bytes, &self.schema)?);
+            self.last_values = Some(lvi::decode(Bytes::from(bytes), &self.schema)?);
         }
         Ok(self.last_values.clone())
     }
@@ -174,25 +170,6 @@ impl TableState {
         }
         host.put(&uri, bytes).await
     }
-}
-
-/// The last-value index as Parquet (ZSTD), as the engine writes it.
-pub fn encode_index(batch: &RecordBatch) -> WriteResult<Vec<u8>> {
-    let props = WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?)).build();
-    let mut buf = vec![];
-    let mut w = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
-    w.write(batch)?;
-    w.close()?;
-    Ok(buf)
-}
-
-/// A last-value index file, aligned to `schema`.
-pub fn decode_index(bytes: &[u8], schema: &SchemaRef) -> WriteResult<RecordBatch> {
-    let batches = ParquetRecordBatchReaderBuilder::try_new(Bytes::copy_from_slice(bytes))?
-        .build()?
-        .map(|b| align_batch(&b?, schema))
-        .collect::<WriteResult<Vec<_>>>()?;
-    Ok(concat_batches(schema, &batches)?)
 }
 
 // --- the head --------------------------------------------------------------------------------

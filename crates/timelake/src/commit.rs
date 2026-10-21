@@ -549,7 +549,8 @@ impl<'a> SnapshotWriter<'a> {
         let Some(index) = new else { return Ok(LastValueIndex { location: None, written: None }) };
         let location = lvi::new_uri(base, self.snapshot_id);
         self.track(&location);
-        self.uploads.put(base.lake().storage(), &location, lvi::encode(&index)?)?;
+        let bytes = Bytes::from(timelake_format::lvi::encode(&index)?);
+        self.uploads.put(base.lake().storage(), &location, bytes)?;
         Ok(LastValueIndex { location: Some(location), written: Some(index) })
     }
 

@@ -5,11 +5,11 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_array::RecordBatch;
-use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataWriter};
 
 use crate::commit::{Change, CommitInfo, commit};
 use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
+use crate::footer;
 use crate::host::{Host, Upload, uuid_v7};
 use crate::iceberg::DataFile;
 use crate::layout::{data_file_uri, partition_dir};
@@ -212,7 +212,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
             f
         } else {
             let page_rows = self.host.data_page_rows();
-            let props = writer_properties(&self.table.schema, &self.table.contract, &created_by(), page_rows)?;
+            let props = writer_properties(&self.table.schema, &self.table.contract, page_rows)?;
             OpenFile {
                 uri: data_file_uri(
                     &partition_dir(&self.table.location, &self.table.contract, self.partition),
@@ -284,7 +284,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
             }
             stats
         };
-        let footer = footer_bytes(&stats.metadata)?;
+        let footer = footer::encode(&stats.metadata)?;
         self.done.push((data_file(self.table, uri, self.partition, &stats), footer));
         Ok(())
     }
@@ -314,11 +314,6 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
     }
 }
 
-/// What data files record as their writer: the same as the engine's, so files are identical.
-fn created_by() -> String {
-    format!("timelake {}", env!("CARGO_PKG_VERSION"))
-}
-
 /// The Iceberg entry of a written file.
 pub fn data_file(table: &TableState, uri: String, partition: Option<i32>, stats: &FileStats) -> DataFile {
     DataFile {
@@ -335,11 +330,4 @@ pub fn data_file(table: &TableState, uri: String, partition: Option<i32>, stats:
         split_offsets: Some(stats.split_offsets.clone()),
         sort_order_id: (!table.contract.sort_columns().is_empty()).then(|| table.metadata.sort_order_id()),
     }
-}
-
-/// A footer as the head stores it (`ParquetMetaDataWriter`: page indexes, metadata, length, magic).
-pub fn footer_bytes(metadata: &ParquetMetaData) -> WriteResult<Vec<u8>> {
-    let mut buf = vec![];
-    ParquetMetaDataWriter::new(&mut buf, metadata).finish()?;
-    Ok(buf)
 }

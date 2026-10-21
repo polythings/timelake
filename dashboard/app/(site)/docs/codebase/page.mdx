@@ -77,12 +77,12 @@ What lives where, which technologies are used and why, and how a write and a que
 | `lake.rs` | The catalog. `Lake` is a warehouse: `create_table` writes `v1.metadata.json`, `table()` finds the current version (the head and a listing of the metadata files at once, or a check for the next version of one it already has), `tables()` lists them. |
 | `table.rs` | `Table`: one version of a table (name, metadata, contract, schema) and `files()`, the live data files (from the head, or from its manifests). |
 | `head/` | The head object: `mod.rs` builds it from a table, writes it after a commit without moving it backwards, and loads a table from it; `codec.rs` holds the format-neutral `HeadDoc`, the `HeadCodec` trait and the `arrow` and `json` codecs. |
-| `footer.rs` | Parquet footers kept apart from their files: read from the store once, encoded for the head, decoded for scans. |
+| `footer.rs` | Parquet footers kept apart from their files, for the head: read from the store once and cached. Their encoding is shared with the WASM writer (`timelake_format::footer`). |
 | `cache.rs` | Small bounded caches for files that never change once written (manifests, manifest lists, last-value indexes) and recently loaded table versions. |
 | `schema.rs` | Fits Arrow data to a table: types Iceberg can store on create (`normalize_schema`), columns matched by name and cast on write (`align_batch`). |
 | `sort.rs` | One sorting helper: sort by key columns keeping input order on ties, and keep the last row of each group. Used for writing, dedup, and the last-value index. |
 | `write.rs` | Turns batches into Parquet: `sort_and_split` (sort by partition, series, time) and `PartitionWriter`, which writes sorted batches into files of the target size through the shared file writer (`timelake_format::file`: settings, columns encoded in parallel, and the statistics Iceberg records) and streams them out as multipart uploads. |
-| `lvi.rs` | The last-value index: the newest row per series, merged with the previous index, read and written as Parquet. |
+| `lvi.rs` | The last-value index: the newest row per series, merged with the previous index, read through the lake's cache. Its Parquet file is `timelake_format::lvi`'s. |
 | `commit.rs` | The commit layer. A `SnapshotWriter` prepares manifests, the last-value index, and the manifest list, uploads them with the data files in one round, then commits the new metadata with `write_if_absent`; a lost race cleans up and retries (up to 10 times). Three kinds of change: append, replace (compaction) and delete (retention). |
 | `background.rs` | Writes a call doesn't wait for (the version hint and the head), and `flush`, which waits for them before a process exits. |
 | `append.rs` | `Table::append`, with inline maintenance afterwards. |

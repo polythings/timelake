@@ -35,6 +35,8 @@ pub mod contract;
 pub mod error;
 #[cfg(feature = "write")]
 pub mod file;
+#[cfg(feature = "write")]
+pub mod footer;
 #[cfg(feature = "head")]
 pub mod head;
 #[cfg(feature = "write")]
@@ -42,6 +44,8 @@ pub mod host;
 #[cfg(feature = "write")]
 pub mod iceberg;
 pub mod layout;
+#[cfg(feature = "write")]
+pub mod lvi;
 #[cfg(feature = "write")]
 pub mod maintain;
 #[cfg(feature = "write")]
