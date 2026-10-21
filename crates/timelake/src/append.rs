@@ -145,8 +145,7 @@ impl Table {
         let c = self.contract();
         let snapshots = self.metadata().snapshots().len();
         let oldest = self.metadata().snapshots().map(|s| s.timestamp_ms()).min().unwrap_or(i64::MAX);
-        let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
-        let cutoff = chrono::Utc::now().timestamp_millis().saturating_sub(retention_ms);
+        let cutoff = c.snapshot_cutoff_ms(chrono::Utc::now().timestamp_millis());
         MaintainOptions {
             compact: true,
             retention: c.retention.is_some(),

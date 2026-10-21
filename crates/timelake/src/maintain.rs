@@ -13,6 +13,7 @@ use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotR
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::properties::WriterProperties;
+use timelake_format::duration_micros;
 use timelake_format::layout::{metadata_dir, metadata_version};
 use timelake_format::merge::{Merge, Step};
 use tokio::sync::mpsc;
@@ -155,16 +156,10 @@ fn now_micros() -> i64 {
     chrono::Utc::now().timestamp_micros()
 }
 
-fn micros(d: Duration) -> i64 {
-    i64::try_from(d.as_micros()).unwrap_or(i64::MAX)
-}
-
 /// Drops whole time partitions that are entirely older than the retention period.
 async fn retention(table: &Table, report: &mut MaintainReport) -> Result<Table> {
-    let (Some(retention), Some(chunk)) = (table.contract().retention, table.contract().chunk) else {
-        return Ok(table.clone());
-    };
-    let cutoff = now_micros().saturating_sub(micros(retention));
+    let c = table.contract();
+    let (Some(cutoff), Some(chunk)) = (c.retention_cutoff(now_micros()), c.chunk) else { return Ok(table.clone()) };
     let expired = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
     let removed: Vec<LiveEntry> =
         table.files().await?.into_iter().filter(|e| file_partition(&e.data_file).is_some_and(expired)).collect();
@@ -339,9 +334,8 @@ fn cold_partitions(table: &Table, files: &[LiveEntry], opts: &MaintainOptions) -
         _ => None,
     });
     let Some(newest) = newest.max() else { return HashSet::new() };
-    let cutoff = newest.saturating_sub(i64::try_from(cold_after.as_micros()).unwrap_or(i64::MAX));
-    let ended_before_cutoff =
-        |p: i32| p.checked_add(1).and_then(|next| chunk.start_micros(next).ok()).is_some_and(|end| end <= cutoff);
+    let cutoff = newest.saturating_sub(duration_micros(cold_after));
+    let ended_before_cutoff = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
     files.iter().filter_map(|f| file_partition(&f.data_file)).filter(|&p| ended_before_cutoff(p)).map(Some).collect()
 }
 
@@ -435,8 +429,7 @@ fn expired_snapshots(table: &Table, newest_first: &[SnapshotRef]) -> Result<Vec<
     }
     let current = table.metadata().current_snapshot_id();
     let referenced = referenced_snapshots(table.metadata())?;
-    let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
-    let cutoff = now_ms.saturating_sub(retention_ms);
+    let cutoff = c.snapshot_cutoff_ms(now_ms);
     Ok(newest_first
         .iter()
         .enumerate()

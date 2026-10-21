@@ -56,7 +56,7 @@ pub mod settings;
 pub mod table;
 pub mod version;
 
-pub use contract::{Chunk, Contract, TableOptions, format_duration, parse_duration};
+pub use contract::{Chunk, Contract, TableOptions, duration_micros, duration_millis, format_duration, parse_duration};
 pub use version::FormatVersion;
 
 /// Table property keys holding the [`Contract`].

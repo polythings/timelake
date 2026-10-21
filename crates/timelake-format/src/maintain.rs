@@ -19,7 +19,9 @@ use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataR
 use parquet::file::reader::{ChunkReader, Length};
 
 use crate::append::PartitionFiles;
+use crate::bounds::{self, Bound};
 use crate::commit::{Change, commit, put_metadata};
+use crate::duration_micros;
 use crate::error::{WriteError, WriteResult};
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
@@ -96,8 +98,7 @@ impl MaintainOptions {
         let c = &table.contract;
         let snapshots = table.metadata.snapshot_list();
         let oldest = snapshots.iter().map(|s| s.timestamp_ms).min().unwrap_or(i64::MAX);
-        let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
-        let cutoff = now_ms.saturating_sub(retention_ms);
+        let cutoff = c.snapshot_cutoff_ms(now_ms);
         let n = snapshots.len();
         Self {
             compact: true,
@@ -167,14 +168,12 @@ pub async fn maintain<H: Host>(
     Ok((table, report))
 }
 
-fn micros(d: Duration) -> i64 {
-    i64::try_from(d.as_micros()).unwrap_or(i64::MAX)
-}
-
 /// Drops whole time partitions entirely older than the retention period.
 async fn retention<H: Host>(host: &H, mut table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
-    let (Some(retention), Some(chunk)) = (table.contract.retention, table.contract.chunk) else { return Ok(table) };
-    let cutoff = host.now_ms().saturating_mul(1000).saturating_sub(micros(retention));
+    let now_micros = host.now_ms().saturating_mul(1000);
+    let (Some(cutoff), Some(chunk)) = (table.contract.retention_cutoff(now_micros), table.contract.chunk) else {
+        return Ok(table);
+    };
     let expired = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
     let removed: Vec<Entry> =
         table.live_files(host).await?.iter().filter(|e| e.file.partition.is_some_and(expired)).cloned().collect();
@@ -290,16 +289,17 @@ async fn compaction_plan<H: Host>(
 
     let cold: HashSet<Option<i32>> = match (opts.tiered, opts.cold_after, c.chunk, time_id) {
         (true, Some(cold_after), Some(chunk), Some(id)) => {
+            // Every timestamp bound is a long in Iceberg's encoding, whatever its unit.
             let newest = files
                 .iter()
-                .filter_map(|f| {
-                    f.file.upper_bounds.get(&id).and_then(|b| b.as_slice().try_into().ok()).map(i64::from_le_bytes)
+                .filter_map(|f| match bounds::decode("timestamptz", f.file.upper_bounds.get(&id)?) {
+                    Some(Bound::Int(t)) => Some(t),
+                    _ => None,
                 })
                 .max();
             newest.map_or_else(HashSet::new, |newest| {
-                let cutoff = newest.saturating_sub(micros(cold_after));
-                let ended =
-                    |p: i32| p.checked_add(1).and_then(|n| chunk.start_micros(n).ok()).is_some_and(|end| end <= cutoff);
+                let cutoff = newest.saturating_sub(duration_micros(cold_after));
+                let ended = |p: i32| chunk.end_micros(p).is_ok_and(|end| end <= cutoff);
                 files.iter().filter_map(|f| f.file.partition).filter(|&p| ended(p)).map(Some).collect()
             })
         }
@@ -670,8 +670,7 @@ fn expired_snapshots(
     }
     let current = table.metadata.current_snapshot_id();
     let referenced = table.metadata.referenced_snapshots();
-    let retention_ms = i64::try_from(c.snapshot_retention.as_millis()).unwrap_or(i64::MAX);
-    let cutoff = now_ms.saturating_sub(retention_ms);
+    let cutoff = c.snapshot_cutoff_ms(now_ms);
     newest_first
         .iter()
         .enumerate()

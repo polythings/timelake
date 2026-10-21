@@ -36,7 +36,7 @@ use super::signal::{Method, Output, of_rollup, state_type, udaf};
 use crate::TableName;
 use crate::lake::Lake;
 use crate::property;
-use crate::rollup::{Definition, Ranges, changed, floor, in_history, layout, micros, recorded_sequence};
+use crate::rollup::{Definition, Ranges, changed, floor, in_history, layout, recorded_sequence};
 use crate::table::Table;
 
 /// Stands for no bound: beyond any time a table holds (about ±73,000 years), with room to add a
@@ -125,7 +125,7 @@ async fn routes_for(
         let Some(dirty) = changed(&raw, &files, Some(recorded), def.width) else { continue };
         // Retention drops whole partitions that end before now minus the retention: buckets from
         // there on are complete in a table (and were when the rollup computed them).
-        let kept = |t: &Table| t.contract().retention.map(|r| now.saturating_sub(micros(r)));
+        let kept = |t: &Table| t.contract().retention_cutoff(now);
         let from = [kept(&raw), kept(&rollup)].into_iter().flatten().max();
         let from = from.map_or(-FAR, |t| ceil(t, def.width));
         let clean = complement(&dirty, from, FAR);

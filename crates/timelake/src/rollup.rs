@@ -15,6 +15,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::DataType;
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use serde::{Deserialize, Serialize};
+use timelake_format::duration_micros;
 
 use crate::TableName;
 use crate::alter::update_properties;
@@ -85,7 +86,7 @@ impl Definition {
         let get =
             |key: &str| props.get(key).ok_or_else(|| Error::invalid(format!("{} is not a rollup", rollup.name())));
         let source: TableName = get(property::ROLLUP_SOURCE)?.parse()?;
-        let width = micros(parse_duration(get(property::ROLLUP_BUCKET)?)?);
+        let width = duration_micros(parse_duration(get(property::ROLLUP_BUCKET)?)?);
         let aggregates: Vec<Aggregate> = serde_json::from_str(get(property::ROLLUP_AGGREGATES)?)?;
         let contract = rollup.contract();
         let bucket = contract.time_column.clone().ok_or_else(|| Error::invalid("a rollup needs a bucket column"))?;
@@ -101,10 +102,6 @@ impl Definition {
             (property::ROLLUP_AGGREGATES.into(), serde_json::to_string(&self.aggregates)?),
         ]))
     }
-}
-
-pub(crate) fn micros(d: Duration) -> i64 {
-    i64::try_from(d.as_micros()).unwrap_or(i64::MAX)
 }
 
 /// The sequence number of the raw table snapshot `rollup` reflects, if it was ever refreshed.

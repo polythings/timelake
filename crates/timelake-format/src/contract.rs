@@ -314,6 +314,18 @@ impl Contract {
         )))
     }
 
+    /// Rows older than this (µs since the epoch) are past the table's retention at `now_micros`:
+    /// partitions ending by then are dropped. `None` without a retention.
+    pub fn retention_cutoff(&self, now_micros: i64) -> Option<i64> {
+        self.retention.map(|r| now_micros.saturating_sub(duration_micros(r)))
+    }
+
+    /// Snapshots made before this (ms since the epoch) are past the snapshot retention at
+    /// `now_ms`, and may expire.
+    pub fn snapshot_cutoff_ms(&self, now_ms: i64) -> i64 {
+        now_ms.saturating_sub(duration_millis(self.snapshot_retention))
+    }
+
     /// Whether the table has a time column.
     pub fn is_time_series(&self) -> bool {
         self.time_column.is_some()
@@ -397,6 +409,16 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     Ok(Duration::from_secs(secs))
 }
 
+/// Whole microseconds of `d`, at most `i64::MAX` (settings can name durations of centuries).
+pub fn duration_micros(d: Duration) -> i64 {
+    i64::try_from(d.as_micros()).unwrap_or(i64::MAX)
+}
+
+/// Whole milliseconds of `d`, at most `i64::MAX`.
+pub fn duration_millis(d: Duration) -> i64 {
+    i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+}
+
 /// Formats whole seconds of a duration in the largest exact unit (`90d`, `36h`, `45s`), the
 /// inverse of [`parse_duration`].
 pub fn format_duration(d: Duration) -> String {
@@ -416,6 +438,22 @@ mod tests {
     use crate::property::*;
 
     const T: i64 = 1_767_225_600_000_000; // 2026-01-01T00:00:00Z
+
+    #[test]
+    fn cutoffs_follow_the_retentions() {
+        let c = Contract::from_properties(&HashMap::from([
+            (RETENTION.to_string(), "1d".to_string()),
+            (SNAPSHOT_RETENTION.to_string(), "2h".to_string()),
+        ]))
+        .unwrap();
+        assert_eq!(c.retention_cutoff(T), Some(T - 86_400_000_000));
+        assert_eq!(c.snapshot_cutoff_ms(T / 1000), T / 1000 - 7_200_000);
+        assert_eq!(Contract::from_properties(&HashMap::new()).unwrap().retention_cutoff(T), None);
+        // Durations past what i64 holds saturate rather than wrap.
+        let forever = Duration::from_secs(u64::MAX);
+        assert_eq!((duration_micros(forever), duration_millis(forever)), (i64::MAX, i64::MAX));
+        assert_eq!(duration_micros(Duration::from_millis(1500)), 1_500_000);
+    }
 
     #[test]
     fn chunk_values_round_trip() {

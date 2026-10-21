@@ -12,7 +12,7 @@ use std::time::Duration;
 use arrow::compute::concat_batches;
 use iceberg::spec::{MAIN_BRANCH, SnapshotReference, SnapshotRetention};
 use timelake_format::head::NO_HEAD;
-use timelake_format::{FORMAT_VERSION, FormatVersion};
+use timelake_format::{FORMAT_VERSION, FormatVersion, duration_millis};
 
 use crate::alter::write_properties;
 use crate::commit::{Change, commit, publish_retrying};
@@ -111,8 +111,7 @@ impl Table {
             head::write(&table).await?;
             return Ok((table, report));
         }
-        let keep_ms = i64::try_from(opts.keep_snapshots.as_millis()).unwrap_or(i64::MAX);
-        let until = chrono::Utc::now().timestamp_millis().saturating_add(keep_ms);
+        let until = chrono::Utc::now().timestamp_millis().saturating_add(duration_millis(opts.keep_snapshots));
         report.keep_snapshots_until_ms = Some(until);
 
         // Protect the snapshots before anything else commits, and record the format.
