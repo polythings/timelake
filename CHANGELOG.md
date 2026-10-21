@@ -222,7 +222,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   and first.
 - On the website's benchmark pages, closing a query's results on a narrow screen and then widening the window no longer
   leaves the results pane empty, and a ranking whose values are all zero draws its bars instead of failing.
-- After a benchmark race finishes, resizing the website's window redraws its dots instead of stretching them.
+- Resizing the website's window redraws the requests chart's dots instead of stretching them.
 - Benchmarks: maintenance request counts and costs cover only the maintenance itself; they included reading the
   tables' state and sizes afterwards (all metadata for Iceberg, a listing for Timelake, manifests for S3 Tables).
   Saving the state for the live probes is no longer counted as ingest either.

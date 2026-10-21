@@ -2,6 +2,7 @@ import { DotGrid } from "@/components/dots"
 import { SYSTEM_ORDER, engineOf, systemColor, systemLabel, systemOf, systemOrder } from "@/lib/bench-systems"
 import { type Run, engineLabel, isOk, ownEngineIn } from "@/lib/benchmarks"
 import { formatNumber } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 /** Whether `engine` is its system's own reader in `run`. */
 const isOwn = (run: Run, engine: string) => ownEngineIn(run, systemOf(engine)) === engine
@@ -135,6 +136,9 @@ export function QueryMatrix({ run, checkpoint, title }: { run: Run; checkpoint: 
   )
 }
 
+/** The per-query lanes' columns: the query, then requests and data read; on a phone the query takes a row above. */
+const LANES = "grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-[minmax(9rem,12rem)_1fr_1fr] sm:gap-x-6"
+
 /** Units per square in the per-query lanes. */
 const PER_REQUESTS = 25
 const PER_MB = 3
@@ -151,18 +155,21 @@ export function PerQuery({ run, checkpoint }: { run: Run; checkpoint: string }) 
     run.queries.filter(isOk).find((q) => engineOf(q) === e && q.query === query && q.checkpoint === checkpoint)
   return (
     <div className="flex flex-col gap-4 rounded-md border bg-card p-6">
-      <div className="grid grid-cols-[minmax(9rem,12rem)_1fr_1fr] gap-x-6 font-mono text-[10.5px] tracking-[0.1em] text-muted-foreground uppercase">
-        <span>Query</span>
+      <div className={cn(LANES, "font-mono text-[10.5px] tracking-[0.1em] text-muted-foreground uppercase")}>
+        <span className="hidden sm:block">Query</span>
         <span>Requests · ■ = {PER_REQUESTS}</span>
         <span>Data read · ■ = {PER_MB} MB</span>
       </div>
       {queries(run).map((query) => (
-        <div key={query} className="grid grid-cols-[minmax(9rem,12rem)_1fr_1fr] items-start gap-x-6">
-          <span className="truncate pt-px font-mono text-[11px] text-muted-foreground" title={query}>
+        <div key={query} className={cn(LANES, "items-start")}>
+          <span
+            className="col-span-2 truncate pt-px font-mono text-[11px] text-muted-foreground sm:col-span-1"
+            title={query}
+          >
             {query}
           </span>
           {(["requests", "bytes"] as const).map((kind) => (
-            <div key={kind} className="flex flex-col gap-[3px]">
+            <div key={kind} className="flex min-w-0 flex-col gap-[3px]">
               {own.map((e) => {
                 const q = find(e, query)
                 const n = q?.[kind]?.[0]

@@ -40,9 +40,15 @@ export function DotGrid({
       const cols = Math.max(1, perRow ?? Math.floor((width + gap) / cell))
       const total = segments.reduce((s, x) => s + x.count, 0)
       const rows = Math.max(1, Math.ceil(total / cols))
-      fitCanvas(c, ctx, width, rows * cell - gap)
-      c.style.height = `${rows * cell - gap}px`
-      if (perRow) c.style.width = `${width - gap}px`
+      const height = rows * cell - gap
+      if (perRow) {
+        // As wide as its columns, without the last gap; scaled down, keeping its shape, where the space is narrower.
+        fitCanvas(c, ctx, width - gap, height)
+        Object.assign(c.style, { width: `${width - gap}px`, maxWidth: "100%", height: "auto" })
+      } else {
+        fitCanvas(c, ctx, width, height)
+        c.style.height = `${height}px`
+      }
       let i = 0
       for (const s of segments) {
         ctx.fillStyle = resolveColor(c, s.color)
