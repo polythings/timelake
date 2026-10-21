@@ -12,7 +12,7 @@ categories = ["database-implementations"]
 
 [features]
 # The head object's container and codecs (Arrow IPC and JSON), for the engine and the WASM reader.
-head = ["dep:arrow-array", "dep:arrow-ipc", "dep:arrow-json", "dep:arrow-schema", "dep:arrow-select", "dep:serde", "dep:serde_json"]
+head = ["dep:arrow-array", "dep:arrow-ipc", "dep:arrow-json", "dep:arrow-schema", "dep:arrow-select"]
 # Writing tables without I/O of its own, shared by the engine and the WASM writer: rows, Parquet files with their
 # Iceberg statistics, manifests and metadata, appends and commits over a `Host`, and the streaming merge of compaction.
 write = [
@@ -25,7 +25,6 @@ write = [
     "dep:arrow-select",
     "dep:parquet",
     "dep:apache-avro",
-    "dep:serde_json",
     "dep:bytes",
     "dep:futures-util",
     "head",
@@ -46,8 +45,8 @@ arrow-row = { version = "58", optional = true }
 parquet = { version = "58", default-features = false, features = ["arrow", "zstd"], optional = true }
 arrow-schema = { version = "58", features = ["serde"], optional = true }
 arrow-select = { version = "58", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]

@@ -39,41 +39,9 @@ use datafusion::physical_expr::expressions::Literal;
 
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
-/// What an aggregate returns from a group's joined segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Output {
-    Mean,
-    Integral,
-    CounterDiff,
-    CounterRate,
-    /// The state itself, as a rollup stores it.
-    State,
-}
-
-impl Output {
-    pub(crate) const ALL: [Output; 5] =
-        [Output::Mean, Output::Integral, Output::CounterDiff, Output::CounterRate, Output::State];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Mean => "time_weighted_mean",
-            Self::Integral => "integral",
-            Self::CounterDiff => "counter_diff",
-            Self::CounterRate => "counter_rate",
-            Self::State => "time_weighted_state",
-        }
-    }
-
-    /// The aggregate called `name`, if it is one of these.
-    pub(crate) fn of(name: &str) -> Option<Output> {
-        Self::ALL.into_iter().find(|o| o.name() == name)
-    }
-
-    /// Whether the result depends on how the signal moves between readings.
-    pub(crate) fn takes_method(self) -> bool {
-        matches!(self, Self::Mean | Self::Integral | Self::State)
-    }
-}
+/// What an aggregate returns from a group's joined segment, and how the signal moves between
+/// readings: timelake-format's, as rollups name them.
+pub(crate) use timelake_format::rollup::{Method, SignalFunction as Output};
 
 /// The aggregate function for `output`.
 pub(crate) fn udaf(output: Output) -> AggregateUDF {
@@ -87,47 +55,13 @@ pub(crate) fn of_state_udf(output: Output, method: Method) -> ScalarUDF {
     ScalarUDF::from(OfState { name, output, method, signature: Signature::any(1, Volatility::Immutable) })
 }
 
-/// How the signal moves between readings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Method {
-    ForwardFill,
-    Linear,
-}
-
-impl Method {
-    pub(crate) fn parse(s: &str) -> DfResult<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "forward_fill" | "ffill" => Ok(Self::ForwardFill),
-            "linear" => Ok(Self::Linear),
-            other => plan_err!("the method must be 'forward_fill' or 'linear', not {other:?}"),
-        }
-    }
-
-    /// The area between a reading of value `a` and the next, of `b`, `dt` later.
-    fn area(self, a: f64, b: f64, dt: i64) -> f64 {
-        let dt = dt as f64;
-        match self {
-            Self::ForwardFill => a * dt,
-            Self::Linear => f64::midpoint(a, b) * dt,
-        }
-    }
-}
-
-/// A signal aggregate as a rollup names it: `name`, or `name:linear` for the linear method.
-pub(crate) fn of_rollup(function: &str) -> Option<(Output, Method)> {
-    let (name, method) = match function.split_once(':') {
-        Some((name, "linear")) => (name, Method::Linear),
-        Some(_) => return None,
-        None => (function, Method::ForwardFill),
-    };
-    Output::of(name).map(|o| (o, method))
-}
-
-/// The rollup name of `output` by `method`.
-pub(crate) fn rollup_name(output: Output, method: Method) -> String {
+/// The area between a reading of value `a` and the next, of `b`, `dt` later, as the signal
+/// moves by `method`.
+fn area(method: Method, a: f64, b: f64, dt: i64) -> f64 {
+    let dt = dt as f64;
     match method {
-        Method::Linear if output.takes_method() => format!("{}:linear", output.name()),
-        _ => output.name().to_string(),
+        Method::ForwardFill => a * dt,
+        Method::Linear => f64::midpoint(a, b) * dt,
     }
 }
 
@@ -171,7 +105,7 @@ fn method_of(args: &AccumulatorArgs<'_>) -> DfResult<Method> {
     if let Some(ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) | ScalarValue::Utf8View(Some(s))) =
         method.downcast_ref::<Literal>().map(Literal::value)
     {
-        Method::parse(s)
+        s.parse().map_err(|e| plan_datafusion_err!("{e}"))
     } else {
         plan_err!("the method must be a string literal")
     }
@@ -303,7 +237,7 @@ impl Run for Segment {
             return;
         }
         let span = p.0 - self.last.0;
-        self.area += method.area(self.last.1, p.1, span);
+        self.area += area(method, self.last.1, p.1, span);
         self.growth += growth(self.last.1, p.1);
         if self.one_time() {
             self.first_span = span;
@@ -338,7 +272,7 @@ impl Run for Segment {
             last: next.last,
             last_span: if next.one_time() { gap } else { next.last_span },
             penultimate: if next.one_time() { self.last.1 } else { next.penultimate },
-            area: self.area + method.area(self.last.1, next.first.1, gap) + next.area,
+            area: self.area + area(method, self.last.1, next.first.1, gap) + next.area,
             growth: self.growth + growth(self.last.1, next.first.1) + next.growth,
         }
     }
@@ -565,7 +499,7 @@ mod tests {
         }
         let (first, last) = (*points.first()?, *points.last()?);
         let span = last.0 - first.0;
-        let area: f64 = points.windows(2).map(|w| method.area(w[0].1, w[1].1, w[1].0 - w[0].0)).sum();
+        let area: f64 = points.windows(2).map(|w| area(method, w[0].1, w[1].1, w[1].0 - w[0].0)).sum();
         let grown: f64 = points.windows(2).map(|w| growth(w[0].1, w[1].1)).sum();
         match output {
             Output::Mean if span == 0 => Some(first.1),

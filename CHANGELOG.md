@@ -326,6 +326,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: the contract's settings with fixed values are enums in `timelake_format::value` (`ReadDedupStrategy`,
   `AutoBool`, `SeriesOrder`, `FloatEncoding`, `CompressionCodec`), `Contract::compression` holds the checked codec and
   level, `Contract::head_format` is `None` for no head, and `Setting::kind` is a `settings::Kind`.
+- Rust API: `timelake_format::rollup` holds a rollup's aggregates as `timelake.rollup-aggregates` stores them, each
+  function a `RollupFunction` (the stored JSON is unchanged), and the settings registry checks that property against
+  it.
 - Rust API: `timelake_format::FormatError` is an enum (`FormatError::Invalid` holds a message; Arrow and JSON errors
   of the head keep their cause), and `WriteError` reports its cause through `source()`, with Avro errors as
   `WriteError::Avro`. An append's `maintenance` error is the `WriteError` itself, not its message. Arrow errors are no

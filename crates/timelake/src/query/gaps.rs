@@ -30,55 +30,12 @@ use datafusion::prelude::{Expr, lit};
 use super::rollup::{DAY_MICROS, day_time_micros};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
-/// What a gap aggregate returns from a group's joined run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Output {
-    Count,
-    Seconds,
-    /// The state itself, as a rollup stores it.
-    State,
-}
-
-impl Output {
-    pub(crate) const ALL: [Output; 3] = [Output::Count, Output::Seconds, Output::State];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Count => "gap_count",
-            Self::Seconds => "gap_seconds",
-            Self::State => "gap_state",
-        }
-    }
-
-    /// The aggregate called `name`, if it is one of these.
-    pub(crate) fn of(name: &str) -> Option<Output> {
-        Self::ALL.into_iter().find(|o| o.name() == name)
-    }
-}
+/// What a gap aggregate returns from a group's joined run: timelake-format's, as rollups name it.
+pub(crate) use timelake_format::rollup::GapFunction as Output;
 
 /// The aggregate function for `output`.
 pub(crate) fn udaf(output: Output) -> AggregateUDF {
     AggregateUDF::from(GapAggregate { output, signature: Signature::user_defined(Volatility::Immutable) })
-}
-
-/// A gap aggregate as a rollup names it, with its threshold: `gap_count:300s` (whole seconds) or
-/// `gap_count:1500us`.
-pub(crate) fn rollup_name(output: Output, threshold: i64) -> String {
-    match threshold % 1_000_000 {
-        0 => format!("{}:{}s", output.name(), threshold / 1_000_000),
-        _ => format!("{}:{threshold}us", output.name()),
-    }
-}
-
-/// The gap aggregate and threshold (µs) a rollup's function names.
-pub(crate) fn of_rollup(function: &str) -> Option<(Output, i64)> {
-    let (name, threshold) = function.split_once(':')?;
-    let output = Output::of(name)?;
-    let threshold = match threshold.strip_suffix("us") {
-        Some(us) => us.parse().ok()?,
-        None => threshold.strip_suffix('s')?.parse::<i64>().ok()?.checked_mul(1_000_000)?,
-    };
-    Some((output, threshold))
 }
 
 /// A threshold (µs) as the interval literal the aggregates take.
@@ -345,17 +302,6 @@ mod tests {
         times.sort_unstable();
         let gaps: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).filter(|&d| d > THRESHOLD).collect();
         (i64::try_from(gaps.len()).unwrap(), gaps.iter().sum())
-    }
-
-    #[test]
-    fn rollup_names() {
-        let names = [(Output::Count, 300_000_000, "gap_count:300s"), (Output::Seconds, 1_500, "gap_seconds:1500us")];
-        for (output, threshold, name) in names {
-            assert_eq!(rollup_name(output, threshold), name);
-            assert_eq!(of_rollup(name), Some((output, threshold)));
-        }
-        assert_eq!(of_rollup("gap_state:300s"), Some((Output::State, 300_000_000)));
-        assert_eq!(of_rollup("gap_count"), None);
     }
 
     #[test]

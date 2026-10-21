@@ -116,8 +116,8 @@ pub enum Kind {
     HeadFormat,
     /// A semantic version, `MAJOR.MINOR.PATCH`.
     Version,
-    /// JSON.
-    Json,
+    /// A rollup's aggregates, as JSON ([`crate::rollup::Aggregate`]).
+    RollupAggregates,
 }
 
 impl Kind {
@@ -130,7 +130,8 @@ impl Kind {
     pub fn check(self, value: &str) -> Result<()> {
         let s = value.trim();
         match self {
-            Self::Column | Self::HeadFormat | Self::Json => non_empty(s),
+            Self::Column | Self::HeadFormat => non_empty(s),
+            Self::RollupAggregates => crate::rollup::parse_aggregates(s).map(drop),
             Self::Columns => list(s, non_empty, "must name a column"),
             Self::TableName => parses::<TableName>(s),
             Self::TableNames => list(s, parses::<TableName>, "must name a table"),
@@ -167,7 +168,7 @@ impl fmt::Display for Kind {
             Self::OneOf { names, .. } => return f.write_str(&names()),
             Self::HeadFormat => "codec name or none",
             Self::Version => "semantic version",
-            Self::Json => "JSON",
+            Self::RollupAggregates => "JSON",
         })
     }
 }
@@ -619,7 +620,7 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         name: "rollup-aggregates",
-        kind: Kind::Json,
+        kind: Kind::RollupAggregates,
         default: DefaultValue::Unset("none"),
         levels: &[],
         since: "0.5.0",
@@ -752,6 +753,8 @@ mod tests {
         assert!(check("float-encoding", "byte-stream-split").is_ok() && check("float-encoding", "plain").is_err());
         assert!(check("rollups", "iot.r_1m, iot.r_1h").is_ok() && check("rollups", "iot/r").is_err());
         assert!(check("rollup-source", "iot.r").is_ok() && check("rollup-source", "a.b.c").is_err());
+        let aggregates = r#"[{"name": "n", "function": "gap_count:300s"}]"#;
+        assert!(check("rollup-aggregates", aggregates).is_ok() && check("rollup-aggregates", "avg").is_err());
         let err = check("window-series-order", "yes").unwrap_err().to_string();
         assert_eq!(err, "timelake.window-series-order: must be auto, true, or false, got \"yes\"");
     }

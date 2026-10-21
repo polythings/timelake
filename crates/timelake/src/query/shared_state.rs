@@ -61,7 +61,7 @@ fn signal(position: usize, e: &Expr) -> Option<Signal> {
         return None;
     }
     let (readings, method) = match params.args.as_slice() {
-        [rest @ .., Expr::Literal(ScalarValue::Utf8(Some(m)), _)] => (rest.to_vec(), Method::parse(m).ok()?),
+        [rest @ .., Expr::Literal(ScalarValue::Utf8(Some(m)), _)] => (rest.to_vec(), m.parse().ok()?),
         args => (args.to_vec(), Method::ForwardFill),
     };
     Some(Signal { position, output, readings, method })

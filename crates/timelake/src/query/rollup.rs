@@ -14,11 +14,12 @@ use datafusion::prelude::{DataFrame, SessionContext, ident, lit};
 
 use super::provider::{Kind, TimelakeProvider};
 use super::session::Session;
-use super::signal::{Method, Output, of_rollup, rollup_name, udaf};
+use super::signal::{Method, Output, udaf};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
-use crate::rollup::{Aggregate, Definition, FUNCTIONS};
+use crate::rollup::{Aggregate, Definition, RollupFunction};
 use crate::table::Table;
+use timelake_format::rollup::GapFunction;
 
 pub(crate) const DAY_MICROS: i64 = 86_400_000_000;
 const SECOND_MICROS: i64 = 1_000_000;
@@ -91,41 +92,45 @@ fn is_epoch(e: &Expr) -> bool {
 }
 
 /// The function and column of an aggregate a rollup can store (`None` column for `count(*)`).
-pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn aggregate_of(e: &Expr, time: &str) -> Option<(RollupFunction, Option<String>)> {
     let Expr::AggregateFunction(AggregateFunction { func, params }) = unalias(e) else { return None };
     if params.distinct || params.filter.is_some() || params.null_treatment.is_some() {
         return None;
     }
-    let mut function = func.name().to_string();
+    let name = func.name();
     // The gap aggregates take `(time, threshold)`: the threshold is part of what is stored.
-    if let Some(output) = super::gaps::Output::of(&function) {
+    if let Some(output) = GapFunction::of(name) {
         return match params.args.as_slice() {
             [Expr::Column(t), Expr::Literal(threshold, _)] if t.name == time && params.order_by.is_empty() => {
                 let threshold = super::gaps::threshold_of_literal(threshold)?;
-                Some((super::gaps::rollup_name(output, threshold), None))
+                Some((RollupFunction::Gap(output, threshold), None))
             }
             _ => None,
         };
     }
     // m4 and the signal aggregates take `(time, value)`: they're of `value`.
-    let of_readings = function == "m4" || Output::of(&function).is_some();
-    let column = match params.args.as_slice() {
-        [Expr::Column(c)] if !of_readings => Some(c.name.clone()),
-        [Expr::Column(t), Expr::Column(c)] if of_readings && t.name == time => Some(c.name.clone()),
+    let signal = Output::of(name);
+    let readings = match (name, signal) {
+        ("m4", _) => Some(RollupFunction::M4),
+        (_, Some(output)) => Some(RollupFunction::signal(output, Method::ForwardFill)),
+        _ => None,
+    };
+    let (function, column) = match (params.args.as_slice(), readings) {
+        ([Expr::Column(c)], None) => (name.parse().ok()?, Some(c.name.clone())),
+        ([Expr::Column(t), Expr::Column(c)], Some(f)) if t.name == time => (f, Some(c.name.clone())),
         // A signal aggregate's method is part of what is stored: `integral(time, value, 'linear')`.
-        [Expr::Column(t), Expr::Column(c), Expr::Literal(ScalarValue::Utf8(Some(m)), _)] if t.name == time => {
-            let output = Output::of(&function).filter(|o| o.takes_method())?;
-            function = rollup_name(output, Method::parse(m).ok()?);
-            Some(c.name.clone())
+        ([Expr::Column(t), Expr::Column(c), Expr::Literal(ScalarValue::Utf8(Some(m)), _)], _) if t.name == time => {
+            let output = signal.filter(|o| o.takes_method())?;
+            (RollupFunction::signal(output, m.parse().ok()?), Some(c.name.clone()))
         }
-        [Expr::Literal(ScalarValue::Int64(Some(1)), _)] if function == "count" => None,
+        ([Expr::Literal(ScalarValue::Int64(Some(1)), _)], None) if name == "count" => (RollupFunction::Count, None),
         _ => return None,
     };
     let by_time =
         matches!(params.order_by.as_slice(), [Sort { expr: Expr::Column(c), asc: true, .. }] if c.name == time);
-    let fits = match function.as_str() {
-        "first_value" | "last_value" => by_time && column.is_some(),
-        f => (FUNCTIONS.contains(&f) || of_rollup(f).is_some()) && params.order_by.is_empty(),
+    let fits = match function {
+        RollupFunction::FirstValue | RollupFunction::LastValue => by_time && column.is_some(),
+        _ => params.order_by.is_empty(),
     };
     fits.then_some((function, column))
 }
@@ -135,23 +140,23 @@ fn aggregate_expr(a: &Aggregate, time: &str) -> Result<Expr> {
     let column =
         || a.column.as_deref().map(ident).ok_or_else(|| Error::invalid(format!("{} needs a column", a.function)));
     let by_time = || vec![ident(time).sort(true, false)];
-    Ok(match a.function.as_str() {
-        "count" => agg::count(a.column.as_deref().map_or_else(|| lit(1i64), ident)),
-        "sum" => agg::sum(column()?),
-        "min" => agg::min(column()?),
-        "max" => agg::max(column()?),
-        "avg" => agg::avg(column()?),
-        "first_value" => agg::first_value(column()?, by_time()),
-        "last_value" => agg::last_value(column()?, by_time()),
-        "m4" => super::m4::m4_udaf().call(vec![ident(time), column()?]),
+    Ok(match a.function {
+        RollupFunction::Count => agg::count(a.column.as_deref().map_or_else(|| lit(1i64), ident)),
+        RollupFunction::Sum => agg::sum(column()?),
+        RollupFunction::Min => agg::min(column()?),
+        RollupFunction::Max => agg::max(column()?),
+        RollupFunction::Avg => agg::avg(column()?),
+        RollupFunction::FirstValue => agg::first_value(column()?, by_time()),
+        RollupFunction::LastValue => agg::last_value(column()?, by_time()),
+        RollupFunction::M4 => super::m4::m4_udaf().call(vec![ident(time), column()?]),
         // The state: a bucket's runs, which wider buckets merge.
-        f => match (of_rollup(f), super::gaps::of_rollup(f)) {
-            (Some((_, Method::Linear)), _) => udaf(Output::State).call(vec![ident(time), column()?, lit("linear")]),
-            (Some(_), _) => udaf(Output::State).call(vec![ident(time), column()?]),
-            (None, Some((_, threshold))) => super::gaps::udaf(super::gaps::Output::State)
-                .call(vec![ident(time), super::gaps::threshold_literal(threshold)]),
-            (None, None) => return Err(Error::invalid(format!("a rollup can't store {f}"))),
-        },
+        RollupFunction::Signal(_, Method::Linear) => {
+            udaf(Output::State).call(vec![ident(time), column()?, lit("linear")])
+        }
+        RollupFunction::Signal(_, Method::ForwardFill) => udaf(Output::State).call(vec![ident(time), column()?]),
+        RollupFunction::Gap(_, threshold) => {
+            super::gaps::udaf(GapFunction::State).call(vec![ident(time), super::gaps::threshold_literal(threshold)])
+        }
     })
 }
 
@@ -268,7 +273,7 @@ pub(crate) fn definition_of(plan: &LogicalPlan, name: &crate::TableName) -> Resu
                 )));
             };
             // `integral:linear` of `value` is `integral_linear_value`; `gap_count:300s` is `gap_count_300s`.
-            let stem = function.replace(':', "_");
+            let stem = function.to_string().replace(':', "_");
             let default = column.as_ref().map_or_else(|| stem.clone(), |c| format!("{stem}_{c}"));
             let a = Aggregate { name: if named { output } else { default }, function, column };
             let name = a.name.clone();

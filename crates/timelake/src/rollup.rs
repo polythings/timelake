@@ -14,7 +14,6 @@ use std::time::Duration;
 use arrow::array::RecordBatch;
 use arrow::datatypes::DataType;
 use iceberg::spec::{Datum, PrimitiveLiteral};
-use serde::{Deserialize, Serialize};
 use timelake_format::duration_micros;
 
 use crate::TableName;
@@ -37,33 +36,7 @@ const MIN_WINDOW_MICROS: i64 = 86_400_000_000;
 /// Half-open ranges of time, in microseconds since the epoch.
 pub(crate) type Ranges = Vec<(i64, i64)>;
 
-/// One aggregate of a rollup: its output column, the function, and the raw column it reads
-/// (`None` for `count(*)`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Aggregate {
-    pub name: String,
-    pub function: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub column: Option<String>,
-}
-
-/// The aggregate functions a rollup can store: a bucket's rows give each exactly.
-pub(crate) const FUNCTIONS: &[&str] = &[
-    "count",
-    "sum",
-    "min",
-    "max",
-    "avg",
-    "first_value",
-    "last_value",
-    "m4",
-    "time_weighted_mean",
-    "time_weighted_mean:linear",
-    "integral",
-    "integral:linear",
-    "counter_diff",
-    "counter_rate",
-];
+pub(crate) use timelake_format::rollup::{Aggregate, RollupFunction};
 
 /// What a rollup computes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +60,7 @@ impl Definition {
             |key: &str| props.get(key).ok_or_else(|| Error::invalid(format!("{} is not a rollup", rollup.name())));
         let source: TableName = get(property::ROLLUP_SOURCE)?.parse()?;
         let width = duration_micros(parse_duration(get(property::ROLLUP_BUCKET)?)?);
-        let aggregates: Vec<Aggregate> = serde_json::from_str(get(property::ROLLUP_AGGREGATES)?)?;
+        let aggregates = timelake_format::rollup::parse_aggregates(get(property::ROLLUP_AGGREGATES)?)?;
         let contract = rollup.contract();
         let bucket = contract.time_column.clone().ok_or_else(|| Error::invalid("a rollup needs a bucket column"))?;
         Ok(Self { source, width, bucket, keys: contract.series_key.clone(), aggregates })
@@ -99,7 +72,7 @@ impl Definition {
         Ok(HashMap::from([
             (property::ROLLUP_SOURCE.into(), self.source.to_string()),
             (property::ROLLUP_BUCKET.into(), format_duration(width)),
-            (property::ROLLUP_AGGREGATES.into(), serde_json::to_string(&self.aggregates)?),
+            (property::ROLLUP_AGGREGATES.into(), timelake_format::rollup::aggregates_json(&self.aggregates)?),
         ]))
     }
 }

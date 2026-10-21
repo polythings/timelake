@@ -32,10 +32,10 @@ use super::gaps;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
 use super::settings::{READ_DEDUP, ROLLUP_ROUTING};
-use super::signal::{Method, Output, of_rollup, state_type, udaf};
+use super::signal::{Method, Output, state_type, udaf};
 use crate::TableName;
 use crate::lake::Lake;
-use crate::rollup::{Definition, Ranges, changed, floor, in_history, layout, recorded_sequence};
+use crate::rollup::{Definition, Ranges, RollupFunction, changed, floor, in_history, layout, recorded_sequence};
 use crate::table::Table;
 
 /// Stands for no bound: beyond any time a table holds (about ±73,000 years), with room to add a
@@ -195,7 +195,7 @@ struct Query<'a> {
     /// The bucket width, or `None` for a query over its whole time range.
     width: Option<i64>,
     keys: HashSet<&'a str>,
-    aggregates: Vec<(String, Option<String>)>,
+    aggregates: Vec<(RollupFunction, Option<String>)>,
     /// Inclusive bounds on the time column, in microseconds.
     from: i64,
     to: i64,
@@ -431,16 +431,15 @@ impl Candidate {
             return None;
         }
         // Stored states answer only where the rollup holds enough readings per row to be cheaper.
-        let needs = q.aggregates.iter().map(|(f, _)| match f.as_str() {
-            _ if of_rollup(f).is_some() => SIGNAL_STATE_ROWS,
-            "m4" => STATE_ROWS,
-            _ if gaps::of_rollup(f).is_some() => STATE_ROWS,
+        let needs = q.aggregates.iter().map(|(f, _)| match f {
+            RollupFunction::Signal(..) => SIGNAL_STATE_ROWS,
+            RollupFunction::M4 | RollupFunction::Gap(..) => STATE_ROWS,
             _ => 0,
         });
         if needs.max().unwrap_or(0) > self.raw_rows_per_row {
             return None;
         }
-        let stored = |function: &str, column: &Option<String>| {
+        let stored = |function: RollupFunction, column: &Option<String>| {
             self.def.aggregates.iter().find(|a| a.function == function && a.column == *column).map(|a| a.name.clone())
         };
         // A signal aggregate's stored state (its segments) answers any signal aggregate of the same
@@ -450,7 +449,9 @@ impl Candidate {
         let state = |(output, method): (Output, Method), column: &Option<String>| {
             let fits = |(_, m): (Output, Method)| m == method || !output.takes_method();
             let a =
-                self.def.aggregates.iter().find(|a| a.column == *column && of_rollup(&a.function).is_some_and(fits))?;
+                self.def.aggregates.iter().find(|a| {
+                    a.column == *column && matches!(a.function, RollupFunction::Signal(o, m) if fits((o, m)))
+                })?;
             let current = schema.field_with_name(&a.name).is_ok_and(|f| layout(f.data_type()) == layout(&state_type()));
             current.then(|| a.name.clone())
         };
@@ -460,20 +461,19 @@ impl Candidate {
                 .def
                 .aggregates
                 .iter()
-                .find(|a| gaps::of_rollup(&a.function).is_some_and(|(_, t)| t == threshold))?;
+                .find(|a| matches!(a.function, RollupFunction::Gap(_, t) if t == threshold))?;
             let current =
                 schema.field_with_name(&a.name).is_ok_and(|f| layout(f.data_type()) == layout(&gaps::state_type()));
             current.then(|| a.name.clone())
         };
         // At the rollup's own buckets and keys, each row is a query row: stored values and states are
         // read as they are. A stored state's value (a signal or gap aggregate's) has to be computed.
-        let as_stored =
-            |(function, column): &(String, Option<String>)| match (of_rollup(function), gaps::of_rollup(function)) {
-                (Some((Output::State, method)), _) => state((Output::State, method), column),
-                (None, Some((gaps::Output::State, threshold))) => gap_state(threshold),
-                (None, None) => stored(function, column),
-                _ => None,
-            };
+        let as_stored = |&(function, ref column): &(RollupFunction, Option<String>)| match function {
+            RollupFunction::Signal(Output::State, method) => state((Output::State, method), column),
+            RollupFunction::Gap(gaps::Output::State, threshold) => gap_state(threshold),
+            RollupFunction::Signal(..) | RollupFunction::Gap(..) => None,
+            plain => stored(plain, column),
+        };
         if self.def.width == width
             && keys == q.keys
             && let Some(columns) = q.aggregates.iter().map(as_stored).collect::<Option<_>>()
@@ -481,43 +481,40 @@ impl Candidate {
             return Some(Answer::Stored(columns));
         }
         let by_bucket = || vec![ident(&self.def.bucket).sort(true, false)];
-        let merged = q.aggregates.iter().map(|(function, column)| {
-            Some(match function.as_str() {
+        let merged = q.aggregates.iter().map(|&(function, ref column)| {
+            Some(match function {
                 // `count(column)` is `count(*)` where the column can't be null.
-                "count" => agg::sum(ident(match column {
+                RollupFunction::Count => agg::sum(ident(match column {
                     Some(c) => stored(function, column).or_else(|| self.count_of(c, q))?,
                     None => stored(function, column)?,
                 })),
-                "sum" => agg::sum(ident(stored(function, column)?)),
-                "min" => agg::min(ident(stored(function, column)?)),
-                "max" => agg::max(ident(stored(function, column)?)),
-                "first_value" => agg::first_value(ident(stored(function, column)?), by_bucket()),
-                "last_value" => agg::last_value(ident(stored(function, column)?), by_bucket()),
+                RollupFunction::Sum => agg::sum(ident(stored(function, column)?)),
+                RollupFunction::Min => agg::min(ident(stored(function, column)?)),
+                RollupFunction::Max => agg::max(ident(stored(function, column)?)),
+                RollupFunction::FirstValue => agg::first_value(ident(stored(function, column)?), by_bucket()),
+                RollupFunction::LastValue => agg::last_value(ident(stored(function, column)?), by_bucket()),
                 // The stored points merge into the wider bucket's.
-                "m4" => super::m4::m4_udaf().call(vec![ident(stored(function, column)?)]),
+                RollupFunction::M4 => super::m4::m4_udaf().call(vec![ident(stored(function, column)?)]),
                 // A mean of means weighted by the rows each counted.
-                "avg" => {
+                RollupFunction::Avg => {
                     let n = self.count_of(column.as_deref()?, q)?;
-                    let total = match stored("sum", column) {
+                    let total = match stored(RollupFunction::Sum, column) {
                         Some(sum) => ident(sum),
                         // Rules run after type coercion: the operands' types must match already.
-                        None => ident(stored("avg", column)?) * cast(ident(n.clone()), DataType::Float64),
+                        None => ident(stored(RollupFunction::Avg, column)?) * cast(ident(n.clone()), DataType::Float64),
                     };
                     cast(agg::sum(total), DataType::Float64) / cast(agg::sum(ident(n)), DataType::Float64)
                 }
-                f => match (of_rollup(f), gaps::of_rollup(f)) {
-                    (Some((output, method)), _) => {
-                        let mut args = vec![ident(state((output, method), column)?)];
-                        if method == Method::Linear {
-                            args.push(lit("linear"));
-                        }
-                        udaf(output).call(args)
+                RollupFunction::Signal(output, method) => {
+                    let mut args = vec![ident(state((output, method), column)?)];
+                    if method == Method::Linear {
+                        args.push(lit("linear"));
                     }
-                    (None, Some((output, threshold))) => {
-                        gaps::udaf(output).call(vec![ident(gap_state(threshold)?), gaps::threshold_literal(threshold)])
-                    }
-                    (None, None) => return None,
-                },
+                    udaf(output).call(args)
+                }
+                RollupFunction::Gap(output, threshold) => {
+                    gaps::udaf(output).call(vec![ident(gap_state(threshold)?), gaps::threshold_literal(threshold)])
+                }
             })
         });
         merged.collect::<Option<_>>().map(Answer::Merged)
@@ -530,7 +527,7 @@ impl Candidate {
             self.def
                 .aggregates
                 .iter()
-                .find(|a| a.function == "count" && a.column.as_deref() == c)
+                .find(|a| a.function == RollupFunction::Count && a.column.as_deref() == c)
                 .map(|a| a.name.clone())
         };
         let required = q.table.schema().field_with_name(column).is_ok_and(|f| !f.is_nullable());

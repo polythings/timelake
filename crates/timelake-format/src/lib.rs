@@ -51,6 +51,7 @@ pub mod merge;
 #[cfg(feature = "write")]
 pub mod metadata;
 pub mod name;
+pub mod rollup;
 #[cfg(feature = "write")]
 pub mod rows;
 pub mod settings;
@@ -213,8 +214,7 @@ pub enum FormatError {
     #[cfg(feature = "head")]
     #[error(transparent)]
     Arrow(#[from] arrow_schema::ArrowError),
-    /// From JSON, encoding or decoding the head object.
-    #[cfg(feature = "head")]
+    /// From JSON: the head object, or a rollup's aggregates.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     /// Iceberg compression properties a file can't be written with.
