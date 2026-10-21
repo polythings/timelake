@@ -2,12 +2,13 @@
 //! the reader stays small and compiles to WebAssembly.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use apache_avro::types::Value;
 use parquet::basic::TimeUnit;
 use serde::{Deserialize, Serialize};
 use timelake_format::bounds::{Bound, decode};
+use timelake_format::iceberg::Entry;
 use timelake_format::{Contract, summary};
 
 use crate::error::{Error, Result};
@@ -116,6 +117,11 @@ impl RawSnapshot {
 }
 
 impl TableMeta {
+    /// The current schema's top-level columns by field id.
+    pub(crate) fn fields_by_id(&self) -> HashMap<i32, &Field> {
+        self.schema.iter().map(|f| (f.id, f)).collect()
+    }
+
     /// Parses `vN.metadata.json`, including the Timelake contract in its properties.
     pub fn parse(json: &str) -> Result<Self> {
         let raw: RawMeta = serde_json::from_str(json)?;
@@ -279,6 +285,31 @@ pub struct DataFile {
     pub sequence_number: i64,
     pub lower: HashMap<String, Bound>,
     pub upper: HashMap<String, Bound>,
+}
+
+impl DataFile {
+    /// A live file as the reader plans with it, bounds decoded by column name ([`decode_bound`]).
+    /// `by_id` holds the current schema's columns; bounds of others are left out.
+    pub(crate) fn from_entry(entry: &Entry, by_id: &HashMap<i32, &Field>) -> Self {
+        let f = &entry.file;
+        let bounds = |m: &BTreeMap<i32, Vec<u8>>, upper: bool| {
+            m.iter()
+                .filter_map(|(id, bytes)| {
+                    let field = by_id.get(id)?;
+                    Some((field.name.clone(), decode_bound(field, bytes, upper)?))
+                })
+                .collect()
+        };
+        Self {
+            path: f.path.clone(),
+            size: f.file_size,
+            records: f.record_count,
+            partition: f.partition.map(i64::from),
+            sequence_number: entry.sequence_number,
+            lower: bounds(&f.lower_bounds, false),
+            upper: bounds(&f.upper_bounds, true),
+        }
+    }
 }
 
 /// A column's Iceberg bound (`bytes` in Iceberg's single-value encoding) as queries compare it:

@@ -4,15 +4,15 @@
 
 use std::sync::Arc;
 
-use arrow_array::{
-    ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
-    TimestampNanosecondArray, UInt32Array, UInt64Array,
-};
+use std::collections::BTreeMap;
+
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, TimestampMillisecondArray, TimestampNanosecondArray};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use serde_json::{Value, json};
-use timelake_format::head::section::{COLUMNS, FILES, METADATA};
-use timelake_format::head::{HeadDoc, LAYOUT, LAYOUT_KEY, built_in, encode};
+use timelake_format::head::built_in;
+use timelake_format::head::content::HeadBuilder;
+use timelake_format::iceberg::{DataFile, Entry, Status};
 use timelake_wasm::{Collector, FileReader, Head, QuerySpec, plan_files};
 
 /// 2026-01-01T00:00:00Z in microseconds.
@@ -81,31 +81,23 @@ fn head_with_nanosecond_bounds(lower: i64, upper: i64) -> Vec<u8> {
         "schemas": [{ "schema-id": 0, "fields": [{ "id": 1, "name": "time", "type": "timestamptz_ns", "required": true }] }],
         "properties": { "timelake.time-column": "time" },
     });
-    let mut doc = HeadDoc::default();
-    doc.properties.insert(LAYOUT_KEY.into(), LAYOUT.into());
-    let section = |columns: Vec<(&str, ArrayRef)>| RecordBatch::try_from_iter(columns).unwrap();
-    doc.sections
-        .insert(METADATA.into(), section(vec![("json", Arc::new(StringArray::from(vec![metadata.to_string()])))]));
-    doc.sections.insert(
-        FILES.into(),
-        section(vec![
-            ("path", Arc::new(StringArray::from(vec!["s3://b/t/data/a.parquet"]))),
-            ("size", Arc::new(UInt64Array::from(vec![100]))),
-            ("records", Arc::new(UInt64Array::from(vec![2]))),
-            ("partition", Arc::new(Int32Array::from(vec![None]))),
-            ("sequence_number", Arc::new(Int64Array::from(vec![1]))),
-        ]),
-    );
-    doc.sections.insert(
-        COLUMNS.into(),
-        section(vec![
-            ("file", Arc::new(UInt32Array::from(vec![0]))),
-            ("field_id", Arc::new(Int32Array::from(vec![1]))),
-            ("lower", Arc::new(BinaryArray::from(vec![lower.to_le_bytes().as_slice()]))),
-            ("upper", Arc::new(BinaryArray::from(vec![upper.to_le_bytes().as_slice()]))),
-        ]),
-    );
-    encode(1, built_in("arrow").unwrap(), &doc).unwrap()
+    let file = DataFile {
+        path: "s3://b/t/data/a.parquet".into(),
+        record_count: 2,
+        file_size: 100,
+        lower_bounds: BTreeMap::from([(1, lower.to_le_bytes().to_vec())]),
+        upper_bounds: BTreeMap::from([(1, upper.to_le_bytes().to_vec())]),
+        ..DataFile::default()
+    };
+    let entry = Entry {
+        status: Status::Added,
+        snapshot_id: 1,
+        sequence_number: 1,
+        file_sequence_number: 1,
+        file: Arc::new(file),
+    };
+    let head = HeadBuilder::new(1, built_in("arrow").unwrap(), metadata.to_string(), &[entry], 0).unwrap();
+    head.finish().unwrap()
 }
 
 /// A head's file bounds are scaled like a manifest's: a file of nanosecond times is planned for a

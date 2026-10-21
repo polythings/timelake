@@ -1,49 +1,35 @@
 //! The head object (spec 7, P1): `<table>/metadata/timelake-head`, one object holding what a
 //! reader needs to plan a query at the current version: the table metadata, the live data files
-//! with their column statistics, and the last-value index when it fits. A cold query reads it
-//! instead of following the version hint, metadata, manifest list and manifests one by one.
+//! with their column statistics, and the last-value index and footers when they fit. A cold query
+//! reads it instead of following the version hint, metadata, manifest list and manifests one by
+//! one. Its layout and sections are `timelake_format::head`'s, shared with the WASM reader and
+//! writer.
 //!
 //! The head is a cache of a commit, not part of it. `vN.metadata.json` stays the commit point, so
 //! other Iceberg engines see no change. The head is written in the background after each commit
 //! and never replaces a newer one; readers check that `vN+1.metadata.json` doesn't exist before
 //! they rely on it, and load the table the slow way when it does.
-//!
-//! Layout: a header (`TLHD`, header version, table version, codec name) followed by the codec's
-//! encoding of a [`HeadDoc`] with these sections:
-//! - `metadata`: one row, column `json`: the table's `vN.metadata.json`.
-//! - `files`: one row per live data file.
-//! - `columns`: one row per file and column with statistics: bounds (Iceberg single-value
-//!   encoding) and counts.
-//! - `last_values`: the last-value index, while it fits in `timelake.head-inline-bytes`.
-//! - `footers`: Parquet footers of the newest files, in what is left of that budget (P2).
 
 mod codec;
 
-use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use arrow::array::{
-    Array, ArrayRef, BinaryArray, Int32Array, Int64Array, ListArray, RecordBatch, StringArray, UInt8Array, UInt32Array,
-    UInt64Array,
-};
-use arrow::datatypes::{DataType, Field, Int64Type, Schema, SchemaRef};
 use bytes::Bytes;
-use iceberg::spec::{DataContentType, DataFileBuilder, DataFileFormat, Datum, ManifestStatus, TableMetadata};
+use iceberg::spec::TableMetadata;
 
 pub(crate) use self::codec::Codecs;
 use crate::TableName;
 use crate::background;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::lake::Lake;
 use crate::schema::align_batch;
 use crate::storage::{Storage, VersionedWrite};
 use crate::table::{LiveEntry, Table};
-use crate::write::{file_partition, partition_struct};
 use crate::{footer, lvi};
 pub use timelake_format::FormatError;
-use timelake_format::head::section::{COLUMNS, FILES, FOOTERS, LAST_VALUES, METADATA};
+use timelake_format::head::content::{Contents, HeadBuilder, footer_order};
 pub use timelake_format::head::{ArrowCodec, HeadCodec, HeadDoc, JsonCodec};
-use timelake_format::head::{Header, LAYOUT, LAYOUT_KEY, MAX_HEADER, encode};
+use timelake_format::head::{Header, MAX_HEADER};
 use timelake_format::layout::head_uri;
 
 /// Attempts to replace a head that other writers keep changing; they write newer ones anyway.
@@ -86,57 +72,22 @@ pub(crate) async fn write(table: &Table) -> Result<()> {
         return Ok(());
     };
     deleted.remove(&uri);
-    let files = table.files().await?;
-    let mut doc = to_doc(table, &files)?;
-    let mut bytes = encode(table.version(), codec.as_ref(), &doc)?;
-    // Optional sections share one budget: the last-value index first, then footers.
-    let mut budget = contract.head_inline_bytes;
+    let files = table.files().await?.iter().map(LiveEntry::to_shared).collect::<Result<Vec<_>>>()?;
+    let json = serde_json::to_string(table.metadata())?;
+    let mut head = HeadBuilder::new(table.version(), codec.as_ref(), json, &files, contract.head_inline_bytes)?;
     if let Some(index) = table.last_value_index() {
-        doc.sections.insert(LAST_VALUES.into(), lvi::read(table, &index).await?);
-        let with_index = encode(table.version(), codec.as_ref(), &doc)?;
-        let cost = with_index.len().saturating_sub(bytes.len()) as u64;
-        if cost <= budget {
-            bytes = with_index;
-            budget -= cost;
-        } else {
-            doc.sections.remove(LAST_VALUES);
-        }
+        head.last_values(&lvi::read(table, &index).await?)?;
     }
-    let footers = footers_within(lake, &files, budget).await?;
-    if footers.num_rows() > 0 {
-        doc.sections.insert(FOOTERS.into(), footers);
-        bytes = encode(table.version(), codec.as_ref(), &doc)?;
-    }
-    write_if_newer(storage, &uri, table.version(), Bytes::from(bytes)).await
-}
-
-fn footers_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("path", DataType::Utf8, false),
-        Field::new("footer", DataType::Binary, false),
-    ]))
-}
-
-/// Footers of `files`, newest partitions first, while their encoded size fits in `budget` bytes.
-/// Footers this process doesn't have yet are read from the store (by this background task).
-async fn footers_within(lake: &Lake, files: &[LiveEntry], mut budget: u64) -> Result<RecordBatch> {
-    let mut files: Vec<&LiveEntry> = files.iter().collect();
-    files.sort_by_key(|e| std::cmp::Reverse((file_partition(&e.data_file), e.data_file.file_path())));
-    let (mut paths, mut footers) = (vec![], vec![]);
-    'chunks: for chunk in files.chunks(FOOTER_READS) {
-        let reads = chunk.iter().map(|e| footer::read(lake, e.data_file.file_path(), e.data_file.file_size_in_bytes()));
+    // Footers this process doesn't have yet are read from the store (by this background task).
+    'footers: for chunk in footer_order(&files).chunks(FOOTER_READS) {
+        let reads = chunk.iter().map(|e| footer::read(lake, &e.file.path, e.file.file_size));
         for (e, bytes) in chunk.iter().zip(futures::future::try_join_all(reads).await?) {
-            let Some(rest) = budget.checked_sub(bytes.len() as u64) else { break 'chunks };
-            budget = rest;
-            paths.push(e.data_file.file_path());
-            footers.push(bytes);
+            if !head.footer(&e.file.path, &bytes) {
+                break 'footers;
+            }
         }
     }
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(paths)),
-        Arc::new(footers.iter().map(|b| Some(b.as_ref())).collect::<BinaryArray>()),
-    ];
-    Ok(RecordBatch::try_new(footers_schema(), columns)?)
+    write_if_newer(storage, &uri, table.version(), Bytes::from(head.finish()?)).await
 }
 
 /// Writes a head unless the stored one is for `version` or newer. The write is conditional on the
@@ -163,256 +114,28 @@ pub(crate) async fn read(lake: &Lake, name: &TableName, location: &str) -> Resul
 }
 
 fn decode(lake: &Lake, name: &TableName, location: &str, bytes: &[u8]) -> Result<Table> {
-    let header = Header::parse(bytes).ok_or_else(|| Error::invalid("not a Timelake head"))?;
-    let codec = lake
-        .head_codecs()
-        .get(header.codec)
-        .ok_or_else(|| Error::invalid(format!("no head codec {}", header.codec)))?;
-    let doc = codec.decode(header.body)?;
-    if doc.properties.get(LAYOUT_KEY).map(String::as_str) != Some(LAYOUT) {
-        return Err(Error::invalid("unknown head layout"));
-    }
-    let json = column::<StringArray>(section(&doc, METADATA)?, "json")?;
-    if json.len() != 1 {
-        return Err(Error::invalid("head metadata must be one row"));
-    }
-    let metadata: TableMetadata = serde_json::from_str(json.value(0))?;
-    let table = Table::new(lake.clone(), name.clone(), location.to_string(), header.version, metadata)?;
-    let files = decode_files(&doc, table.metadata())?;
-    if let (Some(uri), Some(index)) = (table.last_value_index(), doc.sections.get(LAST_VALUES)) {
+    let head = Contents::decode(bytes, |codec| lake.head_codecs().get(codec))?;
+    let metadata: TableMetadata = serde_json::from_str(&head.metadata_json)?;
+    let table = Table::new(lake.clone(), name.clone(), location.to_string(), head.version, metadata)?;
+    let files = head.files.iter().map(|e| LiveEntry::from_shared(e, table.metadata())).collect::<Result<Vec<_>>>()?;
+    if let (Some(uri), Some(index)) = (table.last_value_index(), &head.last_values) {
         lake.caches().last_value_indexes.insert(uri, align_batch(index, &table.schema())?);
     }
-    if let Some(footers) = doc.sections.get(FOOTERS) {
-        let (paths, bytes) = (column::<StringArray>(footers, "path")?, column::<BinaryArray>(footers, "footer")?);
-        for (path, bytes) in paths.iter().zip(bytes.iter()) {
-            if let (Some(path), Some(bytes)) = (path, bytes) {
-                lake.caches().footers.insert(path.to_string(), Bytes::copy_from_slice(bytes));
-            }
-        }
+    for (path, footer) in head.footers {
+        lake.caches().footers.insert(path, Bytes::from(footer));
     }
     Ok(table.with_files(Arc::new(files)))
-}
-
-// --- sections ------------------------------------------------------------------------------------
-
-fn files_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("path", DataType::Utf8, false),
-        Field::new("size", DataType::UInt64, false),
-        Field::new("records", DataType::UInt64, false),
-        Field::new("partition", DataType::Int32, true),
-        Field::new("sort_order_id", DataType::Int32, true),
-        Field::new("split_offsets", DataType::List(Arc::new(Field::new("item", DataType::Int64, true))), true),
-        // 1 if the file was added by the snapshot of `snapshot_id`'s manifest, else 0.
-        Field::new("added", DataType::UInt8, false),
-        Field::new("snapshot_id", DataType::Int64, false),
-        Field::new("sequence_number", DataType::Int64, false),
-        Field::new("file_sequence_number", DataType::Int64, false),
-    ]))
-}
-
-fn columns_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        // Row of the file in `files`.
-        Field::new("file", DataType::UInt32, false),
-        Field::new("field_id", DataType::Int32, false),
-        Field::new("lower", DataType::Binary, true),
-        Field::new("upper", DataType::Binary, true),
-        Field::new("values", DataType::UInt64, true),
-        Field::new("nulls", DataType::UInt64, true),
-        Field::new("nans", DataType::UInt64, true),
-        Field::new("size", DataType::UInt64, true),
-    ]))
-}
-
-/// The head of `table` with `files` as its live files (without the optional sections).
-fn to_doc(table: &Table, files: &[LiveEntry]) -> Result<HeadDoc> {
-    let mut doc = HeadDoc::default();
-    doc.properties.insert(LAYOUT_KEY.into(), LAYOUT.into());
-    let json = serde_json::to_string(table.metadata())?;
-    let metadata = Schema::new(vec![Field::new("json", DataType::Utf8, false)]);
-    doc.sections.insert(
-        METADATA.into(),
-        RecordBatch::try_new(Arc::new(metadata), vec![Arc::new(StringArray::from(vec![json]))])?,
-    );
-    doc.sections.insert(FILES.into(), encode_files(files)?);
-    doc.sections.insert(COLUMNS.into(), encode_columns(files)?);
-    Ok(doc)
-}
-
-fn encode_files(files: &[LiveEntry]) -> Result<RecordBatch> {
-    let df = || files.iter().map(|e| &e.data_file);
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from_iter_values(df().map(|f| f.file_path()))),
-        Arc::new(UInt64Array::from_iter_values(df().map(|f| f.file_size_in_bytes()))),
-        Arc::new(UInt64Array::from_iter_values(df().map(|f| f.record_count()))),
-        Arc::new(df().map(|f| file_partition(f)).collect::<Int32Array>()),
-        Arc::new(df().map(|f| f.sort_order_id()).collect::<Int32Array>()),
-        Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(
-            df().map(|f| f.split_offsets().map(|o| o.iter().copied().map(Some).collect::<Vec<_>>())),
-        )),
-        Arc::new(UInt8Array::from_iter_values(files.iter().map(|e| u8::from(e.status == ManifestStatus::Added)))),
-        Arc::new(Int64Array::from_iter_values(files.iter().map(|e| e.snapshot_id))),
-        Arc::new(Int64Array::from_iter_values(files.iter().map(|e| e.sequence_number))),
-        Arc::new(Int64Array::from_iter_values(files.iter().map(|e| e.file_sequence_number))),
-    ];
-    Ok(RecordBatch::try_new(files_schema(), columns)?)
-}
-
-fn encode_columns(files: &[LiveEntry]) -> Result<RecordBatch> {
-    let (mut file, mut field_id, mut lower, mut upper) = (vec![], vec![], vec![], vec![]);
-    let (mut values, mut nulls, mut nans, mut size) = (vec![], vec![], vec![], vec![]);
-    let bytes = |d: Option<&Datum>| d.map(|d| d.to_bytes().map(|b| b.to_vec())).transpose();
-    for (i, e) in files.iter().enumerate() {
-        let f = &e.data_file;
-        let ids: BTreeSet<i32> = (f.lower_bounds().keys())
-            .chain(f.upper_bounds().keys())
-            .chain(f.value_counts().keys())
-            .chain(f.null_value_counts().keys())
-            .chain(f.nan_value_counts().keys())
-            .chain(f.column_sizes().keys())
-            .copied()
-            .collect();
-        let i = u32::try_from(i).map_err(|_| Error::invalid("too many files for a head"))?;
-        for id in ids {
-            file.push(i);
-            field_id.push(id);
-            lower.push(bytes(f.lower_bounds().get(&id))?);
-            upper.push(bytes(f.upper_bounds().get(&id))?);
-            values.push(f.value_counts().get(&id).copied());
-            nulls.push(f.null_value_counts().get(&id).copied());
-            nans.push(f.nan_value_counts().get(&id).copied());
-            size.push(f.column_sizes().get(&id).copied());
-        }
-    }
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(UInt32Array::from(file)),
-        Arc::new(Int32Array::from(field_id)),
-        Arc::new(lower.iter().map(Option::as_deref).collect::<BinaryArray>()),
-        Arc::new(upper.iter().map(Option::as_deref).collect::<BinaryArray>()),
-        Arc::new(UInt64Array::from(values)),
-        Arc::new(UInt64Array::from(nulls)),
-        Arc::new(UInt64Array::from(nans)),
-        Arc::new(UInt64Array::from(size)),
-    ];
-    Ok(RecordBatch::try_new(columns_schema(), columns)?)
-}
-
-/// Statistics of one file, as Iceberg's `DataFile` keeps them.
-#[derive(Default)]
-struct FileStats {
-    lower: HashMap<i32, Datum>,
-    upper: HashMap<i32, Datum>,
-    values: HashMap<i32, u64>,
-    nulls: HashMap<i32, u64>,
-    nans: HashMap<i32, u64>,
-    size: HashMap<i32, u64>,
-}
-
-fn decode_files(doc: &HeadDoc, metadata: &TableMetadata) -> Result<Vec<LiveEntry>> {
-    let files = section(doc, FILES)?;
-    let mut stats: Vec<FileStats> = (0..files.num_rows()).map(|_| FileStats::default()).collect();
-    let columns = section(doc, COLUMNS)?;
-    let (file, field_id) = (column::<UInt32Array>(columns, "file")?, column::<Int32Array>(columns, "field_id")?);
-    let (lower, upper) = (column::<BinaryArray>(columns, "lower")?, column::<BinaryArray>(columns, "upper")?);
-    let values = column::<UInt64Array>(columns, "values")?;
-    let nulls = column::<UInt64Array>(columns, "nulls")?;
-    let nans = column::<UInt64Array>(columns, "nans")?;
-    let size = column::<UInt64Array>(columns, "size")?;
-    let schema = metadata.current_schema();
-    for row in 0..columns.num_rows() {
-        let s = usize::try_from(file.value(row))
-            .ok()
-            .and_then(|i| stats.get_mut(i))
-            .ok_or_else(|| Error::invalid("head statistics for a missing file"))?;
-        let id = field_id.value(row);
-        // Bounds of columns no longer in the schema can't be decoded, and aren't needed.
-        if let Some(ty) = schema.field_by_id(id).and_then(|f| f.field_type.as_primitive_type()) {
-            let datum = |a: &BinaryArray| a.is_valid(row).then(|| Datum::try_from_bytes(a.value(row), ty.clone()));
-            if let Some(d) = datum(lower).transpose()? {
-                s.lower.insert(id, d);
-            }
-            if let Some(d) = datum(upper).transpose()? {
-                s.upper.insert(id, d);
-            }
-        }
-        for (array, map) in [(values, &mut s.values), (nulls, &mut s.nulls), (nans, &mut s.nans), (size, &mut s.size)] {
-            if array.is_valid(row) {
-                map.insert(id, array.value(row));
-            }
-        }
-    }
-
-    let path = column::<StringArray>(files, "path")?;
-    let bytes = column::<UInt64Array>(files, "size")?;
-    let records = column::<UInt64Array>(files, "records")?;
-    let partition = column::<Int32Array>(files, "partition")?;
-    let sort_order_id = column::<Int32Array>(files, "sort_order_id")?;
-    // Absent in heads written before it was added.
-    let split_offsets =
-        files.column_by_name("split_offsets").map(|_| column::<ListArray>(files, "split_offsets")).transpose()?;
-    let added = column::<UInt8Array>(files, "added")?;
-    let snapshot_id = column::<Int64Array>(files, "snapshot_id")?;
-    let sequence_number = column::<Int64Array>(files, "sequence_number")?;
-    let file_sequence_number = column::<Int64Array>(files, "file_sequence_number")?;
-    let spec_id = metadata.default_partition_spec_id();
-    stats
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let mut b = DataFileBuilder::default();
-            b.content(DataContentType::Data)
-                .file_path(path.value(i).to_string())
-                .file_format(DataFileFormat::Parquet)
-                .partition(partition_struct(partition.is_valid(i).then(|| partition.value(i))))
-                .partition_spec_id(spec_id)
-                .record_count(records.value(i))
-                .file_size_in_bytes(bytes.value(i))
-                .lower_bounds(s.lower)
-                .upper_bounds(s.upper)
-                .value_counts(s.values)
-                .null_value_counts(s.nulls)
-                .nan_value_counts(s.nans)
-                .column_sizes(s.size);
-            if sort_order_id.is_valid(i) {
-                b.sort_order_id(sort_order_id.value(i));
-            }
-            if let Some(split_offsets) = split_offsets.filter(|s| s.is_valid(i)) {
-                let offsets = split_offsets.value(i);
-                let offsets =
-                    offsets.as_any().downcast_ref::<Int64Array>().ok_or_else(|| Error::invalid("bad split offsets"))?;
-                b.split_offsets(Some(offsets.values().to_vec()));
-            }
-            let data_file = b.build().map_err(|e| {
-                Error::from(iceberg::Error::new(iceberg::ErrorKind::Unexpected, "building data file").with_source(e))
-            })?;
-            Ok(LiveEntry {
-                status: if added.value(i) == 1 { ManifestStatus::Added } else { ManifestStatus::Existing },
-                data_file: Arc::new(data_file),
-                snapshot_id: snapshot_id.value(i),
-                sequence_number: sequence_number.value(i),
-                file_sequence_number: file_sequence_number.value(i),
-            })
-        })
-        .collect()
-}
-
-fn section<'a>(doc: &'a HeadDoc, name: &str) -> Result<&'a RecordBatch> {
-    doc.sections.get(name).ok_or_else(|| Error::invalid(format!("head has no {name} section")))
-}
-
-fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
-    batch
-        .column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<T>())
-        .ok_or_else(|| Error::invalid(format!("head column {name} is missing or has the wrong type")))
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
+    use arrow::array::{Int64Array, RecordBatch};
+    use timelake_format::head::encode;
+
     use super::*;
+    use crate::Error;
     use crate::testing::{FaultyStore, Op, T0, batch, faulty_lake, opts, reopen, reopen_hint_lookup, schema};
     use crate::{AppendOptions, Session, TableOptions, property};
 

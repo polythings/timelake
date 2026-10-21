@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -5,15 +6,17 @@ use arrow::datatypes::SchemaRef;
 use futures::future::{BoxFuture, Shared};
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::{
-    DataContentType, DataFile, ManifestContentType, ManifestFile, ManifestStatus, SnapshotRef, TableMetadata,
-    TableMetadataBuilder,
+    DataContentType, DataFile, DataFileBuilder, DataFileFormat, Datum, ManifestContentType, ManifestFile,
+    ManifestStatus, SnapshotRef, TableMetadata, TableMetadataBuilder,
 };
+use timelake_format::iceberg as shared;
 
 use crate::TableName;
 use crate::contract::Contract;
 use crate::error::{Error, Result};
 use crate::lake::Lake;
 use crate::summary;
+use crate::write::{file_partition, partition_struct};
 
 /// A table at one committed version. Cheap to clone; call [`Table::refresh`] to see newer commits.
 ///
@@ -51,6 +54,90 @@ pub struct LiveEntry {
     pub sequence_number: i64,
     /// Sequence number of the commit that added the file.
     pub file_sequence_number: i64,
+}
+
+impl LiveEntry {
+    /// The entry as `timelake_format` records it (bounds in Iceberg's single-value encoding), for
+    /// the head.
+    pub(crate) fn to_shared(&self) -> Result<shared::Entry> {
+        let f = &self.data_file;
+        let bytes = |m: &HashMap<i32, Datum>| -> Result<BTreeMap<i32, Vec<u8>>> {
+            m.iter().map(|(id, d)| Ok((*id, d.to_bytes()?.to_vec()))).collect()
+        };
+        let counts = |m: &HashMap<i32, u64>| m.iter().map(|(k, v)| (*k, *v)).collect();
+        let file = shared::DataFile {
+            path: f.file_path().to_string(),
+            partition: file_partition(f),
+            record_count: f.record_count(),
+            file_size: f.file_size_in_bytes(),
+            column_sizes: counts(f.column_sizes()),
+            value_counts: counts(f.value_counts()),
+            null_counts: counts(f.null_value_counts()),
+            nan_counts: counts(f.nan_value_counts()),
+            lower_bounds: bytes(f.lower_bounds())?,
+            upper_bounds: bytes(f.upper_bounds())?,
+            split_offsets: f.split_offsets().map(<[i64]>::to_vec),
+            sort_order_id: f.sort_order_id(),
+        };
+        Ok(shared::Entry {
+            status: if self.status == ManifestStatus::Added { shared::Status::Added } else { shared::Status::Existing },
+            snapshot_id: self.snapshot_id,
+            sequence_number: self.sequence_number,
+            file_sequence_number: self.file_sequence_number,
+            file: Arc::new(file),
+        })
+    }
+
+    /// The entry of a live file `timelake_format` recorded, in a table with `metadata`. Bounds of
+    /// columns no longer in the schema are left out: iceberg-rust needs their type.
+    pub(crate) fn from_shared(entry: &shared::Entry, metadata: &TableMetadata) -> Result<Self> {
+        let f = &entry.file;
+        let schema = metadata.current_schema();
+        let typed = |m: &BTreeMap<i32, Vec<u8>>| -> Result<HashMap<i32, Datum>> {
+            let mut out = HashMap::new();
+            for (id, bytes) in m {
+                if let Some(ty) = schema.field_by_id(*id).and_then(|f| f.field_type.as_primitive_type()) {
+                    out.insert(*id, Datum::try_from_bytes(bytes, ty.clone())?);
+                }
+            }
+            Ok(out)
+        };
+        let counts = |m: &BTreeMap<i32, u64>| m.iter().map(|(k, v)| (*k, *v)).collect::<HashMap<_, _>>();
+        let mut b = DataFileBuilder::default();
+        b.content(DataContentType::Data)
+            .file_path(f.path.clone())
+            .file_format(DataFileFormat::Parquet)
+            .partition(partition_struct(f.partition))
+            .partition_spec_id(metadata.default_partition_spec_id())
+            .record_count(f.record_count)
+            .file_size_in_bytes(f.file_size)
+            .lower_bounds(typed(&f.lower_bounds)?)
+            .upper_bounds(typed(&f.upper_bounds)?)
+            .value_counts(counts(&f.value_counts))
+            .null_value_counts(counts(&f.null_counts))
+            .nan_value_counts(counts(&f.nan_counts))
+            .column_sizes(counts(&f.column_sizes));
+        if let Some(id) = f.sort_order_id {
+            b.sort_order_id(id);
+        }
+        if let Some(offsets) = &f.split_offsets {
+            b.split_offsets(Some(offsets.clone()));
+        }
+        let data_file = b.build().map_err(|e| {
+            Error::from(iceberg::Error::new(iceberg::ErrorKind::Unexpected, "building data file").with_source(e))
+        })?;
+        Ok(Self {
+            status: if entry.status == shared::Status::Added {
+                ManifestStatus::Added
+            } else {
+                ManifestStatus::Existing
+            },
+            data_file: Arc::new(data_file),
+            snapshot_id: entry.snapshot_id,
+            sequence_number: entry.sequence_number,
+            file_sequence_number: entry.file_sequence_number,
+        })
+    }
 }
 
 impl Table {

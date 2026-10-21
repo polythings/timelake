@@ -1,6 +1,7 @@
 //! The head object's container (spec 7): a fixed header naming the table version and the
 //! codec, then a format-neutral [`HeadDoc`] (string properties plus named Arrow tables) encoded by
-//! that codec. Shared by the engine, which writes heads, and the WebAssembly reader.
+//! that codec. What the sections hold is [`content`]'s (feature `write`). Shared by the engine and
+//! the WebAssembly reader and writer.
 //!
 //! Built-in codecs: `arrow` (Arrow IPC streams, zstd-compressed; the default) and `json` (readable,
 //! for debugging and tools without Arrow). Any format with an Arrow bridge (Avro, Vortex, BSON,
@@ -24,6 +25,9 @@ use arrow_select::concat::concat_batches;
 use serde::{Deserialize, Serialize};
 
 use crate::FormatError;
+
+#[cfg(feature = "write")]
+pub mod content;
 
 /// `Result` of head encoding and decoding.
 pub type Result<T, E = FormatError> = std::result::Result<T, E>;

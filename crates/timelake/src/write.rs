@@ -256,33 +256,11 @@ mod shared_iceberg_tests {
     use iceberg::spec::{FormatVersion, Manifest, ManifestList, ManifestStatus};
     use timelake_format::iceberg::{self as shared, ManifestContext, ManifestWrite, Status};
 
-    use super::file_partition;
     use crate::append::AppendOptions;
     use crate::testing::{T0, batch, faulty_lake, opts, schema};
 
     fn no_maintenance() -> AppendOptions {
         AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-    }
-
-    fn shared_file(f: &iceberg::spec::DataFile) -> shared::DataFile {
-        let bytes = |m: &std::collections::HashMap<i32, iceberg::spec::Datum>| {
-            m.iter().map(|(k, d)| (*k, d.to_bytes().unwrap().to_vec())).collect()
-        };
-        let counts = |m: &std::collections::HashMap<i32, u64>| m.iter().map(|(k, v)| (*k, *v)).collect();
-        shared::DataFile {
-            path: f.file_path().to_string(),
-            partition: file_partition(f),
-            record_count: f.record_count(),
-            file_size: f.file_size_in_bytes(),
-            column_sizes: counts(f.column_sizes()),
-            value_counts: counts(f.value_counts()),
-            null_counts: counts(f.null_value_counts()),
-            nan_counts: counts(f.nan_value_counts()),
-            lower_bounds: bytes(f.lower_bounds()),
-            upper_bounds: bytes(f.upper_bounds()),
-            split_offsets: f.split_offsets().map(<[i64]>::to_vec),
-            sort_order_id: f.sort_order_id(),
-        }
     }
 
     #[tokio::test]
@@ -305,7 +283,7 @@ mod shared_iceberg_tests {
         ours.sort_by(|a, b| a.file.path.cmp(&b.file.path));
         assert_eq!(ours.len(), theirs.len());
         for (o, e) in ours.iter().zip(&theirs) {
-            assert_eq!(*o.file, shared_file(&e.data_file));
+            assert_eq!(o.file, e.to_shared().unwrap().file);
             assert_eq!(
                 (o.snapshot_id, o.sequence_number, o.file_sequence_number),
                 (e.snapshot_id, e.sequence_number, e.file_sequence_number)
