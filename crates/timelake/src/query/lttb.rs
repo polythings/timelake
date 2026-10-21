@@ -9,8 +9,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Float64Array, ListArray, StructArray, TimestampMicrosecondArray};
-use arrow::buffer::OffsetBuffer;
+use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{ScalarValue, exec_err, plan_err};
@@ -20,7 +19,7 @@ use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::expressions::Literal;
 
-use super::m4::points;
+use super::m4::{points, points_list};
 
 /// The `lttb` aggregate function.
 pub(super) fn udaf() -> AggregateUDF {
@@ -116,18 +115,8 @@ fn downsample(points: &[(i64, f64)], n: usize) -> Vec<(i64, f64)> {
 
 impl LttbAccumulator {
     fn list(&self, points: &[(i64, f64)]) -> ScalarValue {
-        let DataType::List(item) = super::m4::points(self.tz.clone()) else { unreachable!("a list") };
-        let DataType::Struct(fields) = item.data_type().clone() else { unreachable!("a struct") };
-        let times =
-            TimestampMicrosecondArray::from_iter_values(points.iter().map(|p| p.0)).with_timezone_opt(self.tz.clone());
-        let values = Float64Array::from_iter_values(points.iter().map(|p| p.1));
-        let structs = StructArray::new(fields, vec![Arc::new(times) as ArrayRef, Arc::new(values)], None);
-        ScalarValue::List(Arc::new(ListArray::new(
-            item,
-            OffsetBuffer::from_lengths([points.len()]),
-            Arc::new(structs),
-            None,
-        )))
+        let (times, values) = points.iter().copied().unzip();
+        ScalarValue::List(Arc::new(points_list(times, values, [points.len()], self.tz.clone())))
     }
 }
 

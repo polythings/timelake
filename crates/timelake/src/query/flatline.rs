@@ -13,8 +13,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
-use arrow::buffer::OffsetBuffer;
+use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array};
 use arrow::compute::cast;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Float64Type, Int64Type, IntervalUnit, TimeUnit, TimestampMicrosecondType,
@@ -27,6 +26,7 @@ use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Grou
 use datafusion::physical_expr::expressions::Literal;
 
 use super::gaps::threshold_of_literal;
+use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 use super::time;
 
@@ -59,10 +59,10 @@ pub(crate) fn udaf(output: Output) -> AggregateUDF {
 }
 
 /// The type of one run.
-fn run_type() -> DataType {
+fn run_fields() -> Fields {
     let int = |name| Field::new(name, DataType::Int64, true);
     let float = |name| Field::new(name, DataType::Float64, false);
-    DataType::Struct(Fields::from(vec![
+    Fields::from(vec![
         int("first"),
         int("last"),
         float("first_value"),
@@ -71,12 +71,12 @@ fn run_type() -> DataType {
         int("tail_start"),
         int("count"),
         int("micros"),
-    ]))
+    ])
 }
 
 /// The state: a list of runs.
 fn state_type() -> DataType {
-    DataType::List(Arc::new(Field::new_list_field(run_type(), true)))
+    list_type(run_fields())
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -301,14 +301,11 @@ impl RunAggregate for Flatlines {
                 floats[1].push(r.last_value);
             }
         }
-        let DataType::Struct(fields) = run_type() else { unreachable!("a struct") };
         let [first, last, lead_end, tail_start, count, micros] =
             ints.map(|c| Arc::new(Int64Array::from(c)) as ArrayRef);
         let [first_value, last_value] = floats.map(|c| Arc::new(Float64Array::from(c)) as ArrayRef);
         let columns = vec![first, last, first_value, last_value, lead_end, tail_start, count, micros];
-        let runs = StructArray::new(fields, columns, None);
-        let field = Arc::new(Field::new_list_field(run_type(), true));
-        Arc::new(ListArray::new(field, OffsetBuffer::from_lengths(lengths), Arc::new(runs), None))
+        Arc::new(list_of_structs(run_fields(), columns, lengths))
     }
 
     fn results<'a>(&self, groups: impl Iterator<Item = &'a Runs<FlatRun>>) -> DfResult<ArrayRef> {
@@ -323,35 +320,25 @@ impl RunAggregate for Flatlines {
 
 /// Calls `add(row, run)` for each run in `lists`, a column of states.
 fn for_each_run(lists: &ArrayRef, mut add: impl FnMut(usize, FlatRun)) -> DfResult<()> {
-    let lists = lists.as_list::<i32>();
-    let Some(runs) = lists.values().as_any().downcast_ref::<StructArray>() else {
-        return exec_err!("expected lists of runs");
-    };
+    let Some((runs, items)) = list_items(lists) else { return exec_err!("expected lists of runs") };
     let int = |i: usize| runs.column(i).as_primitive::<Int64Type>();
     let float = |i: usize| runs.column(i).as_primitive::<Float64Type>();
     let (first, last, first_value, last_value) = (int(0), int(1), float(2), float(3));
     let (lead_end, tail_start, count, micros) = (int(4), int(5), int(6), int(7));
-    let offsets = lists.value_offsets();
-    for row in 0..lists.len() {
-        if lists.is_null(row) {
-            continue;
-        }
-        for i in offsets[row]..offsets[row + 1] {
-            let i = usize::try_from(i).unwrap_or(usize::MAX);
-            add(
-                row,
-                FlatRun {
-                    first: first.value(i),
-                    last: last.value(i),
-                    first_value: first_value.value(i),
-                    last_value: last_value.value(i),
-                    lead_end: lead_end.is_valid(i).then(|| lead_end.value(i)),
-                    tail_start: tail_start.value(i),
-                    count: count.value(i),
-                    micros: micros.value(i),
-                },
-            );
-        }
+    for (row, i) in items {
+        add(
+            row,
+            FlatRun {
+                first: first.value(i),
+                last: last.value(i),
+                first_value: first_value.value(i),
+                last_value: last_value.value(i),
+                lead_end: lead_end.is_valid(i).then(|| lead_end.value(i)),
+                tail_start: tail_start.value(i),
+                count: count.value(i),
+                micros: micros.value(i),
+            },
+        );
     }
     Ok(())
 }

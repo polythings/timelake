@@ -13,8 +13,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
-use arrow::buffer::OffsetBuffer;
+use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array};
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Int64Type, IntervalUnit, TimeUnit, TimestampMicrosecondType,
 };
@@ -26,6 +25,7 @@ use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Grou
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::prelude::{Expr, lit};
 
+use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 use super::time;
 
@@ -49,18 +49,18 @@ pub(crate) fn threshold_of_literal(value: &ScalarValue) -> Option<i64> {
 }
 
 /// The type of one run.
-fn run_type() -> DataType {
-    DataType::Struct(Fields::from(vec![
+fn run_fields() -> Fields {
+    Fields::from(vec![
         Field::new("first_time", DataType::Int64, false),
         Field::new("last_time", DataType::Int64, false),
         Field::new("gaps", DataType::Int64, false),
         Field::new("gap_micros", DataType::Int64, false),
-    ]))
+    ])
 }
 
 /// The state: a list of runs.
 pub(crate) fn state_type() -> DataType {
-    DataType::List(Arc::new(Field::new_list_field(run_type(), true)))
+    list_type(run_fields())
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -185,23 +185,11 @@ struct Gaps {
 
 /// Calls `add(row, run)` for each run in `lists`, a column of states.
 fn for_each_run(lists: &ArrayRef, mut add: impl FnMut(usize, GapRun)) -> DfResult<()> {
-    let lists = lists.as_list::<i32>();
-    let Some(runs) = lists.values().as_any().downcast_ref::<StructArray>() else {
-        return exec_err!("expected lists of runs");
-    };
+    let Some((runs, items)) = list_items(lists) else { return exec_err!("expected lists of runs") };
     let column = |i: usize| runs.column(i).as_primitive::<Int64Type>();
     let (first, last, gaps, micros) = (column(0), column(1), column(2), column(3));
-    let offsets = lists.value_offsets();
-    for row in 0..lists.len() {
-        if lists.is_null(row) {
-            continue;
-        }
-        for i in offsets[row]..offsets[row + 1] {
-            let i = usize::try_from(i).unwrap_or(usize::MAX);
-            let run =
-                GapRun { first: first.value(i), last: last.value(i), gaps: gaps.value(i), micros: micros.value(i) };
-            add(row, run);
-        }
+    for (row, i) in items {
+        add(row, GapRun { first: first.value(i), last: last.value(i), gaps: gaps.value(i), micros: micros.value(i) });
     }
     Ok(())
 }
@@ -243,11 +231,8 @@ impl RunAggregate for Gaps {
                 }
             }
         }
-        let DataType::Struct(fields) = run_type() else { unreachable!("a struct") };
         let columns = columns.map(|c| Arc::new(Int64Array::from(c)) as ArrayRef).to_vec();
-        let runs = StructArray::new(fields, columns, None);
-        let field = Arc::new(Field::new_list_field(run_type(), true));
-        Arc::new(ListArray::new(field, OffsetBuffer::from_lengths(lengths), Arc::new(runs), None))
+        Arc::new(list_of_structs(run_fields(), columns, lengths))
     }
 
     /// The state, joined, or each group's gaps.

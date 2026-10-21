@@ -107,7 +107,9 @@ impl AggregateUDFImpl for Selection {
                 Kind::First => (first_value_udaf(), f.params.filter.map(|e| *e)),
                 Kind::Last => (last_value_udaf(), f.params.filter.map(|e| *e)),
                 Kind::ValueAt => {
-                    let at = args.next().expect("value_at has three arguments");
+                    let Some(at) = args.next() else {
+                        return plan_err!("value_at takes the time, the value and a time");
+                    };
                     let until = time.lt_eq(at);
                     (last_value_udaf(), Some(f.params.filter.map_or(until.clone(), |e| e.and(until))))
                 }

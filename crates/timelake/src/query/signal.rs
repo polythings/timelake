@@ -24,8 +24,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray, StructArray};
-use arrow::buffer::OffsetBuffer;
+use arrow::array::{Array, ArrayRef, AsArray, Float64Array, Int64Array, ListArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{ScalarValue, exec_err, plan_datafusion_err, plan_err};
 use datafusion::error::Result as DfResult;
@@ -37,6 +36,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::physical_expr::expressions::Literal;
 
+use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
 /// What an aggregate returns from a group's joined segment, and how the signal moves between
@@ -71,8 +71,8 @@ fn growth(a: f64, b: f64) -> f64 {
 }
 
 /// The type of one segment.
-fn segment_type() -> DataType {
-    DataType::Struct(Fields::from(vec![
+fn segment_fields() -> Fields {
+    Fields::from(vec![
         Field::new("first_time", DataType::Int64, false),
         Field::new("first_value", DataType::Float64, false),
         Field::new("first_span", DataType::Int64, false),
@@ -83,12 +83,12 @@ fn segment_type() -> DataType {
         Field::new("penultimate_value", DataType::Float64, true),
         Field::new("area", DataType::Float64, false),
         Field::new("growth", DataType::Float64, false),
-    ]))
+    ])
 }
 
 /// The state: a list of segments.
 pub(crate) fn state_type() -> DataType {
-    DataType::List(Arc::new(Field::new_list_field(segment_type(), true)))
+    list_type(segment_fields())
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -339,36 +339,26 @@ impl Segment {
 
 /// Calls `add(row, segment)` for each segment in `lists`, a column of states.
 fn for_each_segment(lists: &ArrayRef, mut add: impl FnMut(usize, Segment)) -> DfResult<()> {
-    let lists = lists.as_list::<i32>();
-    let Some(segments) = lists.values().as_any().downcast_ref::<StructArray>() else {
-        return exec_err!("expected lists of segments");
-    };
+    let Some((segments, items)) = list_items(lists) else { return exec_err!("expected lists of segments") };
     let i64s = |i: usize| segments.column(i).as_primitive::<Int64Type>();
     let f64s = |i: usize| segments.column(i).as_primitive::<Float64Type>();
     let (first_t, first_v, first_span, second) = (i64s(0), f64s(1), i64s(2), f64s(3));
     let (last_t, last_v, last_span, penultimate) = (i64s(4), f64s(5), i64s(6), f64s(7));
     let (area, grown) = (f64s(8), f64s(9));
-    let offsets = lists.value_offsets();
-    for row in 0..lists.len() {
-        if lists.is_null(row) {
-            continue;
-        }
-        for i in offsets[row]..offsets[row + 1] {
-            let i = usize::try_from(i).unwrap_or(usize::MAX);
-            add(
-                row,
-                Segment {
-                    first: (first_t.value(i), first_v.value(i)),
-                    first_span: first_span.value(i),
-                    second: second.value(i),
-                    last: (last_t.value(i), last_v.value(i)),
-                    last_span: last_span.value(i),
-                    penultimate: penultimate.value(i),
-                    area: area.value(i),
-                    growth: grown.value(i),
-                },
-            );
-        }
+    for (row, i) in items {
+        add(
+            row,
+            Segment {
+                first: (first_t.value(i), first_v.value(i)),
+                first_span: first_span.value(i),
+                second: second.value(i),
+                last: (last_t.value(i), last_v.value(i)),
+                last_span: last_span.value(i),
+                penultimate: penultimate.value(i),
+                area: area.value(i),
+                growth: grown.value(i),
+            },
+        );
     }
     Ok(())
 }
@@ -411,11 +401,8 @@ fn states<'a>(groups: impl Iterator<Item = &'a Runs<Segment>>) -> ListArray {
     let [first_span, last_span] = spans.map(|c| Arc::new(Int64Array::from(c)) as ArrayRef);
     let [first_v, last_v, area, grown] = values.map(|v| Arc::new(Float64Array::from(v)) as ArrayRef);
     let [second, penultimate] = optionals.map(|v| Arc::new(Float64Array::from(v)) as ArrayRef);
-    let DataType::Struct(fields) = segment_type() else { unreachable!("a struct") };
     let columns = vec![first_t, first_v, first_span, second, last_t, last_v, last_span, penultimate, area, grown];
-    let segments = StructArray::new(fields, columns, None);
-    let field = Arc::new(Field::new_list_field(segment_type(), true));
-    ListArray::new(field, OffsetBuffer::from_lengths(lengths), Arc::new(segments), None)
+    list_of_structs(segment_fields(), columns, lengths)
 }
 
 /// A signal aggregate's output by its method, as a run aggregate.

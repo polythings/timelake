@@ -14,10 +14,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, Float64Array, ListArray, StructArray, TimestampMicrosecondArray,
-};
-use arrow::buffer::OffsetBuffer;
+use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array, ListArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Float64Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{ScalarValue, exec_err, plan_err};
 use datafusion::error::Result as DfResult;
@@ -26,6 +23,8 @@ use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{
     Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
 };
+
+use super::lists::{list_items, list_of_structs, list_type};
 
 /// The `m4` aggregate function.
 pub(crate) fn m4_udaf() -> AggregateUDF {
@@ -37,17 +36,29 @@ struct M4 {
     signature: Signature,
 }
 
-/// The type of one point: `{time, value}`.
-fn point(tz: Option<Arc<str>>) -> DataType {
-    DataType::Struct(Fields::from(vec![
+/// The fields of one point: `{time, value}`.
+fn point_fields(tz: Option<Arc<str>>) -> Fields {
+    Fields::from(vec![
         Field::new("time", DataType::Timestamp(TimeUnit::Microsecond, tz), true),
         Field::new("value", DataType::Float64, true),
-    ]))
+    ])
 }
 
 /// The type `m4` returns: a list of points.
 pub(super) fn points(tz: Option<Arc<str>>) -> DataType {
-    DataType::List(Arc::new(Field::new_list_field(point(tz), true)))
+    list_type(point_fields(tz))
+}
+
+/// `points`, one list of `(time, value)` per row of `lengths`, as `m4` returns them.
+pub(super) fn points_list(
+    times: Vec<i64>,
+    values: Vec<f64>,
+    lengths: impl IntoIterator<Item = usize>,
+    tz: Option<Arc<str>>,
+) -> ListArray {
+    let times = TimestampMicrosecondArray::from(times).with_timezone_opt(tz.clone());
+    let columns = vec![Arc::new(times) as ArrayRef, Arc::new(Float64Array::from(values))];
+    list_of_structs(point_fields(tz), columns, lengths)
 }
 
 /// The time zone of the points a call works on: its time argument's, or its points'.
@@ -170,21 +181,14 @@ fn for_each_point(columns: &[ArrayRef], mut add: impl FnMut(usize, Point)) -> Df
             }
         }
         [lists] => {
-            let lists = lists.as_list::<i32>();
-            let Some(points) = lists.values().as_any().downcast_ref::<StructArray>() else {
+            let Some((points, items)) = list_items(lists) else {
                 return exec_err!("m4 merges lists of {{time, value}}");
             };
             let times = points.column(0).as_primitive::<TimestampMicrosecondType>();
             let values = points.column(1).as_primitive::<Float64Type>();
-            for row in 0..lists.len() {
-                if lists.is_null(row) {
-                    continue;
-                }
-                for i in lists.value_offsets()[row]..lists.value_offsets()[row + 1] {
-                    let i = usize::try_from(i).unwrap_or(usize::MAX);
-                    if points.is_valid(i) && times.is_valid(i) && values.is_valid(i) {
-                        add(row, (times.value(i), values.value(i)));
-                    }
+            for (row, i) in items {
+                if points.is_valid(i) && times.is_valid(i) && values.is_valid(i) {
+                    add(row, (times.value(i), values.value(i)));
                 }
             }
         }
@@ -204,12 +208,7 @@ fn lists<'a>(groups: impl Iterator<Item = &'a Extremes>, tz: Option<Arc<str>>) -
             values.push(v);
         }
     }
-    let DataType::Struct(fields) = point(tz.clone()) else { unreachable!("a struct") };
-    let times = TimestampMicrosecondArray::from(times).with_timezone_opt(tz.clone());
-    let structs =
-        StructArray::new(fields, vec![Arc::new(times) as ArrayRef, Arc::new(Float64Array::from(values))], None);
-    let field = Arc::new(Field::new_list_field(point(tz), true));
-    ListArray::new(field, OffsetBuffer::from_lengths(lengths), Arc::new(structs), None)
+    points_list(times, values, lengths, tz)
 }
 
 /// One group at a time (DataFusion's fallback, e.g. without `GROUP BY`).

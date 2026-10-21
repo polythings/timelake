@@ -24,6 +24,7 @@ mod gapfill;
 mod gaps;
 mod histogram;
 mod in_list;
+mod lists;
 mod lttb;
 mod m4;
 mod moments;
