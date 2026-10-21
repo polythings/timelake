@@ -1,4 +1,4 @@
-//! Iceberg table metadata (`vN.metadata.json`), and manifests read by lakebed (`lakebed_iceberg`),
+//! Iceberg table metadata (`vN.metadata.json`), and manifests read by lakekit (`lakekit_iceberg`),
 //! without iceberg-rust, so the reader stays small and compiles to WebAssembly.
 
 use std::cmp::Reverse;
@@ -182,12 +182,12 @@ pub struct ManifestRef {
 
 /// Parses a manifest list (`snap-….avro`).
 pub fn parse_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
-    Ok(lakebed_iceberg::read_manifest_list(bytes)?
+    Ok(lakekit_iceberg::read_manifest_list(bytes)?
         .into_iter()
         .map(|m| ManifestRef {
             content: match m.content {
-                lakebed_iceberg::ManifestContent::Data => ManifestContent::Data,
-                lakebed_iceberg::ManifestContent::Deletes => ManifestContent::Deletes,
+                lakekit_iceberg::ManifestContent::Data => ManifestContent::Data,
+                lakekit_iceberg::ManifestContent::Deletes => ManifestContent::Deletes,
             },
             path: m.path,
             length: m.length,
@@ -230,11 +230,11 @@ fn bounds(by_field_id: &BTreeMap<i32, Vec<u8>>, by_id: &HashMap<i32, &Field>, up
 /// Parses a data manifest; returns its live (not deleted) data files.
 pub fn parse_manifest(bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
     let by_id: HashMap<i32, &Field> = schema.iter().map(|f| (f.id, f)).collect();
-    let entries = lakebed_iceberg::read_manifest(&lakebed_iceberg::ManifestFile::default(), bytes)?;
+    let entries = lakekit_iceberg::read_manifest(&lakekit_iceberg::ManifestFile::default(), bytes)?;
     Ok(entries
         .into_iter()
         // Timelake writes no delete files.
-        .filter(|e| e.status != lakebed_iceberg::Status::Deleted && e.file.content == lakebed_iceberg::Content::Data)
+        .filter(|e| e.status != lakekit_iceberg::Status::Deleted && e.file.content == lakekit_iceberg::Content::Data)
         .map(|e| DataFile {
             path: e.file.path.clone(),
             size: e.file.file_size,

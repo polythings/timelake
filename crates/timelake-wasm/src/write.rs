@@ -13,7 +13,7 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
-use lakebed_iceberg::{Error as HostError, Result as HostResult};
+use lakekit_iceberg::{Error as HostError, Result as HostResult};
 use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};

@@ -12,9 +12,9 @@ pub enum Error {
     Metadata(#[from] serde_json::Error),
     #[error("bad table contract: {0}")]
     Contract(#[from] FormatError),
-    /// A manifest or manifest list (lakebed reads them).
+    /// A manifest or manifest list (lakekit reads them).
     #[error("{0}")]
-    Iceberg(#[from] lakebed_iceberg::Error),
+    Iceberg(#[from] lakekit_iceberg::Error),
     #[error("Parquet: {0}")]
     Parquet(#[from] ParquetError),
     #[error("Arrow: {0}")]

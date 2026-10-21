@@ -1,9 +1,9 @@
-//! Iceberg manifests through lakebed (`lakebed_iceberg`, which reads and writes them without
+//! Iceberg manifests through lakekit (`lakekit_iceberg`, which reads and writes them without
 //! iceberg-rust, as WebAssembly needs), and Timelake's single time partition in a file's partition
 //! tuple.
 
-use lakebed_iceberg::Datum;
-pub use lakebed_iceberg::{DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
+use lakekit_iceberg::Datum;
+pub use lakekit_iceberg::{DataFile, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 
 use crate::Chunk;
 

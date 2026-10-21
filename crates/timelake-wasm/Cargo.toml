@@ -28,7 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
 thiserror = "2"
-lakebed-iceberg = { version = "0.1", default-features = false }
+lakekit-iceberg = { version = "0.1", default-features = false }
 bytes = "1"
 arrow-arith = "58"
 arrow-array = "58"
@@ -44,10 +44,10 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
-# Until lakebed 0.1.0 is on crates.io (polythings/lakebed#7), as in the root Cargo.toml.
+# Until lakekit 0.1.0 is on crates.io (polythings/lakekit#7), as in the root Cargo.toml.
 [patch.crates-io]
-lakebed-core = { git = "https://github.com/polythings/lakebed", rev = "ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5" }
-lakebed-iceberg = { git = "https://github.com/polythings/lakebed", rev = "ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5" }
+lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "a5db84b2fd591d591d20d3047055983a2274bdbb" }
+lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "a5db84b2fd591d591d20d3047055983a2274bdbb" }
 
 [profile.release]
 opt-level = "s"

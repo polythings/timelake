@@ -652,22 +652,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "lakebed-core"
+name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakebed?rev=ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5#ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5"
+source = "git+https://github.com/polythings/lakekit?rev=a5db84b2fd591d591d20d3047055983a2274bdbb#a5db84b2fd591d591d20d3047055983a2274bdbb"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "lakebed-iceberg"
+name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakebed?rev=ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5#ec633b4ef76a0b7bf662968c4414c3b9bdec5ab5"
+source = "git+https://github.com/polythings/lakekit?rev=a5db84b2fd591d591d20d3047055983a2274bdbb#a5db84b2fd591d591d20d3047055983a2274bdbb"
 dependencies = [
  "apache-avro",
  "arrow-schema",
  "futures-util",
- "lakebed-core",
+ "lakekit-core",
  "parquet",
  "serde_json",
 ]
@@ -1192,8 +1192,8 @@ dependencies = [
  "bytes",
  "chrono",
  "futures-util",
- "lakebed-core",
- "lakebed-iceberg",
+ "lakekit-core",
+ "lakekit-iceberg",
  "parquet",
  "serde",
  "serde_json",
@@ -1217,7 +1217,7 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "js-sys",
- "lakebed-iceberg",
+ "lakekit-iceberg",
  "parquet",
  "serde",
  "serde-wasm-bindgen",

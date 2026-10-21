@@ -1,5 +1,5 @@
 //! Commits for the shared write path: the engine's commit protocol (`timelake::commit`), run by
-//! lakebed's (`lakebed_iceberg::commit`) with Timelake's parts as hooks. Every file of a snapshot
+//! lakekit's (`lakekit_iceberg::commit`) with Timelake's parts as hooks. Every file of a snapshot
 //! (manifests, manifest list, last-value index) is uploaded at once, then `vN+1.metadata.json` is
 //! written only if absent. When another writer got there first, the commit reloads the table (from
 //! the head when it is current) and tries again on top of it. The version hint and the head are
@@ -13,7 +13,7 @@ use arrow_cast::cast;
 use arrow_ord::cmp::gt_eq;
 use arrow_schema::DataType;
 use arrow_select::filter::filter_record_batch;
-use lakebed_iceberg::{CommitHooks, CommitOptions, Extra, Table};
+use lakekit_iceberg::{CommitHooks, CommitOptions, Extra, Table};
 
 use crate::error::{WriteError, WriteResult};
 use crate::host::{Host, uuid_v4};
@@ -23,7 +23,7 @@ use crate::rows::merge_latest;
 use crate::summary;
 use crate::table::{TableState, encode_index};
 
-pub(crate) use lakebed_iceberg::commit::put_metadata;
+pub(crate) use lakekit_iceberg::commit::put_metadata;
 
 /// What a commit changes.
 #[derive(Clone, Debug)]
@@ -55,16 +55,16 @@ pub enum Change {
 }
 
 impl Change {
-    /// The change as lakebed commits it.
-    fn iceberg(&self) -> lakebed_iceberg::Change {
+    /// The change as lakekit commits it.
+    fn iceberg(&self) -> lakekit_iceberg::Change {
         match self {
-            Self::Append { files, .. } => lakebed_iceberg::Change::Append { files: files.clone() },
-            Self::Replace { removed, added, sequence_numbers } => lakebed_iceberg::Change::Replace {
+            Self::Append { files, .. } => lakekit_iceberg::Change::Append { files: files.clone() },
+            Self::Replace { removed, added, sequence_numbers } => lakekit_iceberg::Change::Replace {
                 removed: removed.clone(),
                 added: added.clone(),
                 sequence_numbers: sequence_numbers.clone(),
             },
-            Self::Delete { removed, .. } => lakebed_iceberg::Change::Delete { removed: removed.clone() },
+            Self::Delete { removed, .. } => lakekit_iceberg::Change::Delete { removed: removed.clone() },
         }
     }
 }
@@ -137,7 +137,7 @@ pub async fn commit<H: Host, S: BuildHasher>(
     let mut hooks = TimelakeHooks { state: base, change, props, index: None };
     let props: HashMap<String, String> = props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let (table, info) =
-        lakebed_iceberg::commit(host, table, &change.iceberg(), &props, &CommitOptions::default(), &mut hooks).await?;
+        lakekit_iceberg::commit(host, table, &change.iceberg(), &props, &CommitOptions::default(), &mut hooks).await?;
     let info = CommitInfo {
         snapshot_id: info.snapshot_id,
         version: info.version,

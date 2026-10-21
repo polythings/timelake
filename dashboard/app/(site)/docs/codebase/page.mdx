@@ -30,7 +30,7 @@ What lives where, which technologies are used and why, and how a write and a que
 | Path | Language | What it is |
 | --- | --- | --- |
 | `crates/timelake` | Rust | The engine: storage, catalog, writer, commits, maintenance, and the SQL reader. Everything else wraps or mirrors it. |
-| `crates/timelake-format` | Rust | Shared rules with no I/O: the table contract (time column, series key, …), time-partition math, decoding Iceberg min/max values, and the write path the WASM writer uses (on lakebed's Iceberg layer). Used by the engine and the WASM reader. |
+| `crates/timelake-format` | Rust | Shared rules with no I/O: the table contract (time column, series key, …), time-partition math, decoding Iceberg min/max values, and the write path the WASM writer uses (on lakekit's Iceberg layer). Used by the engine and the WASM reader. |
 | `crates/timelake-cli` | Rust | The timelake command. Parses arguments, reads CSV/Parquet, calls the engine, prints results. |
 | `crates/timelake-py` | Rust + Python | The Python package. Thin bindings over the engine (PyO3), built with maturin. |
 | `crates/timelake-wasm` | Rust | A small read-only engine for browsers and JavaScript, compiled to WebAssembly. It does no network I/O itself. |
@@ -51,7 +51,7 @@ What lives where, which technologies are used and why, and how a write and a que
 | `Apache Arrow (arrow-rs)` | In-memory columns | The common format between the writer, the query engine, Python, and DuckDB |
 | `Apache Parquet (parquet-rs)` | Data files | Column storage with compression and min/max statistics |
 | `Apache Iceberg (iceberg-rust 0.10)` | Table metadata types | Timelake uses its types to read and write metadata, but writes its own commits (iceberg-rust only supports simple appends) |
-| `lakebed` | Iceberg in the WASM reader and writer | Reads and writes manifests, metadata and commits without I/O of its own, so it builds for WebAssembly (iceberg-rust doesn't); its tests check iceberg-rust reads what it writes |
+| `lakekit` | Iceberg in the WASM reader and writer | Reads and writes manifests, metadata and commits without I/O of its own, so it builds for WebAssembly (iceberg-rust doesn't); its tests check iceberg-rust reads what it writes |
 | `object_store` | All file I/O | One interface for S3, GCS, Azure, HTTP, and local disk |
 | `Apache DataFusion 54` | SQL engine | Embeddable and extensible: Timelake adds a table provider and a query-rewrite rule |
 | `Tokio` | Async runtime | Runs many storage requests in parallel |
@@ -128,7 +128,7 @@ Tests live next to the code (`#[cfg(test)]` modules, with test storage in `testi
 The WASM module never makes network requests. The TypeScript client fetches bytes and hands them in, which keeps the module small and identical in every JavaScript runtime:
 
 1. The client fetches `version-hint.text` and `vN.metadata.json`; `new Table(json)` parses it (`meta.rs`).
-2. The client fetches the manifest list and manifests; the module parses them (Avro, with lakebed) into a list of files.
+2. The client fetches the manifest list and manifests; the module parses them (Avro, with lakekit) into a list of files.
 3. `planFiles(query)` drops files whose min/max values can't match (`prune.rs`).
 4. For each file, the client fetches the end of the file (the footer). `ParquetFile.plan` (`file.rs`) returns the byte ranges of the row groups and columns needed. The client fetches just those ranges.
 5. `Query.push` decodes and filters each file (`filter.rs`) and collects rows, time buckets (`aggregate.rs`), or the newest row per series (`latest.rs`); `finish` returns JSON rows (`output.rs`). The client validates them with Zod if a schema was given.

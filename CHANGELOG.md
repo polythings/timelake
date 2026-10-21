@@ -113,7 +113,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 ### Changed
 
 - The WASM reader and the writer for JavaScript runtimes read and write Iceberg manifests, manifest lists and table
-  metadata through [lakebed](https://github.com/polythings/lakebed), a separate project for table formats without
+  metadata through [lakekit](https://github.com/polythings/lakekit), a separate project for table formats without
   I/O of their own. The files they write are the same as before.
 - Appends convert a column to the table's type only where no value is lost. A value that doesn't fit (an integer out
   of range, text that doesn't parse, a fraction for an integer column, an integer above 2^53 for a double) is an error

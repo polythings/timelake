@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use common::{DAY, T0, batch, opts, rows, scalar_i64, schema, temp_lake};
-use lakebed_core::{Error as HostError, Result as HostResult};
+use lakekit_core::{Error as HostError, Result as HostResult};
 use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};

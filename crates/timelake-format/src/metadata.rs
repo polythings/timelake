@@ -1,9 +1,9 @@
-//! Iceberg table metadata through lakebed (`lakebed_iceberg::Metadata`: read as JSON, so fields
+//! Iceberg table metadata through lakekit (`lakekit_iceberg::Metadata`: read as JSON, so fields
 //! Timelake doesn't know are kept, and updated the way iceberg-rust's metadata builder updates it),
 //! and what Timelake reads from it: the contract, batch ids, and last-value indexes.
 
-pub use lakebed_iceberg::arrow::FIELD_ID_KEY;
-pub use lakebed_iceberg::metadata::{Metadata, NewSnapshot};
+pub use lakekit_iceberg::arrow::FIELD_ID_KEY;
+pub use lakekit_iceberg::metadata::{Metadata, NewSnapshot};
 
 use crate::error::WriteResult;
 use crate::{Contract, summary};

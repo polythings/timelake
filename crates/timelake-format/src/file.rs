@@ -1,6 +1,6 @@
 //! Writing Timelake data files without I/O, shared by the engine and the WASM writer (spec 13):
 //! the Parquet settings for time series, a file writer whose bytes the caller drains and uploads,
-//! and the Iceberg statistics of a written file (lakebed's, as iceberg-rust's writer computes them).
+//! and the Iceberg statistics of a written file (lakekit's, as iceberg-rust's writer computes them).
 //!
 //! On native targets a row group's columns are encoded on threads of their own; on WebAssembly,
 //! one after another.
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch};
 use arrow_schema::{DataType, SchemaRef};
-use lakebed_iceberg::stats::{ParquetStats, field_id};
+use lakekit_iceberg::stats::{ParquetStats, field_id};
 use parquet::arrow::ArrowSchemaConverter;
 use parquet::arrow::arrow_writer::{
     ArrowColumnChunk, ArrowColumnWriter, ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves,

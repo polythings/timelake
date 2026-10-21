@@ -14,7 +14,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
-use lakebed_iceberg::Table;
+use lakekit_iceberg::Table;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::{Compression, ZstdLevel};
@@ -29,7 +29,7 @@ use crate::metadata::{Metadata, TimelakeMetadata};
 use crate::rows::align_batch;
 use crate::{Chunk, Contract, summary};
 
-pub use lakebed_iceberg::table::{hint_uri, metadata_uri};
+pub use lakekit_iceberg::table::{hint_uri, metadata_uri};
 
 /// A table at one committed version.
 #[derive(Clone, Debug)]
@@ -62,7 +62,7 @@ impl TableState {
     pub async fn load<H: Host>(host: &H, location: &str) -> WriteResult<Self> {
         let prefix = format!("{location}/metadata/v");
         let (head, listed) = futures_util::future::join(host.get(&head_uri(location)), host.list(&prefix)).await;
-        let newest = listed?.iter().filter_map(|o| lakebed_iceberg::table::metadata_version(&o.uri)).max();
+        let newest = listed?.iter().filter_map(|o| lakekit_iceberg::table::metadata_version(&o.uri)).max();
         let Some(newest) = newest else { return Err(WriteError::NotFound(location.to_string())) };
         if let Some(state) = head?.and_then(|bytes| decode_head(location, &bytes).ok())
             && state.version >= newest
@@ -95,7 +95,7 @@ impl TableState {
         })
     }
 
-    /// This version as lakebed sees it (what a commit builds on).
+    /// This version as lakekit sees it (what a commit builds on).
     pub fn table(&self) -> Table {
         Table { files: self.files.clone(), ..Table::new(self.location.clone(), self.version, self.metadata.clone()) }
     }

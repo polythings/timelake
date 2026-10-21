@@ -1,8 +1,8 @@
-//! What the shared write path needs from where it runs: lakebed's [`Host`] (an object store, a
+//! What the shared write path needs from where it runs: lakekit's [`Host`] (an object store, a
 //! clock, randomness, and a way to wait), and the limits of the place it runs ([`WriteHost`]). The
 //! WASM writer implements them over JavaScript (an R2 binding, `fetch`), tests over memory.
 
-pub use lakebed_core::{Host, Listed, MemoryHost, MemoryUpload, Upload, uuid_v4, uuid_v7};
+pub use lakekit_core::{Host, Listed, MemoryHost, MemoryUpload, Upload, uuid_v4, uuid_v7};
 
 /// A [`Host`] with the limits of where the write path runs.
 pub trait WriteHost: Host {
