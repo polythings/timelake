@@ -31,6 +31,7 @@ import {
   hintUri,
   memoryBytes,
   metadataUri,
+  tableLocation,
   version as wasmVersion,
 } from "./wasm/timelake_wasm.js"
 
@@ -324,7 +325,7 @@ type Loaded = {
 export class TableHandle<T = Row> {
   private loaded: Promise<Loaded> | null = null
   private loadedAt = 0
-  private readonly location: string
+  #location: string | undefined
   /** Statistics of the last query, the requests that loaded the table version included. */
   lastStats: QueryStats = emptyStats()
 
@@ -333,12 +334,18 @@ export class TableHandle<T = Row> {
     readonly name: string,
     private schema?: z.ZodType,
   ) {
-    const { namespace, name: table } = parseTableName(name)
-    this.location = `${lake.url}/${namespace}/${table}`
+    // Checked now, before the WebAssembly module may be loaded, so a bad name fails here.
+    parseTableName(name)
+  }
+
+  /** The table's root URI, as the module builds it. */
+  private get location(): string {
+    ensureWasm()
+    this.#location ??= tableLocation(this.lake.url, this.name)
+    return this.#location
   }
 
   private metadataUrl(version: number): string {
-    ensureWasm()
     return metadataUri(this.location, version)
   }
 
