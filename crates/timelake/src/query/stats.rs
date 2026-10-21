@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn bounds_convert_to_the_column_type() {
-        let utc = Some(Arc::from("+00:00"));
+        let utc = Some(Arc::from(timelake_format::rows::UTC));
         let cases = [
             (Datum::bool(true), DataType::Boolean, ScalarValue::Boolean(Some(true))),
             (Datum::int(7), DataType::Int32, ScalarValue::Int32(Some(7))),

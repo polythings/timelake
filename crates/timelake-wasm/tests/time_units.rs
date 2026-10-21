@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use timelake_format::head::built_in;
 use timelake_format::head::content::HeadBuilder;
 use timelake_format::iceberg::{DataFile, Entry, Status};
+use timelake_format::rows::UTC;
 use timelake_wasm::{Collector, FileReader, Head, QuerySpec, plan_files};
 
 /// 2026-01-01T00:00:00Z in microseconds.
@@ -65,13 +66,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn nanosecond_time_columns() {
     let nanos: Vec<i64> = (0..4).map(|h| (T0 + h * HOUR) * 1000).collect();
-    check(&file(Arc::new(TimestampNanosecondArray::from(nanos).with_timezone("+00:00"))));
+    check(&file(Arc::new(TimestampNanosecondArray::from(nanos).with_timezone(UTC))));
 }
 
 #[test]
 fn millisecond_time_columns() {
     let millis: Vec<i64> = (0..4).map(|h| (T0 + h * HOUR) / 1000).collect();
-    check(&file(Arc::new(TimestampMillisecondArray::from(millis).with_timezone("+00:00"))));
+    check(&file(Arc::new(TimestampMillisecondArray::from(millis).with_timezone(UTC))));
 }
 
 /// A head listing one file whose `timestamptz_ns` column spans `[lower, upper]` nanoseconds.

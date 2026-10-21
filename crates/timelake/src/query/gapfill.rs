@@ -26,6 +26,7 @@ use datafusion::logical_expr::simplify::SimplifyContextBuilder;
 use datafusion::logical_expr::{PartitionEvaluator, Signature, TypeSignature, Volatility, WindowUDF, WindowUDFImpl};
 use datafusion::optimizer::simplify_expressions::ExprSimplifier;
 use datafusion::prelude::Expr;
+use timelake_format::rows::UTC;
 
 use super::time;
 
@@ -69,7 +70,7 @@ impl TableFunctionImpl for TimeBuckets {
             return plan_err!("time_buckets would make {count} buckets, more than {MAX_BUCKETS}");
         }
         let buckets =
-            TimestampMicrosecondArray::from_iter_values((0..count).map(|i| first + i * width)).with_timezone("+00:00");
+            TimestampMicrosecondArray::from_iter_values((0..count).map(|i| first + i * width)).with_timezone(UTC);
         let schema = Arc::new(Schema::new(vec![Field::new("bucket", buckets.data_type().clone(), false)]));
         let batch = arrow::array::RecordBatch::try_new(schema.clone(), vec![Arc::new(buckets)])?;
         Ok(Arc::new(MemTable::try_new(schema, vec![vec![batch]])?))
