@@ -110,6 +110,12 @@ impl CachedStore {
         }
     }
 
+    /// What names the store in disk keys.
+    #[cfg(test)]
+    pub(crate) fn scope(&self) -> &str {
+        &self.scope
+    }
+
     pub(crate) fn stats(&self) -> CacheStats {
         let c = &self.counters;
         CacheStats {

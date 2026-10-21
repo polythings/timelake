@@ -157,6 +157,8 @@ impl Storage {
         }
         // Stores that can list an exact name, and whether that is their faster check.
         let mut lister: Option<(Arc<dyn PaginatedListStore>, bool)> = None;
+        // The endpoint requests go to, where the store has one besides its URL.
+        let mut endpoint: Option<String> = None;
         let store: Arc<dyn ObjectStore> = match scheme {
             "file" => Arc::new(LocalFileSystem::new()),
             // Plain HTTPS (public buckets, Vercel Blob, CDNs): read-only, and it cannot list,
@@ -182,11 +184,11 @@ impl Storage {
                 }
                 // The endpoint requests go to: object_store prefers the S3-specific one
                 // (`AWS_ENDPOINT_URL_S3`, which Fly.io and the Tigris CLI set) over the generic one.
-                let endpoint = b
+                endpoint = b
                     .get_config_value(&AmazonS3ConfigKey::S3Endpoint)
                     .or_else(|| b.get_config_value(&AmazonS3ConfigKey::Endpoint))
-                    .unwrap_or_default();
-                let tigris = ["tigris", "storage.dev"].iter().any(|t| endpoint.contains(t));
+                    .filter(|e| !e.is_empty());
+                let tigris = endpoint.as_ref().is_some_and(|e| ["tigris", "storage.dev"].iter().any(|t| e.contains(t)));
                 let s3 = Arc::new(b.build()?);
                 lister = Some((s3.clone(), tigris));
                 s3
@@ -216,7 +218,8 @@ impl Storage {
             other => return Err(Error::config(format!("unsupported storage scheme {other:?}"))),
         };
         let listable = !matches!(scheme, "http" | "https");
-        let (store, cached) = with_cache(store, &base, &options, cache);
+        let endpoint = endpoint.or_else(|| options.get("endpoint").cloned());
+        let (store, cached) = with_cache(store, &base, endpoint.as_deref(), cache);
         let mut storage = Self::new(store, base, listable)?;
         storage.cache = cached;
         storage.check = match (&lister, check) {
@@ -814,13 +817,11 @@ fn read_options(options: &mut HashMap<String, String>) -> Result<(Option<bool>, 
 fn with_cache(
     store: Arc<dyn ObjectStore>,
     base: &str,
-    options: &HashMap<String, String>,
+    endpoint: Option<&str>,
     config: Option<CacheConfig>,
 ) -> (Arc<dyn ObjectStore>, Option<Arc<CachedStore>>) {
     let Some(config) = config else { return (store, None) };
     // Two stores never share disk blocks: the scope names the endpoint as well as the bucket.
-    let endpoint =
-        ["aws_endpoint_url_s3", "aws_endpoint", "endpoint", "aws_endpoint_url"].iter().find_map(|k| options.get(*k));
     let scope = endpoint.map_or_else(|| base.to_string(), |e| format!("{base}@{e}"));
     let cache = Arc::new(CachedStore::new(store, scope, config));
     (Arc::new(Cached(cache.clone())), Some(cache))
@@ -957,6 +958,23 @@ mod tests {
         let fast = Storage::open(&Url::parse("s3://b").unwrap(), HashMap::from([("aws_region".into(), "x".into())]));
         let fast = fast.unwrap();
         assert_eq!((fast.warm_connections, fast.list_on_load), (0, true));
+    }
+
+    /// The disk cache's keys name the endpoint requests go to, however it was given (here as
+    /// `endpoint_url`, which the S3 builder reads like `aws_endpoint`).
+    #[test]
+    fn the_cache_scope_names_the_endpoint() {
+        let scope = |key: &str| {
+            let options = HashMap::from([
+                (key.to_string(), "https://a.example".to_string()),
+                ("aws_region".to_string(), "auto".to_string()),
+            ]);
+            let s = Storage::open(&Url::parse("s3://b").unwrap(), options).unwrap();
+            s.cache.unwrap().scope().to_string()
+        };
+        for key in ["aws_endpoint", "endpoint_url", "aws_endpoint_url_s3"] {
+            assert_eq!(scope(key), "s3://b@https://a.example", "{key}");
+        }
     }
 
     #[tokio::test]

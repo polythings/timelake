@@ -182,6 +182,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   first (or a store kept reporting the version as taken). They now back off and give up with a conflict error after 10
   attempts, as commits do.
 - A table with `head-format = none` sent a DELETE of its head after every commit. Each process now deletes it once.
+- The disk cache keyed S3 objects by the endpoint only when it was given in a few option names, not when it came from
+  `AWS_ENDPOINT_URL`/`AWS_ENDPOINT_URL_S3` or as `endpoint_url`: two endpoints with the same bucket name could then
+  share cached blocks. The endpoint now comes from the same place as the store's own.
 
 ### Changed
 
