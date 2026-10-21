@@ -27,7 +27,7 @@ use datafusion::logical_expr::{Expr, LogicalPlan, TableProviderFilterPushDown, T
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
-use datafusion::physical_optimizer::pruning::PruningPredicate;
+use datafusion::physical_optimizer::pruning::PruningPredicateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
@@ -581,7 +581,9 @@ impl<'a> Scan<'a> {
         let Some(predicate) = conjunction(filters.iter().cloned()) else { return Ok(vec![true; files.len()]) };
         let schema = table.schema();
         let df_schema = DFSchema::try_from(schema.as_ref().clone())?;
-        let predicate = PruningPredicate::try_new(state.create_physical_expr(predicate, &df_schema)?, schema.clone())?;
+        let predicate = PruningPredicateBuilder::new()
+            .with_file_schema(schema.clone())
+            .try_build(state.create_physical_expr(predicate, &df_schema)?)?;
         predicate.prune(&FileStats::new(&schema, files))
     }
 
@@ -785,7 +787,7 @@ impl Ranked {
         // the insertion time; with the rank (constant per file) that is the merge order.
         let order = table.contract().write_order();
         let rank_field = Arc::new(Field::new(RANK, DataType::UInt32, false));
-        let table_schema = TableSchema::new(schema.clone(), vec![rank_field]);
+        let table_schema = TableSchema::builder(schema.clone()).with_table_partition_cols(vec![rank_field]).build();
         let with_rank = table_schema.table_schema().clone();
         let mut source = ParquetSource::new(table_schema);
         if let Some(predicate) = conjunction(filters.iter().cloned()) {

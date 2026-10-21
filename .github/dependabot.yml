@@ -26,9 +26,9 @@ updates:
     groups:
       cargo: { update-types: [minor, patch] }
     ignore:
-      # iceberg (pinned with =) fixes the Arrow, Parquet and Avro versions; DataFusion, object_store and PyO3 (through
-      # arrow-pyarrow, with pythonize) follow Arrow. Dependabot proposes iceberg itself: move these with it, by hand.
-      # Before 1.0 a minor version (0.13 → 0.14) is breaking.
+      # DataFusion fixes the Arrow, Parquet and object_store versions; PyO3 (through arrow-pyarrow, with pythonize)
+      # follows Arrow, and iceberg is polythings-iceberg, raised to the same Arrow. Move these together, by hand,
+      # when a DataFusion major comes out. Before 1.0 a minor version (0.13 → 0.14) is breaking.
       - { dependency-name: "arrow*", update-types: [version-update:semver-major] }
       - { dependency-name: "parquet", update-types: [version-update:semver-major] }
       - { dependency-name: "datafusion*", update-types: [version-update:semver-major] }

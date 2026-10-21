@@ -17,6 +17,7 @@ use arrow::compute::kernels::cmp::not_distinct;
 use arrow::compute::{and, concat_batches, filter_record_batch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::Statistics;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::config::ConfigOptions;
 use datafusion::error::Result as DfResult;
 use datafusion::execution::TaskContext;
@@ -24,13 +25,15 @@ use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{Expr, Operator};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, OrderingRequirements, PhysicalExpr};
+use datafusion::physical_plan::execution_plan::apply_expression_roots;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter_pushdown::{ChildFilterDescription, FilterDescription, FilterPushdownPhase};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream,
+    ChildStats, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream,
+    StatisticsArgs,
 };
 use futures::StreamExt;
 
@@ -259,6 +262,13 @@ impl ExecutionPlan for DedupExec {
         Ok(Arc::new(Self::try_new(children.swap_remove(0), keys, ordering, split, keep)?))
     }
 
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DfResult<TreeNodeRecursion>,
+    ) -> DfResult<TreeNodeRecursion> {
+        apply_expression_roots(self.ordering.iter().map(|sort| &sort.expr), f)
+    }
+
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DfResult<SendableRecordBatchStream> {
         let schema = self.input.schema();
         let mut state = match self.keep {
@@ -301,9 +311,17 @@ impl ExecutionPlan for DedupExec {
         Ok(FilterDescription::new().with_child(child))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> DfResult<Arc<Statistics>> {
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> DfResult<Arc<Statistics>> {
         // Fewer rows than the input: the counts are an upper bound.
-        Ok(Arc::new(Arc::unwrap_or_clone(self.input.partition_statistics(partition)?).to_inexact()))
+        Ok(Arc::new(Statistics::clone(&input_stats[0]).to_inexact()))
     }
 }
 

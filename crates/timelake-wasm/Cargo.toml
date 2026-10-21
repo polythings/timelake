@@ -23,21 +23,21 @@ timelake-format = { path = "../timelake-format", features = ["head", "write"] }
 wasm-bindgen = "=0.2.129"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-arrow-ipc = { version = "58", default-features = false, features = ["zstd"] }
+arrow-ipc = { version = "59.3", default-features = false, features = ["zstd"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
 thiserror = "2"
 bytes = "1"
-arrow-arith = "58"
-arrow-array = "58"
-arrow-cast = "58"
-arrow-json = "58"
-arrow-ord = "58"
-arrow-row = "58"
-arrow-schema = "58"
-arrow-select = "58"
-parquet = { version = "58", default-features = false, features = ["arrow", "zstd", "snap"] }
+arrow-arith = "59.3"
+arrow-array = "59.3"
+arrow-cast = "59.3"
+arrow-json = "59.3"
+arrow-ord = "59.3"
+arrow-row = "59.3"
+arrow-schema = "59.3"
+arrow-select = "59.3"
+parquet = { version = "59.3", default-features = false, features = ["arrow", "zstd", "snap"] }
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # Random numbers come from the JavaScript host (crypto.getRandomValues) on wasm32.
 getrandom = { version = "0.3", features = ["wasm_js"] }

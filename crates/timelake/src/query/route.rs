@@ -23,7 +23,7 @@ use datafusion::functions_aggregate::expr_fn as agg;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     Aggregate, BinaryExpr, Expr, ExprSchemable, Filter, JoinType, LogicalPlan, LogicalPlanBuilder, Operator,
-    Projection, TableScan, Union,
+    Projection, TableScanBuilder, Union,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{cast, coalesce, ident, lit};
@@ -336,7 +336,12 @@ fn with_column(plan: LogicalPlan, name: &str) -> DfResult<LogicalPlan> {
             if let Some(projection) = scan.projection.as_mut().filter(|p| !p.contains(&index)) {
                 projection.push(index);
                 let projection = Some(projection.clone());
-                let s = TableScan::try_new(scan.table_name, scan.source, projection, scan.filters, scan.fetch)?;
+                let s = TableScanBuilder::new(scan.table_name, scan.source)
+                    .with_projection(projection)
+                    .with_filters(scan.filters)
+                    .with_fetch(scan.fetch)
+                    .with_statistics_requests(scan.statistics_requests)
+                    .build()?;
                 return Ok(Transformed::yes(LogicalPlan::TableScan(s)));
             }
             Ok(Transformed::no(LogicalPlan::TableScan(scan)))

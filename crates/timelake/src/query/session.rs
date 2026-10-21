@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use arrow::array::{RecordBatch, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::TableReference;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::{AggregateUDF, ExprFunctionExt};
 use datafusion::prelude::{DataFrame, SessionConfig, SessionContext, ident, lit};
-use datafusion::sql::TableReference;
 use datafusion::sql::sqlparser::dialect::dialect_from_str;
 
 use super::CATALOG;
@@ -110,7 +110,7 @@ impl Session {
         let options = &state.config().options().sql_parser;
         let dialect = dialect_from_str(options.dialect)
             .ok_or_else(|| Error::config(format!("unsupported SQL dialect {}", options.dialect)))?;
-        statement::parse(sql, dialect.as_ref(), options.recursion_limit)
+        statement::parse(sql, dialect.as_ref(), options.recursion_limit.get())
     }
 
     /// Plans one parsed statement. Statements about rollups run here and return a summary.
@@ -372,11 +372,11 @@ impl datafusion::execution::context::QueryPlanner for Planner {
     async fn create_physical_plan(
         &self,
         logical_plan: &datafusion::logical_expr::LogicalPlan,
-        session_state: &datafusion::execution::SessionState,
+        session: &dyn datafusion::catalog::Session,
     ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
         use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
         DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(super::asof::AsofPlanner)])
-            .create_physical_plan(logical_plan, session_state)
+            .create_physical_plan(logical_plan, session)
             .await
     }
 }

@@ -175,11 +175,12 @@ Every decision has an ID and lives in the spec or page it shapes.
 | D17 | The v0 catalog is Hadoop-catalog compatible: put-if-absent metadata and a version hint | [3. Object-store catalog](0003-object-store-catalog.md) |
 | D18 | The last-value index is a Parquet sidecar per snapshot, readable by any engine | [6. Last-value index](0006-last-value-index.md) |
 | D19 | Inline maintenance compacts size-tiered; `maintain` rewrites each partition into one file | [19. Compaction](0019-compaction.md) |
-| D20 | DataFusion pinned to 54.1, the newest release on iceberg-rust's Arrow | [Embedded engine](engine.md) |
+| D20 | DataFusion pinned to 54.1, the newest release on iceberg-rust's Arrow (superseded by D29) | [Embedded engine](engine.md) |
 | D21 | Benchmarks include every opponent, publish losses, and report cost and growth | [44. Benchmark harness: timebench](0044-timebench.md) |
 | D22 | Descriptive function names with pandas aliases; continuous aggregates are materialized rollups | [28. Function library](0028-function-library.md) |
 | D23 | Every benchmarked system runs default (as installed) and tuned (its docs' recommendations, precomputation and tuned queries included) | [44. Benchmark harness: timebench](0044-timebench.md) |
 | D24 | The reader has its own DataFusion table provider, not `iceberg-datafusion` | [Embedded engine](engine.md) |
+| D29 | DataFusion follows its newest release; iceberg 0.10.1 on newer Arrow (`polythings-iceberg`) until iceberg-rust catches up | [Embedded engine](engine.md) |
 
 Until 2026-10-19 all of this was one file, `SPEC.md`, with the original plan's phases; on 2026-10-19 the specs were
 regrouped one per feature, with milestones in place of the hand-written roadmap. Both are in git history.

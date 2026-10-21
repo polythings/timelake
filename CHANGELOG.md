@@ -264,6 +264,12 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Changed
 
+- Built on DataFusion 55.2 and Arrow and Parquet 59 (from DataFusion 54.1 and Arrow 58), and the Python package on
+  PyO3 0.29. No iceberg-rust release is on Arrow 59 yet, so Iceberg's types come from
+  [`polythings-iceberg`](https://github.com/polythings/iceberg-rust), iceberg 0.10.1 with only its Arrow version
+  raised; it goes once an iceberg-rust release catches up. Rust code that used `iceberg` types from Timelake's API
+  depends on `polythings-iceberg` (library name `iceberg`) instead.
+
 - Maintenance in the engine merges several groups of files at once (up to 8, reading at most 24 files together, the
   most one merge reads), instead of one partition after another. Rollup refreshes load their rollups, and queries
   look up the rollups they may route to, at once rather than one by one.
@@ -370,6 +376,12 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 - The website's Explorer (`/explore`, with `/api/sql` and `/api/series`): the browser for tables, latest values,
   series charts and SQL is developed in its own project.
+
+### Security
+
+- The four Dependabot alerts on Rust dependencies are closed: `thrift` before 0.23 (excessive allocation, gone with
+  Parquet 59) and PyO3 before 0.29 (an out-of-bounds read in `PyList`/`PyTuple` `nth`, and a missing `Sync` bound on
+  `PyCFunction::new_closure`). Neither was reachable from Timelake's code.
 
 ## 0.7.0 – 2026-10-18
 

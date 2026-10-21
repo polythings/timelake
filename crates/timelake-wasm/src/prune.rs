@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use parquet::basic::{ConvertedType, LogicalType, TimeUnit};
+use parquet::basic::{ConvertedType, IntType, LogicalType, TimeUnit};
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnDescriptor;
@@ -93,8 +93,8 @@ enum StatsKind {
 
 fn stats_kind(column: &ColumnDescriptor) -> StatsKind {
     match column.logical_type_ref() {
-        Some(LogicalType::Timestamp { unit, .. }) => StatsKind::Time(*unit),
-        Some(LogicalType::Integer { is_signed: true, .. } | LogicalType::Date | LogicalType::String) => {
+        Some(LogicalType::Timestamp(timestamp)) => StatsKind::Time(timestamp.unit),
+        Some(LogicalType::Integer(IntType { is_signed: true, .. }) | LogicalType::Date | LogicalType::String) => {
             StatsKind::Plain
         }
         Some(_) => StatsKind::Opaque,
