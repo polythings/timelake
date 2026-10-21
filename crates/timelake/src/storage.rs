@@ -178,6 +178,79 @@ fn take_option<T: FromStr<Err = Error>>(options: &mut HashMap<String, String>, k
     options.remove(key).map(|v| v.parse()).transpose()
 }
 
+/// An object store as [`Storage::open`] builds it for a URL.
+struct Backend {
+    store: Arc<dyn ObjectStore>,
+    /// Its listing by raw key prefix, and whether a LIST of an exact name is its faster check.
+    lister: Option<(Arc<dyn PaginatedListStore>, bool)>,
+    /// The endpoint requests go to, where the store has one besides its URL.
+    endpoint: Option<String>,
+}
+
+impl Backend {
+    /// The store for `url` (`base` is its `scheme://authority`), configured by `options`.
+    fn open(url: &Url, base: &str, options: &HashMap<String, String>) -> Result<Self> {
+        let bucket = url.host_str().unwrap_or_default();
+        let plain = |store: Arc<dyn ObjectStore>| Self { store, lister: None, endpoint: None };
+        match url.scheme() {
+            "file" => Ok(plain(Arc::new(LocalFileSystem::new()))),
+            // Plain HTTPS (public buckets, Vercel Blob, CDNs): read-only, and it cannot list,
+            // so table discovery uses the warehouse's `timelake-tables.json` index.
+            "https" => Ok(plain(Arc::new(HttpBuilder::new().with_url(base).build()?))),
+            "http" => {
+                let client = object_store::ClientOptions::new().with_allow_http(true);
+                Ok(plain(Arc::new(HttpBuilder::new().with_url(base).with_client_options(client).build()?)))
+            }
+            "memory" => Ok(plain(Arc::new(InMemory::new()))),
+            "s3" | "s3a" => Self::s3(bucket, options),
+            "gs" => {
+                let b = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
+                let gcs =
+                    Arc::new(configured(b, options, "GCS", |b, k: GoogleConfigKey, v| b.with_config(k, v))?.build()?);
+                Ok(Self { store: gcs.clone(), lister: Some((gcs, false)), endpoint: None })
+            }
+            "az" | "abfs" | "abfss" => {
+                let b = MicrosoftAzureBuilder::from_env().with_url(url.as_str());
+                let azure =
+                    Arc::new(configured(b, options, "Azure", |b, k: AzureConfigKey, v| b.with_config(k, v))?.build()?);
+                Ok(Self { store: azure.clone(), lister: Some((azure, false)), endpoint: None })
+            }
+            other => Err(Error::config(format!("unsupported storage scheme {other:?}"))),
+        }
+    }
+
+    fn s3(bucket: &str, options: &HashMap<String, String>) -> Result<Self> {
+        let b = AmazonS3Builder::from_env()
+            .with_bucket_name(bucket)
+            // Atomic commits rely on put-if-absent (`If-None-Match: *`), supported by AWS S3 since
+            // 2024 and by most S3-compatible stores.
+            .with_conditional_put(S3ConditionalPut::ETagMatch);
+        let b = configured(b, options, "S3", |b, k: AmazonS3ConfigKey, v| b.with_config(k, v))?;
+        // The endpoint requests go to: object_store prefers the S3-specific one
+        // (`AWS_ENDPOINT_URL_S3`, which Fly.io and the Tigris CLI set) over the generic one.
+        let endpoint = b
+            .get_config_value(&AmazonS3ConfigKey::S3Endpoint)
+            .or_else(|| b.get_config_value(&AmazonS3ConfigKey::Endpoint))
+            .filter(|e| !e.is_empty());
+        let tigris = endpoint.as_ref().is_some_and(|e| ["tigris", "storage.dev"].iter().any(|t| e.contains(t)));
+        let s3 = Arc::new(b.build()?);
+        Ok(Self { store: s3.clone(), lister: Some((s3, tigris)), endpoint })
+    }
+}
+
+/// `builder` with each of `options` set as one of the `backend`'s config keys `K`.
+fn configured<B, K: FromStr>(
+    builder: B,
+    options: &HashMap<String, String>,
+    backend: &str,
+    set: impl Fn(B, K, &str) -> B,
+) -> Result<B> {
+    options.iter().try_fold(builder, |b, (k, v)| {
+        let key = K::from_str(k).map_err(|_| Error::config(format!("unknown {backend} option {k:?}")))?;
+        Ok(set(b, key, v))
+    })
+}
+
 /// What [`Storage::write_versioned`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VersionedWrite {
@@ -215,68 +288,7 @@ impl Storage {
             let store = LocalFileSystem::new_with_prefix(&dir)?;
             return Self::new(Arc::new(store), base, true);
         }
-        // Stores that can list an exact name, and whether that is their faster check.
-        let mut lister: Option<(Arc<dyn PaginatedListStore>, bool)> = None;
-        // The endpoint requests go to, where the store has one besides its URL.
-        let mut endpoint: Option<String> = None;
-        let store: Arc<dyn ObjectStore> = match scheme {
-            "file" => Arc::new(LocalFileSystem::new()),
-            // Plain HTTPS (public buckets, Vercel Blob, CDNs): read-only, and it cannot list,
-            // so table discovery uses the warehouse's `timelake-tables.json` index.
-            "http" | "https" => {
-                let mut b = HttpBuilder::new().with_url(&base);
-                if scheme == "http" {
-                    b = b.with_client_options(object_store::ClientOptions::new().with_allow_http(true));
-                }
-                Arc::new(b.build()?)
-            }
-            "memory" => Arc::new(InMemory::new()),
-            "s3" | "s3a" => {
-                let mut b = AmazonS3Builder::from_env()
-                    .with_bucket_name(authority)
-                    // Atomic commits rely on put-if-absent (`If-None-Match: *`), supported by AWS S3
-                    // since 2024 and by most S3-compatible stores.
-                    .with_conditional_put(S3ConditionalPut::ETagMatch);
-                for (k, v) in &options {
-                    let key = AmazonS3ConfigKey::from_str(k)
-                        .map_err(|_| Error::config(format!("unknown S3 option {k:?}")))?;
-                    b = b.with_config(key, v);
-                }
-                // The endpoint requests go to: object_store prefers the S3-specific one
-                // (`AWS_ENDPOINT_URL_S3`, which Fly.io and the Tigris CLI set) over the generic one.
-                endpoint = b
-                    .get_config_value(&AmazonS3ConfigKey::S3Endpoint)
-                    .or_else(|| b.get_config_value(&AmazonS3ConfigKey::Endpoint))
-                    .filter(|e| !e.is_empty());
-                let tigris = endpoint.as_ref().is_some_and(|e| ["tigris", "storage.dev"].iter().any(|t| e.contains(t)));
-                let s3 = Arc::new(b.build()?);
-                lister = Some((s3.clone(), tigris));
-                s3
-            }
-            "gs" => {
-                let mut b = GoogleCloudStorageBuilder::from_env().with_bucket_name(authority);
-                for (k, v) in &options {
-                    let key =
-                        GoogleConfigKey::from_str(k).map_err(|_| Error::config(format!("unknown GCS option {k:?}")))?;
-                    b = b.with_config(key, v);
-                }
-                let gcs = Arc::new(b.build()?);
-                lister = Some((gcs.clone(), false));
-                gcs
-            }
-            "az" | "abfs" | "abfss" => {
-                let mut b = MicrosoftAzureBuilder::from_env().with_url(url.as_str());
-                for (k, v) in &options {
-                    let key = AzureConfigKey::from_str(k)
-                        .map_err(|_| Error::config(format!("unknown Azure option {k:?}")))?;
-                    b = b.with_config(key, v);
-                }
-                let azure = Arc::new(b.build()?);
-                lister = Some((azure.clone(), false));
-                azure
-            }
-            other => return Err(Error::config(format!("unsupported storage scheme {other:?}"))),
-        };
+        let Backend { store, lister, endpoint } = Backend::open(url, &base, &options)?;
         let listable = !matches!(scheme, "http" | "https");
         let endpoint = endpoint.or_else(|| options.get("endpoint").cloned());
         let (store, cached) = with_cache(store, &base, endpoint.as_deref(), cache);
