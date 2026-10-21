@@ -3,6 +3,7 @@
 //! or [`Table::maintain`] runs it as one stateless command.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arrow::array::RecordBatch;
@@ -366,7 +367,10 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
         if let Some(order) = sort {
             let sorted = async {
                 let batches: Vec<RecordBatch> = stream.try_collect().await?;
-                stable_sort(&concat_batches(&schema, &batches)?, &order)
+                // A whole file's sort is CPU work: off the async workers.
+                let schema = Arc::clone(&schema);
+                let sort = move || stable_sort(&concat_batches(&schema, &batches)?, &order);
+                tokio::task::spawn_blocking(sort).await.map_err(std::io::Error::other)?
             };
             stream = match sorted.await {
                 Ok(b) => futures::stream::iter(row_groups(b, READ_BATCH_ROWS).map(Ok).collect::<Vec<_>>()).boxed(),
