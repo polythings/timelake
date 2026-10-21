@@ -18,7 +18,7 @@ use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};
 use timelake_format::error::WriteError;
-use timelake_format::store::{Env, Listed, Store, Upload, WriteEnv};
+use timelake_format::store::{Clock, Listed, Random, Store, Upload, WriteLimits};
 use timelake_format::table::TableState;
 
 /// The shared writer's host over the engine's storage.
@@ -149,14 +149,9 @@ impl Store for &EngineStore {
     }
 }
 
-impl Env for &EngineStore {
+impl Clock for &EngineStore {
     fn now_ms(&self) -> i64 {
         chrono::Utc::now().timestamp_millis()
-    }
-
-    fn random(&self) -> u64 {
-        let s = self.seed.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
-        s ^ (s >> 31) ^ chrono::Utc::now().timestamp_nanos_opt().unwrap().unsigned_abs()
     }
 
     async fn sleep(&self, ms: u64) {
@@ -164,7 +159,14 @@ impl Env for &EngineStore {
     }
 }
 
-impl WriteEnv for &EngineStore {
+impl Random for &EngineStore {
+    fn next_u64(&self) -> u64 {
+        let s = self.seed.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+        s ^ (s >> 31) ^ chrono::Utc::now().timestamp_nanos_opt().unwrap().unsigned_abs()
+    }
+}
+
+impl WriteLimits for &EngineStore {
     fn max_row_group_bytes(&self) -> Option<usize> {
         self.row_group_bytes
     }

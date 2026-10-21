@@ -18,12 +18,12 @@ use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
 use timelake_format::maintain::{MaintainOptions, MaintainReport, maintain};
-use timelake_format::store::{Env, Listed, Store, Upload, WriteEnv};
+use timelake_format::store::{Clock, Listed, Random, Store, Upload, WriteLimits};
 use timelake_format::table::TableState;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
 
-/// A [`Store`] and [`Env`] over a JavaScript store object (see the TypeScript `Store` interface).
+/// A [`Store`], [`Clock`], and [`Random`] over a JavaScript store object (see the TypeScript `Store` interface).
 #[derive(Clone, Debug)]
 struct JsStore {
     store: JsValue,
@@ -148,21 +148,11 @@ impl Store for JsStore {
     }
 }
 
-impl Env for JsStore {
+impl Clock for JsStore {
     fn now_ms(&self) -> i64 {
         #[expect(clippy::cast_possible_truncation, reason = "milliseconds since the epoch")]
         let now = js_sys::Date::now() as i64;
         now
-    }
-
-    fn random(&self) -> u64 {
-        let mut b = [0u8; 8];
-        // getrandom draws from crypto.getRandomValues on wasm32.
-        if getrandom::fill(&mut b).is_err() {
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "random bits")]
-            return (js_sys::Math::random() * 9_007_199_254_740_992.0) as u64;
-        }
-        u64::from_le_bytes(b)
     }
 
     async fn sleep(&self, ms: u64) {
@@ -179,7 +169,19 @@ impl Env for JsStore {
     }
 }
 
-impl WriteEnv for JsStore {
+impl Random for JsStore {
+    fn next_u64(&self) -> u64 {
+        let mut b = [0u8; 8];
+        // getrandom draws from crypto.getRandomValues on wasm32.
+        if getrandom::fill(&mut b).is_err() {
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "random bits")]
+            return (js_sys::Math::random() * 9_007_199_254_740_992.0) as u64;
+        }
+        u64::from_le_bytes(b)
+    }
+}
+
+impl WriteLimits for JsStore {
     fn max_row_group_bytes(&self) -> Option<usize> {
         Some(MAX_ROW_GROUP_BYTES)
     }

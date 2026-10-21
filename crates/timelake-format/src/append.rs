@@ -13,7 +13,7 @@ use crate::file::{FileStats, FileWriter, writer_properties};
 use crate::iceberg::{DataFile, partition_values};
 use crate::maintain::{MaintainOptions, MaintainReport, maintain};
 use crate::rows::{latest_of_sorted, sort_and_split};
-use crate::store::{Store, Upload, WriteEnv, uuid_v7};
+use crate::store::{Clock, Random, Store, Upload, WriteLimits, uuid_v7};
 use crate::summary;
 use crate::table::TableState;
 
@@ -52,7 +52,7 @@ pub struct AppendReport {
 }
 
 /// Appends `batches` to `table` as one commit; returns the new version.
-pub async fn append<H: Store + WriteEnv>(
+pub async fn append<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: TableState,
     batches: &[RecordBatch],
@@ -122,7 +122,7 @@ pub async fn append<H: Store + WriteEnv>(
 
 /// Writes the sorted rows of one partition as data files of the table's target size, each with its
 /// encoded footer (for the head).
-pub async fn write_files<H: Store + WriteEnv>(
+pub async fn write_files<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: &TableState,
     partition: Option<i32>,
@@ -140,7 +140,7 @@ pub async fn write_files<H: Store + WriteEnv>(
 
 /// Writes sorted batches of one partition into files of the target size, uploading as they grow.
 /// After a failed [`write`](Self::write), [`abort`](Self::abort) removes what was written.
-pub struct PartitionFiles<'a, H: Store + WriteEnv> {
+pub struct PartitionFiles<'a, H: Store + Clock + Random + WriteLimits> {
     store: &'a H,
     table: &'a TableState,
     partition: Option<i32>,
@@ -148,7 +148,7 @@ pub struct PartitionFiles<'a, H: Store + WriteEnv> {
     done: Vec<(DataFile, Vec<u8>)>,
 }
 
-impl<H: Store + WriteEnv> std::fmt::Debug for PartitionFiles<'_, H> {
+impl<H: Store + Clock + Random + WriteLimits> std::fmt::Debug for PartitionFiles<'_, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionFiles").field("partition", &self.partition).finish_non_exhaustive()
     }
@@ -196,7 +196,7 @@ impl Pending {
     }
 }
 
-impl<'a, H: Store + WriteEnv> PartitionFiles<'a, H> {
+impl<'a, H: Store + Clock + Random + WriteLimits> PartitionFiles<'a, H> {
     /// A writer of `partition`'s files for `table`.
     pub fn new(store: &'a H, table: &'a TableState, partition: Option<i32>) -> WriteResult<Self> {
         Ok(Self { store, table, partition, open: None, done: vec![] })

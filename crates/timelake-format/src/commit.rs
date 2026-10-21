@@ -19,7 +19,7 @@ use crate::error::{WriteError, WriteResult};
 use crate::iceberg::{DataFile, Entry};
 use crate::metadata::TimelakeMetadata;
 use crate::rows::merge_latest;
-use crate::store::{Env, Store, uuid_v4};
+use crate::store::{Clock, Random, Store, uuid_v4};
 use crate::summary;
 use crate::table::{TableState, encode_index};
 
@@ -93,7 +93,7 @@ struct TimelakeHooks<'a, S> {
     index: Option<RecordBatch>,
 }
 
-impl<H: Store + Env, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
+impl<H: Store + Clock + Random, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
     type Error = WriteError;
 
     async fn reload(&mut self, store: &H, location: &str) -> WriteResult<Table> {
@@ -127,7 +127,7 @@ impl<H: Store + Env, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
 
 /// Commits `change` on top of the newest version, retrying on conflicts. `props` go into the
 /// snapshot summary.
-pub async fn commit<H: Store + Env, S: BuildHasher>(
+pub async fn commit<H: Store + Clock + Random, S: BuildHasher>(
     store: &H,
     base: TableState,
     change: &Change,

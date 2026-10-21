@@ -25,7 +25,7 @@ use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list, time_pa
 use crate::merge::{Merge, Step};
 use crate::metadata::TimelakeMetadata;
 use crate::rows::{align_batch, stable_sort};
-use crate::store::{Store, WriteEnv};
+use crate::store::{Clock, Random, Store, WriteLimits};
 use crate::table::{TableState, metadata_uri};
 
 /// Files smaller than this fraction of the target size count as small.
@@ -147,7 +147,7 @@ impl MaintainReport {
 }
 
 /// Runs maintenance: retention, then compaction, then snapshot expiry. Returns the new version.
-pub async fn maintain<H: Store + WriteEnv>(
+pub async fn maintain<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: TableState,
     opts: &MaintainOptions,
@@ -171,7 +171,7 @@ fn micros(d: Duration) -> i64 {
 }
 
 /// Drops whole time partitions entirely older than the retention period.
-async fn retention<H: Store + WriteEnv>(
+async fn retention<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     mut table: TableState,
     report: &mut MaintainReport,
@@ -197,7 +197,7 @@ async fn retention<H: Store + WriteEnv>(
 
 /// Rewrites groups of small (or unsorted) files into sorted files of the target size, removing
 /// duplicate `(series, time)` rows (latest write wins) when dedup is on.
-async fn compact<H: Store + WriteEnv>(
+async fn compact<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     mut table: TableState,
     opts: &MaintainOptions,
@@ -282,7 +282,7 @@ fn time_field_id(table: &TableState) -> Option<i32> {
 
 /// Which files of which partitions to rewrite (the engine's plan). Each group is a run of files
 /// next to each other in commit order.
-async fn compaction_plan<H: Store + WriteEnv>(
+async fn compaction_plan<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: &mut TableState,
     opts: &MaintainOptions,
@@ -351,7 +351,7 @@ async fn compaction_plan<H: Store + WriteEnv>(
 }
 
 /// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files.
-async fn rewrite<H: Store + WriteEnv>(
+async fn rewrite<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: &TableState,
     partition: Option<i32>,
@@ -423,7 +423,7 @@ impl Input {
     }
 
     /// The next batch, aligned to the table schema; `None` at the end.
-    async fn next<H: Store + WriteEnv>(
+    async fn next<H: Store + Clock + Random + WriteLimits>(
         &mut self,
         store: &H,
         table: &TableState,
@@ -475,7 +475,12 @@ impl Input {
     }
 
     /// Rows `start..end` of the current row group, from the pages that cover them.
-    async fn read_window<H: Store + WriteEnv>(&mut self, store: &H, start: usize, end: usize) -> WriteResult<Batches> {
+    async fn read_window<H: Store + Clock + Random + WriteLimits>(
+        &mut self,
+        store: &H,
+        start: usize,
+        end: usize,
+    ) -> WriteResult<Batches> {
         let group = self.metadata.row_group(self.group);
         let rows = group.num_rows().unsigned_abs();
         let Some(index) = self.metadata.offset_index().and_then(|i| i.get(self.group)) else {
@@ -572,7 +577,7 @@ impl Sparse {
 }
 
 /// The batches of row groups `groups` of the file at `path`, read with one ranged request.
-async fn read_row_groups<H: Store + WriteEnv>(
+async fn read_row_groups<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     path: &str,
     file_len: u64,
@@ -610,7 +615,11 @@ fn decode_footer(bytes: &[u8]) -> WriteResult<Arc<ParquetMetaData>> {
 }
 
 /// Reads the footer of the file at `path` of `size` bytes (one request for typical files).
-async fn read_footer<H: Store + WriteEnv>(store: &H, path: &str, size: u64) -> WriteResult<Arc<ParquetMetaData>> {
+async fn read_footer<H: Store + Clock + Random + WriteLimits>(
+    store: &H,
+    path: &str,
+    size: u64,
+) -> WriteResult<Arc<ParquetMetaData>> {
     let mut want = FOOTER_PREFETCH.min(size);
     loop {
         let tail = Bytes::from(store.get_range(path, size - want, want).await?);
@@ -628,7 +637,7 @@ async fn read_footer<H: Store + WriteEnv>(store: &H, path: &str, size: u64) -> W
 // --- expiry ----------------------------------------------------------------------------------
 
 /// Expires old snapshots and deletes the files only they referenced.
-async fn expire<H: Store + WriteEnv>(
+async fn expire<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     table: TableState,
     report: &mut MaintainReport,
@@ -702,7 +711,7 @@ enum Missing {
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
-async fn reachable<H: Store + WriteEnv>(
+async fn reachable<H: Store + Clock + Random + WriteLimits>(
     store: &H,
     snapshots: &[crate::metadata::SnapshotRef],
     missing: Missing,
@@ -749,7 +758,10 @@ async fn reachable<H: Store + WriteEnv>(
 }
 
 /// Keeps the newest metadata files (those in the metadata log plus the current one).
-async fn prune_metadata_files<H: Store + WriteEnv>(store: &H, table: &TableState) -> WriteResult<usize> {
+async fn prune_metadata_files<H: Store + Clock + Random + WriteLimits>(
+    store: &H,
+    table: &TableState,
+) -> WriteResult<usize> {
     let keep_from = table.version.saturating_sub(table.metadata.metadata_log_len() as u64 + 1);
     let doomed: Vec<String> = store
         .list(&format!("{}/metadata/v", table.location))

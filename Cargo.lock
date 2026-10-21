@@ -2731,7 +2731,7 @@ dependencies = [
 [[package]]
 name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=ba5b89c59642d8619f3857e8fd22110888d7ded7#ba5b89c59642d8619f3857e8fd22110888d7ded7"
+source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
 dependencies = [
  "thiserror",
  "uuid",
@@ -2740,7 +2740,7 @@ dependencies = [
 [[package]]
 name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=ba5b89c59642d8619f3857e8fd22110888d7ded7#ba5b89c59642d8619f3857e8fd22110888d7ded7"
+source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
 dependencies = [
  "apache-avro 0.22.0",
  "arrow-schema",
