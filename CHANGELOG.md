@@ -178,6 +178,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   its own, and another read can't miss both the fetch and its blocks.
 - Through the block cache, a missing object was a generic error, so snapshot expiry failed instead of passing over a
   manifest list another process had already deleted. It is `NotFound` again.
+- Changing settings, `rollback` and snapshot expiry retried without limit or pause when another writer kept publishing
+  first (or a store kept reporting the version as taken). They now back off and give up with a conflict error after 10
+  attempts, as commits do.
 
 ### Changed
 

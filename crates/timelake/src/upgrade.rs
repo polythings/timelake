@@ -10,14 +10,13 @@ use std::fmt;
 use std::time::Duration;
 
 use arrow::compute::concat_batches;
-use iceberg::spec::{MAIN_BRANCH, SnapshotReference, SnapshotRetention, TableMetadataBuilder};
+use iceberg::spec::{MAIN_BRANCH, SnapshotReference, SnapshotRetention};
 use timelake_format::head::NO_HEAD;
 use timelake_format::{FORMAT_VERSION, FormatVersion};
 
 use crate::alter::write_properties;
-use crate::commit::{Change, commit, publish};
+use crate::commit::{Change, commit, publish_retrying};
 use crate::error::{Error, Result};
-use crate::lake::metadata_uri;
 use crate::maintain::{MaintainOptions, compaction_plan};
 use crate::schema::align_batch;
 use crate::storage::Uploads;
@@ -146,22 +145,15 @@ impl Table {
     /// data is that snapshot's. Later snapshots stay in the history until they expire, so a
     /// rollback can be rolled back too. Returns the new version.
     pub async fn rollback(&self, snapshot_id: i64) -> Result<Table> {
-        let mut base = self.refresh().await?;
-        loop {
+        let build = async |base: &Table| {
             if base.metadata().snapshot_by_id(snapshot_id).is_none() {
                 return Err(Error::NotFound(format!("{}: snapshot {snapshot_id}", base.name())));
             }
-            let previous = Some(metadata_uri(base.location(), base.version()));
             let reference = SnapshotReference::new(snapshot_id, SnapshotRetention::branch(None, None, None));
-            let metadata = TableMetadataBuilder::new_from_metadata(base.metadata().clone(), previous)
-                .set_ref(MAIN_BRANCH, reference)?
-                .build()?
-                .metadata;
-            match publish(&base, metadata, None).await? {
-                Some(table) => return Ok(table),
-                None => base = base.refresh().await?,
-            }
-        }
+            let metadata = base.next_metadata().set_ref(MAIN_BRANCH, reference)?.build()?.metadata;
+            Ok(Some((metadata, None, ())))
+        };
+        Ok(publish_retrying(&self.refresh().await?, build).await?.0)
     }
 }
 

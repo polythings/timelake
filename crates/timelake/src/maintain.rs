@@ -8,18 +8,15 @@ use std::time::{Duration, Instant};
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use futures::{StreamExt, TryStreamExt};
-use iceberg::spec::{
-    DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata, TableMetadataBuilder,
-};
+use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::properties::WriterProperties;
 use timelake_format::merge::{Merge, Step};
 use tokio::sync::mpsc;
 
-use crate::commit::{Change, commit, publish};
+use crate::commit::{Change, commit, publish_retrying};
 use crate::error::{Error, Result};
-use crate::lake::metadata_uri;
 use crate::rollup::{RollupRefresh, refresh_all};
 use crate::schema::align_batch;
 use crate::sort::stable_sort;
@@ -388,40 +385,35 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
 
 /// Expires old snapshots and deletes the files only they referenced.
 async fn expire(table: &Table, report: &mut MaintainReport) -> Result<Table> {
-    let mut table = table.clone();
-    loop {
-        let mut snapshots: Vec<SnapshotRef> = table.metadata().snapshots().cloned().collect();
+    // Built again on the newer version when another writer publishes first.
+    let build = async |base: &Table| {
+        let mut snapshots: Vec<SnapshotRef> = base.metadata().snapshots().cloned().collect();
         snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms()));
-        let expired = expired_snapshots(&table, &snapshots)?;
+        let expired = expired_snapshots(base, &snapshots)?;
         if expired.is_empty() {
-            return Ok(table);
+            return Ok(None);
         }
         let ids: Vec<i64> = expired.iter().map(|s| s.snapshot_id()).collect();
         // What the kept snapshots use, read in full before anything changes: a file left out
         // would be deleted.
         let remaining: Vec<SnapshotRef> =
             snapshots.iter().filter(|s| !ids.contains(&s.snapshot_id())).cloned().collect();
-        let kept = reachable(&table, &remaining, Missing::Error).await?;
-        let previous = Some(metadata_uri(table.location(), table.version()));
-        let metadata = TableMetadataBuilder::new_from_metadata(table.metadata().clone(), previous)
-            .remove_snapshots(&ids)
-            .build()?
-            .metadata;
+        let kept = reachable(base, &remaining, Missing::Error).await?;
+        let metadata = base.next_metadata().remove_snapshots(&ids).build()?.metadata;
         // Expiry keeps the current snapshot, so its files stay the same.
-        let Some(expired_table) = publish(&table, metadata, table.known_files().cloned()).await? else {
-            // Lost the race to another writer: recompute against its version.
-            table = table.refresh().await?;
-            continue;
-        };
-        report.snapshots_expired += expired.len();
+        Ok(Some((metadata, base.known_files().cloned(), (base.clone(), expired, kept))))
+    };
+    let (expired_table, Some((base, expired, kept))) = publish_retrying(table, build).await? else {
+        return Ok(table.clone());
+    };
+    report.snapshots_expired += expired.len();
 
-        // Files reachable from the expired snapshots but not from the remaining ones.
-        let gone = reachable(&table, &expired, Missing::Skip).await?;
-        let storage = table.lake().storage();
-        report.objects_deleted += storage.delete_many(gone.difference(&kept).cloned().collect()).await?;
-        report.objects_deleted += prune_metadata_files(&expired_table).await?;
-        return Ok(expired_table);
-    }
+    // Files reachable from the expired snapshots but not from the remaining ones.
+    let gone = reachable(&base, &expired, Missing::Skip).await?;
+    let storage = base.lake().storage();
+    report.objects_deleted += storage.delete_many(gone.difference(&kept).cloned().collect()).await?;
+    report.objects_deleted += prune_metadata_files(&expired_table).await?;
+    Ok(expired_table)
 }
 
 /// Snapshots (newest first) to expire: past the newest `min_snapshots`, and either older than

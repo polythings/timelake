@@ -21,7 +21,7 @@ use arrow::datatypes::DataType;
 use bytes::Bytes;
 use iceberg::spec::{
     DataFile, ManifestFile, ManifestListWriter, ManifestStatus, ManifestWriter, ManifestWriterBuilder, Operation,
-    Snapshot, Summary, TableMetadata, TableMetadataBuilder, UNASSIGNED_SEQUENCE_NUMBER,
+    Snapshot, Summary, TableMetadata, UNASSIGNED_SEQUENCE_NUMBER,
 };
 
 use crate::error::{Error, Result};
@@ -127,8 +127,7 @@ async fn commit_with(
     let mut base = table.clone();
     for attempt in 1..=MAX_ATTEMPTS {
         if attempt > 1 {
-            let attempt = u64::try_from(attempt).unwrap_or(u64::MAX);
-            tokio::time::sleep(Duration::from_millis(rand::random_range(BACKOFF_MILLIS) * attempt)).await;
+            back_off(attempt).await;
             base = base.refresh().await?;
         }
         writable(&base)?;
@@ -166,7 +165,44 @@ async fn commit_with(
             }
         }
     }
-    Err(Error::Conflict(format!("{}: gave up after {MAX_ATTEMPTS} attempts", table.name())))
+    Err(gave_up(table))
+}
+
+/// Waits before attempt `attempt` (from 2): a random number of [`BACKOFF_MILLIS`], times `attempt`,
+/// so writers that lost the same race don't meet again.
+async fn back_off(attempt: usize) {
+    let attempt = u64::try_from(attempt).unwrap_or(u64::MAX);
+    tokio::time::sleep(Duration::from_millis(rand::random_range(BACKOFF_MILLIS) * attempt)).await;
+}
+
+fn gave_up(table: &Table) -> Error {
+    Error::Conflict(format!("{}: gave up after {MAX_ATTEMPTS} attempts", table.name()))
+}
+
+/// A change built on one version: the next version's metadata, its live files if known, and what
+/// the caller needs afterwards.
+pub(crate) type Next<T> = (TableMetadata, Option<Arc<Vec<LiveEntry>>>, T);
+
+/// Publishes the change `build` makes of the latest version (no new snapshot: settings, refs,
+/// expiry), building it again on the newer version each time another writer publishes first, with
+/// the same limits as a commit. Returns the new version and what `build` passed on, or, when
+/// `build` has nothing to change, the version it looked at.
+pub(crate) async fn publish_retrying<T>(
+    table: &Table,
+    mut build: impl AsyncFnMut(&Table) -> Result<Option<Next<T>>>,
+) -> Result<(Table, Option<T>)> {
+    let mut base = table.clone();
+    for attempt in 1..=MAX_ATTEMPTS {
+        if attempt > 1 {
+            back_off(attempt).await;
+            base = base.refresh().await?;
+        }
+        let Some((metadata, files, then)) = build(&base).await? else { return Ok((base, None)) };
+        if let Some(published) = publish(&base, metadata, files).await? {
+            return Ok((published, Some(then)));
+        }
+    }
+    Err(gave_up(table))
 }
 
 /// Refuses to write to a table of a newer format than this Timelake knows: it could break what
@@ -347,11 +383,7 @@ impl<'a> SnapshotWriter<'a> {
             .with_summary(Summary { operation: self.change.operation(), additional_properties: summary })
             .with_schema_id(metadata.current_schema_id())
             .build();
-        let previous = Some(metadata_uri(self.base.location(), self.base.version()));
-        let new_metadata = TableMetadataBuilder::new_from_metadata(metadata.clone(), previous)
-            .set_branch_snapshot(snapshot, "main")?
-            .build()?
-            .metadata;
+        let new_metadata = self.base.next_metadata().set_branch_snapshot(snapshot, "main")?.build()?.metadata;
         let files = self.next_files();
         let Some(table) = publish(self.base, new_metadata, files).await? else { return Ok(Attempt::Lost) };
 

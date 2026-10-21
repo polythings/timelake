@@ -2,13 +2,11 @@
 
 use std::collections::HashMap;
 
-use iceberg::spec::TableMetadataBuilder;
 use timelake_format::Contract;
 use timelake_format::settings::{self, Level};
 
-use crate::commit::publish;
+use crate::commit::publish_retrying;
 use crate::error::Result;
-use crate::lake::metadata_uri;
 use crate::table::Table;
 
 impl Table {
@@ -78,20 +76,17 @@ pub(crate) async fn update_properties(
     table: &Table,
     change: impl Fn(&Table) -> (Vec<(String, String)>, Vec<String>),
 ) -> Result<Table> {
-    let mut base = table.clone();
-    loop {
-        let (set, remove) = change(&base);
-        let previous = Some(metadata_uri(base.location(), base.version()));
-        let metadata = TableMetadataBuilder::new_from_metadata(base.metadata().clone(), previous)
+    let build = async |base: &Table| {
+        let (set, remove) = change(base);
+        let metadata = base
+            .next_metadata()
             .set_properties(set.into_iter().collect())?
             .remove_properties(&remove)?
             .build()?
             .metadata;
-        match publish(&base, metadata, base.known_files().cloned()).await? {
-            Some(table) => return Ok(table),
-            None => base = base.refresh().await?,
-        }
-    }
+        Ok(Some((metadata, base.known_files().cloned(), ())))
+    };
+    Ok(publish_retrying(table, build).await?.0)
 }
 
 #[cfg(test)]
@@ -121,6 +116,42 @@ mod tests {
         ] {
             let err = t.set_properties(&[change]).await.unwrap_err().to_string();
             assert!(err.contains(msg), "{change:?}: {err}");
+        }
+    }
+
+    /// A change that keeps losing the race to publish gives up, as commits do, rather than trying
+    /// forever: settings, rollback and expiry.
+    #[tokio::test(start_paused = true)]
+    async fn publishing_gives_up_after_losing_too_often() {
+        use std::time::Duration;
+
+        use crate::testing::{Op, T0, batch};
+        use crate::{AppendOptions, Error, MaintainOptions};
+
+        let (lake, store) = faulty_lake();
+        let mut o = opts();
+        o.properties.insert(property::SNAPSHOT_RETENTION.into(), "0s".into());
+        o.properties.insert(property::MIN_SNAPSHOTS.into(), "1".into());
+        let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+        let no_maintenance = AppendOptions { maintain: Some(false), ..AppendOptions::default() };
+        for i in 0..2 {
+            t = t.append(&[batch(&[(T0 + i, 1, 1.0)])], no_maintenance.clone()).await.unwrap().0;
+        }
+        let first = t.metadata().snapshots().map(|s| s.snapshot_id()).min().unwrap();
+        // Every version is taken by "another writer", which never shows up.
+        store.set_latency(Duration::from_millis(10));
+        store.fail(Op::LoseCreate, ".metadata.json");
+        let expire = MaintainOptions { compact: false, retention: false, ..MaintainOptions::default() };
+        let within = Duration::from_secs(30);
+        let set = tokio::time::timeout(within, t.set_properties(&[("retention", Some("1d"))])).await;
+        let rollback = tokio::time::timeout(within, t.rollback(first)).await;
+        let expired = tokio::time::timeout(within, t.maintain(expire)).await.map(|r| r.map(|_| ()));
+        for (what, result) in [
+            ("settings", set.map(|r| r.map(|_| ()))),
+            ("rollback", rollback.map(|r| r.map(|_| ()))),
+            ("expiry", expired),
+        ] {
+            assert!(matches!(result, Ok(Err(Error::Conflict(_)))), "{what}: {result:?}");
         }
     }
 

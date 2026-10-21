@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use futures::future::{BoxFuture, Shared};
 use iceberg::arrow::schema_to_arrow_schema;
-use iceberg::spec::{DataFile, ManifestFile, ManifestStatus, SnapshotRef, TableMetadata};
+use iceberg::spec::{DataFile, ManifestFile, ManifestStatus, SnapshotRef, TableMetadata, TableMetadataBuilder};
 
 use crate::contract::Contract;
 use crate::error::{Error, Result};
@@ -77,6 +77,13 @@ impl Table {
     pub(crate) fn with_files(mut self, files: Arc<Vec<LiveEntry>>) -> Self {
         self.files = Some(files);
         self
+    }
+
+    /// A builder of the next version's metadata: this version's, with this version's file as the
+    /// previous one.
+    pub(crate) fn next_metadata(&self) -> TableMetadataBuilder {
+        let previous = Some(crate::lake::metadata_uri(self.location(), self.version()));
+        TableMetadataBuilder::new_from_metadata(self.metadata().clone(), previous)
     }
 
     /// The live files if they are known without reading manifests.
