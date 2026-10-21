@@ -63,4 +63,5 @@ Timelake has to be scheduled. Orphan-file cleanup and sharded runs are open.
 - 2026-10-20: expiry reads what the kept snapshots use in full before it changes anything (#46).
 - 2026-10-20: expiry keeps snapshots a branch or tag points at.
 - 2026-10-20: one plan and one report for both writers; the engine skips manifests an interrupted expiry deleted, as
-  the WASM writer did, and lists only `metadata/v` to prune old metadata files.
+  the WASM writer did, and lists only `metadata/v` to prune old metadata files. The WASM writer's expiry retries
+  with backoff and a limit, as commits do.

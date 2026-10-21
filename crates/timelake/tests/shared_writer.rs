@@ -45,6 +45,8 @@ const METADATA_LANDS_THEN_LOSES: usize = 1;
 const METADATA_LANDS_THEN_FAILS: usize = 2;
 /// The metadata PUT fails without landing.
 const METADATA_FAILS: usize = 3;
+/// Every metadata PUT finds another writer's version there (until healed).
+const METADATA_ALWAYS_LOSES: usize = 4;
 
 impl Faults {
     fn data_write(&self, uri: &str) -> WriteResult<()> {
@@ -115,8 +117,13 @@ impl Host for &EngineHost {
     async fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> WriteResult<bool> {
         let fault =
             if uri.ends_with(".metadata.json") { self.faults.metadata_put.swap(0, Ordering::Relaxed) } else { 0 };
-        if fault == METADATA_FAILS {
-            return Err(WriteError::Store(format!("injected failure writing {uri}")));
+        match fault {
+            METADATA_FAILS => return Err(WriteError::Store(format!("injected failure writing {uri}"))),
+            METADATA_ALWAYS_LOSES => {
+                self.faults.metadata_put.store(fault, Ordering::Relaxed);
+                return Ok(false);
+            }
+            _ => {}
         }
         let written = self.storage.write_if_absent(uri, Bytes::from(bytes)).await.map_err(|e| err(&e))?;
         match fault {
@@ -763,4 +770,29 @@ async fn expiry_skips_what_an_interrupted_expiry_deleted() {
         assert!(err.contains(&manifest) && err.contains(&current.snapshot_id().to_string()), "{err}");
         assert_eq!(reopen(&dir).table("iot.r").await.unwrap().metadata().snapshots().count(), 2, "shared: {shared}");
     }
+}
+
+/// An expiry that keeps losing the race to other writers gives up, as a commit does, and deletes
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_expiry_gives_up_after_max_attempts() {
+    use timelake_format::maintain::maintain;
+
+    let (dir, lake) = temp_lake();
+    let mut o = opts();
+    o.properties.insert(timelake::property::SNAPSHOT_RETENTION.into(), "0s".into());
+    o.properties.insert(timelake::property::MIN_SNAPSHOTS.into(), "1".into());
+    let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+    for i in 0..3 {
+        t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap().0;
+    }
+    timelake::flush().await;
+    let before = walk(dir.path());
+    let host = EngineHost::new(&lake);
+    host.faults.metadata_put.store(METADATA_ALWAYS_LOSES, Ordering::Relaxed);
+    let state = TableState::load(&&host, t.location()).await.unwrap();
+    let expire_only = MaintainOptions { compact: false, retention: false, ..MaintainOptions::default() };
+    let err = maintain(&&host, state, &expire_only).await.unwrap_err();
+    assert!(matches!(err, WriteError::Conflict(ref m) if m.contains("gave up")), "{err}");
+    assert_eq!(walk(dir.path()), before);
 }

@@ -67,6 +67,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- Snapshot expiry from the TypeScript writer retried at once and without end while other writers kept committing first.
+  It waits between attempts and gives up after 10, as commits do.
 - Snapshot expiry in the engine stopped with an error when a manifest only expired snapshots used was already gone (an
   earlier expiry was interrupted). It skips it now, as the TypeScript writer did; a missing manifest of a snapshot it
   keeps still stops it.

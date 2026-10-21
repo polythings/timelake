@@ -20,13 +20,14 @@ use parquet::file::reader::{ChunkReader, Length};
 
 use crate::append::PartitionFiles;
 use crate::bounds::{self, Bound};
-use crate::commit::{Change, commit, put_metadata};
+use crate::commit::{Change, MAX_ATTEMPTS, backoff_millis, commit, put_metadata};
 use crate::error::{WriteError, WriteResult};
 use crate::footer;
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
 use crate::layout::{hint_uri, metadata_prefix, metadata_uri};
 use crate::merge::{Merge, Step};
+use crate::metadata::SnapshotRef;
 use crate::rows::{align_batch, stable_sort};
 use crate::table::TableState;
 
@@ -449,31 +450,19 @@ async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Ar
 /// Expires old snapshots and deletes the files only they referenced.
 async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
     let mut table = table;
-    loop {
-        let snapshots = table.metadata.snapshot_list();
-        let times: Vec<SnapshotTime> =
-            snapshots.iter().map(|s| SnapshotTime { id: s.id, timestamp_ms: s.timestamp_ms }).collect();
-        let (current, referenced) = (table.metadata.current_snapshot_id(), table.metadata.referenced_snapshots());
-        let ids = expired_snapshots(&table.contract, &times, current, &referenced, host.now_ms());
-        if ids.is_empty() {
-            return Ok(table);
-        }
-        let (expired, remaining): (Vec<_>, Vec<_>) = snapshots.into_iter().partition(|s| ids.contains(&s.id));
-        // What the kept snapshots use, read in full before anything changes: a file left out
-        // would be deleted.
-        let kept = reachable(host, &remaining, Missing::Error).await?;
-        let previous = metadata_uri(&table.location, table.version);
-        let metadata = table.metadata.without_snapshots(&ids, &previous, host.now_ms())?;
-        let version = table.version + 1;
-        if !put_metadata(host, &metadata_uri(&table.location, version), metadata.to_json().into_bytes()).await? {
+    // Built again on the newer version when another writer publishes first, as a commit is.
+    for attempt in 1..=MAX_ATTEMPTS {
+        if attempt > 1 {
+            host.sleep(backoff_millis(attempt, host.random())).await;
             table = TableState::load(host, &table.location).await?;
-            continue;
         }
+        let (expired_table, expired, kept) = match publish_expiry(host, &table).await? {
+            Expiry::Nothing => return Ok(table),
+            Expiry::Lost => continue,
+            Expiry::Published { table, expired, kept } => (*table, expired, kept),
+        };
         report.snapshots_expired += expired.len();
-        let mut expired_table = table.clone();
-        expired_table.version = version;
-        expired_table.metadata = metadata;
-        let _ = host.put(&hint_uri(&table.location), version.to_string().into_bytes()).await;
+        let _ = host.put(&hint_uri(&expired_table.location), expired_table.version.to_string().into_bytes()).await;
         let gone = reachable(host, &expired, Missing::Skip).await?;
         let doomed: Vec<String> = gone.difference(&kept).cloned().collect();
         host.delete(&doomed).await?;
@@ -482,14 +471,49 @@ async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainRepor
         let _ = expired_table.write_head(host).await;
         return Ok(expired_table);
     }
+    Err(WriteError::Conflict(format!("{}: gave up after {MAX_ATTEMPTS} attempts", table.location)))
+}
+
+/// What one attempt at expiry did.
+enum Expiry {
+    /// No snapshot is due.
+    Nothing,
+    /// Another writer published this version first.
+    Lost,
+    /// The new version, the snapshots it expired, and every object the kept snapshots use.
+    Published { table: Box<TableState>, expired: Vec<SnapshotRef>, kept: HashSet<String> },
+}
+
+/// Publishes `table` without the snapshots due to expire ([`expired_snapshots`]).
+async fn publish_expiry<H: Host>(host: &H, table: &TableState) -> WriteResult<Expiry> {
+    let snapshots = table.metadata.snapshot_list();
+    let times: Vec<SnapshotTime> =
+        snapshots.iter().map(|s| SnapshotTime { id: s.id, timestamp_ms: s.timestamp_ms }).collect();
+    let (current, referenced) = (table.metadata.current_snapshot_id(), table.metadata.referenced_snapshots());
+    let ids = expired_snapshots(&table.contract, &times, current, &referenced, host.now_ms());
+    if ids.is_empty() {
+        return Ok(Expiry::Nothing);
+    }
+    let (expired, remaining): (Vec<_>, Vec<_>) = snapshots.into_iter().partition(|s| ids.contains(&s.id));
+    // What the kept snapshots use, read in full before anything changes: a file left out would be
+    // deleted.
+    let kept = reachable(host, &remaining, Missing::Error).await?;
+    let previous = metadata_uri(&table.location, table.version);
+    let metadata = table.metadata.without_snapshots(&ids, &previous, host.now_ms())?;
+    // Loaded first: metadata this Timelake can't load is never committed.
+    let next = TableState::from_metadata(&table.location, table.version + 1, metadata)?;
+    let uri = metadata_uri(&table.location, next.version);
+    if !put_metadata(host, &uri, next.metadata.to_json().into_bytes()).await? {
+        return Ok(Expiry::Lost);
+    }
+    // Expiry keeps the current snapshot: its files, index and footers stay.
+    let (files, last_values, footers) = (table.files.clone(), table.last_values.clone(), table.footers.clone());
+    let table = Box::new(TableState { files, last_values, footers, ..next });
+    Ok(Expiry::Published { table, expired, kept })
 }
 
 /// Every object (manifest lists, manifests, data files, last-value indexes) `snapshots` use.
-async fn reachable<H: Host>(
-    host: &H,
-    snapshots: &[crate::metadata::SnapshotRef],
-    missing: Missing,
-) -> WriteResult<HashSet<String>> {
+async fn reachable<H: Host>(host: &H, snapshots: &[SnapshotRef], missing: Missing) -> WriteResult<HashSet<String>> {
     let absent =
         |snapshot: i64, uri: &str| missing.check(snapshot, uri).map_err(|e| WriteError::NotFound(e.to_string()));
     let mut out = HashSet::new();
