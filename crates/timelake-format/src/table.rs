@@ -64,6 +64,9 @@ impl TableState {
     }
 
     fn from_metadata(location: &str, version: u64, metadata: Metadata) -> WriteResult<Self> {
+        if metadata.format_version() != 2 {
+            return Err(WriteError::invalid("only Iceberg format version 2 tables can be written"));
+        }
         let contract = metadata.contract()?;
         contract.check_writable().map_err(|e| WriteError::invalid(format!("{location}: {e}")))?;
         Ok(Self {

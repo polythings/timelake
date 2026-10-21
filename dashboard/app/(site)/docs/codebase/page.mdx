@@ -125,8 +125,8 @@ Tests live next to the code (`#[cfg(test)]` modules, with test storage in `testi
 
 The WASM module never makes network requests. The TypeScript client fetches bytes and hands them in, which keeps the module small and identical in every JavaScript runtime:
 
-1. The client fetches `version-hint.text` and `vN.metadata.json`; `new Table(json)` parses it (`meta.rs`).
-2. The client fetches the manifest list and manifests; the module parses them (Avro) into a list of files.
+1. The client fetches `version-hint.text` and `vN.metadata.json`; `new Table(json)` parses it (`meta.rs`, with the metadata reader of `timelake-format`).
+2. The client fetches the manifest list and manifests; the module parses them (Avro, with `timelake_format::iceberg`, as the writers read them) into a list of files.
 3. `planFiles(query)` drops files whose min/max values can't match (`prune.rs`).
 4. For each file, the client fetches the end of the file (the footer). `ParquetFile.plan` (`file.rs`) returns the byte ranges of the row groups and columns needed. The client fetches just those ranges.
 5. `Query.push` decodes and filters each file (`filter.rs`) and collects rows, time buckets (`aggregate.rs`), or the newest row per series (`latest.rs`); `finish` returns JSON rows (`output.rs`). The client validates them with Zod if a schema was given.

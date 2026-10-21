@@ -13,8 +13,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use timelake_wasm::{
-    Collector, DataFile, FileReader, Head, ManifestContent, QuerySpec, TableMeta, parse_manifest, parse_manifest_list,
-    plan_files,
+    Collector, DataFile, FileReader, Head, QuerySpec, TableMeta, data_manifests, parse_manifest, plan_files,
 };
 
 const URL: &str = "http://127.0.0.1/";
@@ -31,12 +30,8 @@ fn load() -> (TableMeta, Vec<DataFile>) {
         std::str::from_utf8(&fetch(&format!("{URL}lake/iot/readings/metadata/v2.metadata.json"))).unwrap(),
     )
     .unwrap();
-    let manifests = parse_manifest_list(&fetch(meta.manifest_list.as_deref().unwrap())).unwrap();
-    assert!(manifests.iter().all(|m| m.content == ManifestContent::Data));
-    let files = manifests
-        .iter()
-        .flat_map(|m| parse_manifest(&fetch(&m.path), &meta.schema, m.sequence_number).unwrap())
-        .collect();
+    let manifests = data_manifests(&fetch(meta.manifest_list.as_deref().unwrap())).unwrap();
+    let files = manifests.iter().flat_map(|m| parse_manifest(m, &fetch(&m.path), &meta.schema).unwrap()).collect();
     (meta, files)
 }
 

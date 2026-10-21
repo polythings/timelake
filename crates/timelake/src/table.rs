@@ -66,6 +66,10 @@ impl LiveEntry {
         };
         let counts = |m: &HashMap<i32, u64>| m.iter().map(|(k, v)| (*k, *v)).collect();
         let file = shared::DataFile {
+            content: match f.content_type() {
+                DataContentType::Data => shared::Content::Data,
+                DataContentType::PositionDeletes | DataContentType::EqualityDeletes => shared::Content::Deletes,
+            },
             path: f.file_path().to_string(),
             partition: file_partition(f),
             record_count: f.record_count(),

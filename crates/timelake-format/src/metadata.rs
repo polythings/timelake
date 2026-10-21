@@ -30,10 +30,12 @@ impl Metadata {
     /// Parses `vN.metadata.json`.
     pub fn parse(bytes: &[u8]) -> WriteResult<Self> {
         let value: Value = serde_json::from_slice(bytes).map_err(|e| corrupt(&e.to_string()))?;
-        if value.get("format-version").and_then(Value::as_u64) != Some(2) {
-            return Err(WriteError::invalid("only Iceberg format version 2 tables can be written"));
-        }
         Ok(Self(value))
+    }
+
+    /// The Iceberg format version (1, 2, …).
+    pub fn format_version(&self) -> u64 {
+        self.0.get("format-version").and_then(Value::as_u64).unwrap_or(1)
     }
 
     /// The metadata as JSON text.
@@ -48,8 +50,7 @@ impl Metadata {
 
     /// The table properties.
     pub fn properties(&self) -> HashMap<String, String> {
-        let Some(Value::Object(p)) = self.0.get("properties") else { return HashMap::new() };
-        p.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
+        string_map(self.0.get("properties"))
     }
 
     /// The Timelake contract in the properties.
@@ -77,9 +78,7 @@ impl Metadata {
 
     /// The current snapshot's summary.
     pub fn summary(&self) -> HashMap<String, String> {
-        let summary = self.current_snapshot_id().and_then(|id| self.snapshot(id)?.get("summary"));
-        let Some(Value::Object(s)) = summary else { return HashMap::new() };
-        s.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
+        string_map(self.current_snapshot_id().and_then(|id| self.snapshot(id)?.get("summary")))
     }
 
     /// Whether the current snapshot or one of its ancestors committed batch `batch_id`
@@ -118,6 +117,31 @@ impl Metadata {
             .and_then(Value::as_array)
             .and_then(|s| s.iter().find(|s| s.get("schema-id").and_then(Value::as_i64) == Some(id)))
             .ok_or_else(|| corrupt("no current schema"))
+    }
+
+    /// The current schema's top-level columns.
+    pub fn columns(&self) -> WriteResult<Vec<Column>> {
+        let fields = self.schema_json()?.get("fields").and_then(Value::as_array);
+        let fields = fields.ok_or_else(|| corrupt("schema without fields"))?;
+        fields
+            .iter()
+            .map(|f| {
+                Ok(Column {
+                    id: f
+                        .get("id")
+                        .and_then(Value::as_i64)
+                        .and_then(|id| i32::try_from(id).ok())
+                        .ok_or_else(|| corrupt("field id"))?,
+                    name: f
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| corrupt("field without a name"))?
+                        .to_string(),
+                    iceberg_type: f.get("type").and_then(Value::as_str).map(str::to_string),
+                    required: f.get("required").and_then(Value::as_bool).unwrap_or(false),
+                })
+            })
+            .collect()
     }
 
     /// The current schema as Arrow, fields carrying their Iceberg field ids (as iceberg-rust's
@@ -178,7 +202,7 @@ impl Metadata {
         self.0.get("last-updated-ms").and_then(Value::as_i64).unwrap_or(0)
     }
 
-    /// Every snapshot: id, timestamp (ms), manifest list, and last-value index.
+    /// Every snapshot with a manifest list.
     pub fn snapshot_list(&self) -> Vec<SnapshotRef> {
         self.snapshots()
             .iter()
@@ -191,6 +215,7 @@ impl Metadata {
                         .pointer("/summary/timelake.last-value-index")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    summary: string_map(s.get("summary")),
                 })
             })
             .collect()
@@ -288,6 +313,12 @@ impl Metadata {
     }
 }
 
+/// The string values of a JSON object.
+fn string_map(object: Option<&Value>) -> HashMap<String, String> {
+    let Some(Value::Object(m)) = object else { return HashMap::new() };
+    m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
+}
+
 fn push(obj: &mut Map<String, Value>, key: &str, value: Value) {
     match obj.get_mut(key) {
         Some(Value::Array(a)) => a.push(value),
@@ -297,7 +328,20 @@ fn push(obj: &mut Map<String, Value>, key: &str, value: Value) {
     }
 }
 
-/// A snapshot as expiry needs it.
+/// A top-level column of a schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Column {
+    /// Its field id.
+    pub id: i32,
+    /// Its name.
+    pub name: String,
+    /// Its Iceberg type (`long`, `timestamptz`, …); `None` for structs, lists and maps.
+    pub iceberg_type: Option<String>,
+    /// Whether it has a value in every row.
+    pub required: bool,
+}
+
+/// A snapshot in the metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotRef {
     /// Its id.
@@ -308,6 +352,8 @@ pub struct SnapshotRef {
     pub manifest_list: String,
     /// Its last-value index.
     pub last_value_index: Option<String>,
+    /// Its summary (`operation` among it).
+    pub summary: HashMap<String, String>,
 }
 
 /// A snapshot to add (see [`Metadata::with_snapshot`]).

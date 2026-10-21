@@ -11,7 +11,7 @@ use crate::error::{WriteError, WriteResult};
 use crate::file::{FileStats, FileWriter, writer_properties};
 use crate::footer;
 use crate::host::{Host, Upload, uuid_v7};
-use crate::iceberg::DataFile;
+use crate::iceberg::{Content, DataFile};
 use crate::layout::{data_file_uri, partition_dir};
 use crate::maintain::{MaintainOptions, MaintainReport, maintain};
 use crate::rows::{latest_of_sorted, sort_and_split};
@@ -317,6 +317,7 @@ impl<'a, H: Host> PartitionFiles<'a, H> {
 /// The Iceberg entry of a written file.
 pub fn data_file(table: &TableState, uri: String, partition: Option<i32>, stats: &FileStats) -> DataFile {
     DataFile {
+        content: Content::Data,
         path: uri,
         partition,
         record_count: stats.record_count,

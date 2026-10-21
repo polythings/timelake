@@ -26,6 +26,8 @@ pub enum Status {
 /// A data file as Iceberg records it. Bounds are Iceberg's single-value binary encoding.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DataFile {
+    /// Data, or deletes (position or equality) another engine wrote.
+    pub content: Content,
     /// Absolute URI.
     pub path: String,
     /// The time partition (`None` for unpartitioned tables).
@@ -67,11 +69,12 @@ pub struct Entry {
     pub file: Arc<DataFile>,
 }
 
-/// What a manifest lists: data files, or delete files (row-level deletes, which Timelake doesn't
-/// write but other engines may).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a manifest or file holds: data, or row-level deletes, which Timelake doesn't write but
+/// other engines may.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Content {
     /// Data files.
+    #[default]
     Data = 0,
     /// Position or equality delete files.
     Deletes = 1,
@@ -295,7 +298,7 @@ pub fn write_manifest(ctx: &ManifestContext<'_>, entries: &[ManifestWrite]) -> W
             }
         };
         let data_file = Value::Record(vec![
-            ("content".into(), Value::Int(0)),
+            ("content".into(), Value::Int(f.content as i32)),
             ("file_path".into(), Value::String(f.path.clone())),
             ("file_format".into(), Value::String("PARQUET".into())),
             ("partition".into(), Value::Record(partition)),
@@ -542,6 +545,13 @@ fn bytes_map_of(v: Option<&Value>) -> BTreeMap<i32, Vec<u8>> {
         .collect()
 }
 
+/// A manifest entry's data or file sequence number: the one it records, else, for a file the
+/// manifest's snapshot added, the manifest's (Iceberg's sequence number inheritance). Other
+/// entries must record theirs; one that doesn't sorts as the oldest data.
+pub fn inherit_sequence(status: Status, recorded: Option<i64>, manifest_sequence: i64) -> i64 {
+    recorded.unwrap_or(if status == Status::Added { manifest_sequence } else { 0 })
+}
+
 /// The entries of `manifest`, with snapshot ids and sequence numbers inherited from it filled in.
 pub fn read_manifest(manifest: &ManifestFile, bytes: &[u8]) -> WriteResult<Vec<Entry>> {
     records(bytes)?
@@ -554,6 +564,12 @@ pub fn read_manifest(manifest: &ManifestFile, bytes: &[u8]) -> WriteResult<Vec<E
                 other => return Err(WriteError::Corrupt(format!("manifest entry status {other:?}"))),
             };
             let df = required(field(r, "data_file"), "data_file")?;
+            let content = match int(field(df, "content")).unwrap_or(0) {
+                0 => Content::Data,
+                // Position and equality deletes.
+                1 | 2 => Content::Deletes,
+                other => return Err(WriteError::Corrupt(format!("data file content {other}"))),
+            };
             let partition = match field(df, "partition") {
                 Some(Value::Record(fields)) => fields.first().and_then(|(_, v)| match v {
                     Value::Union(_, inner) => int(Some(inner)),
@@ -562,6 +578,7 @@ pub fn read_manifest(manifest: &ManifestFile, bytes: &[u8]) -> WriteResult<Vec<E
                 _ => None,
             };
             let file = DataFile {
+                content,
                 path: match field(df, "file_path") {
                     Some(Value::String(s)) => s.clone(),
                     _ => return Err(WriteError::Corrupt("data file without a path".into())),
@@ -581,8 +598,7 @@ pub fn read_manifest(manifest: &ManifestFile, bytes: &[u8]) -> WriteResult<Vec<E
                 },
                 sort_order_id: int(field(df, "sort_order_id")),
             };
-            // Added entries without sequence numbers inherit the manifest's (Iceberg's rule).
-            let inherit = |v: Option<i64>| v.unwrap_or(manifest.sequence_number);
+            let inherit = |v: Option<i64>| inherit_sequence(status, v, manifest.sequence_number);
             Ok(Entry {
                 status,
                 snapshot_id: long(field(r, "snapshot_id")).unwrap_or(manifest.added_snapshot_id),
@@ -663,6 +679,12 @@ mod tests {
         assert_eq!((read[0].sequence_number, read[0].snapshot_id, read[0].status), (5, 7, Status::Added));
         assert_eq!((read[1].sequence_number, read[1].snapshot_id, read[1].status), (2, 3, Status::Existing));
         assert_eq!(read[0].file, entries[0].file);
+
+        // Only added entries inherit the manifest's sequence numbers; another engine's existing
+        // entry without them sorts as the oldest data, as iceberg-rust reads it.
+        let unrecorded = ManifestWrite { sequence_number: None, file_sequence_number: None, ..entries[1].clone() };
+        let read = read_manifest(&mf, &write_manifest(&ctx, &[unrecorded]).unwrap()).unwrap();
+        assert_eq!((read[0].status, read[0].sequence_number, read[0].file_sequence_number), (Status::Existing, 0, 0));
 
         // A partition field named outside Avro's names is written under its Avro name.
         let odd = PartitionField { name: "event-time \"day\"".into(), field_id: 1001, chunk: Chunk::Hour };

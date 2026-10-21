@@ -40,16 +40,14 @@ use std::collections::{HashMap, VecDeque};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use serde::Serialize;
+use timelake_format::iceberg::ManifestFile;
 use wasm_bindgen::prelude::*;
 
 pub use aggregate::bucket_start;
 pub use error::{Error, Result};
 pub use file::{COALESCE_GAP, FileReader, coalesce, footer_len};
 pub use head::Head;
-pub use meta::{
-    DataFile, Field, MAX_SNAPSHOTS, ManifestContent, ManifestRef, SnapshotInfo, TableMeta, data_manifests,
-    parse_manifest, parse_manifest_list,
-};
+pub use meta::{DataFile, Field, MAX_SNAPSHOTS, SnapshotInfo, TableMeta, data_manifests, parse_manifest};
 pub use prune::plan_files;
 pub use query::Collector;
 pub use spec::{AggInput, AggOp, AggSpec, BucketSpec, QuerySpec};
@@ -221,8 +219,8 @@ pub struct Table {
     last_values: Option<RecordBatch>,
     /// Footers the head carried, by file path.
     footers: HashMap<String, Bytes>,
-    /// Sequence numbers of the data manifests still to be added, in the order they are added.
-    manifest_sequence_numbers: VecDeque<i64>,
+    /// The data manifests still to be added, in the order they are added.
+    manifests: VecDeque<ManifestFile>,
 }
 
 #[wasm_bindgen]
@@ -236,7 +234,7 @@ impl Table {
             version: None,
             last_values: None,
             footers: HashMap::new(),
-            manifest_sequence_numbers: VecDeque::new(),
+            manifests: VecDeque::new(),
         })
     }
 
@@ -251,7 +249,7 @@ impl Table {
             version: Some(head.version),
             last_values: head.last_values,
             footers: head.footers,
-            manifest_sequence_numbers: VecDeque::new(),
+            manifests: VecDeque::new(),
         })
     }
 
@@ -303,16 +301,20 @@ impl Table {
     #[wasm_bindgen(js_name = addManifestList)]
     pub fn add_manifest_list(&mut self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {
         let manifests = data_manifests(bytes)?;
-        self.manifest_sequence_numbers = manifests.iter().map(|m| m.sequence_number).collect();
-        Ok(manifests.into_iter().map(|m| m.path).collect())
+        let paths = manifests.iter().map(|m| m.path.clone()).collect();
+        self.manifests = manifests.into();
+        Ok(paths)
     }
 
     /// Adds the live data files of one data manifest. Add them in the order `addManifestList`
     /// returned them: entries take their sequence numbers from the manifest's.
     #[wasm_bindgen(js_name = addManifest)]
     pub fn add_manifest(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-        let sequence_number = self.manifest_sequence_numbers.pop_front().unwrap_or_default();
-        self.files.extend(parse_manifest(bytes, &self.meta.schema, sequence_number)?);
+        let manifest = self
+            .manifests
+            .pop_front()
+            .ok_or_else(|| Error::invalid("addManifest was called more often than addManifestList gave manifests"))?;
+        self.files.extend(parse_manifest(&manifest, bytes, &self.meta.schema)?);
         Ok(())
     }
 

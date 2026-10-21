@@ -1,15 +1,17 @@
-//! Iceberg table metadata (`vN.metadata.json`) and manifests (Avro), read without iceberg-rust so
-//! the reader stays small and compiles to WebAssembly.
+//! What the reader needs from a table's Iceberg metadata (`vN.metadata.json`) and manifests
+//! (Avro): the contract, the current schema's columns, the snapshots, and the live data files
+//! with their bounds by column name. Read with `timelake_format`'s readers, as the shared write
+//! path reads them.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
 
-use apache_avro::types::Value;
 use parquet::basic::TimeUnit;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use timelake_format::Contract;
 use timelake_format::bounds::{Bound, decode};
-use timelake_format::iceberg::Entry;
-use timelake_format::{Contract, summary};
+use timelake_format::iceberg::{Content, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
+use timelake_format::metadata::{Metadata, SnapshotRef};
 
 use crate::error::{Error, Result};
 use crate::prune::scale_to_micros;
@@ -39,12 +41,23 @@ pub struct SnapshotInfo {
     pub summary: HashMap<String, String>,
 }
 
+impl From<&SnapshotRef> for SnapshotInfo {
+    fn from(s: &SnapshotRef) -> Self {
+        Self {
+            id: s.id.to_string(),
+            timestamp_ms: s.timestamp_ms,
+            operation: s.summary.get("operation").cloned().unwrap_or_default(),
+            summary: s.summary.clone(),
+        }
+    }
+}
+
 /// What a reader needs from the table metadata.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableMeta {
     pub location: String,
-    pub format_version: u8,
+    pub format_version: u64,
     pub schema: Vec<Field>,
     pub properties: HashMap<String, String>,
     pub time_column: Option<String>,
@@ -60,208 +73,63 @@ pub struct TableMeta {
     pub last_updated_ms: i64,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct RawMeta {
-    format_version: u8,
-    location: String,
-    #[serde(default)]
-    current_schema_id: i32,
-    #[serde(default)]
-    schemas: Vec<RawSchema>,
-    #[serde(default)]
-    properties: HashMap<String, String>,
-    current_snapshot_id: Option<i64>,
-    #[serde(default)]
-    snapshots: Vec<RawSnapshot>,
-    #[serde(default)]
-    last_updated_ms: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct RawSchema {
-    #[serde(default)]
-    schema_id: i32,
-    fields: Vec<RawField>,
-}
-
-#[derive(Deserialize)]
-struct RawField {
-    id: i32,
-    name: String,
-    required: bool,
-    #[serde(rename = "type")]
-    ty: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct RawSnapshot {
-    snapshot_id: i64,
-    timestamp_ms: i64,
-    manifest_list: String,
-    #[serde(default)]
-    summary: HashMap<String, String>,
-}
-
-impl RawSnapshot {
-    fn info(&self) -> SnapshotInfo {
-        SnapshotInfo {
-            id: self.snapshot_id.to_string(),
-            timestamp_ms: self.timestamp_ms,
-            operation: self.summary.get("operation").cloned().unwrap_or_default(),
-            summary: self.summary.clone(),
-        }
-    }
-}
-
 impl TableMeta {
     /// The current schema's top-level columns by field id.
     pub(crate) fn fields_by_id(&self) -> HashMap<i32, &Field> {
-        self.schema.iter().map(|f| (f.id, f)).collect()
+        by_id(&self.schema)
     }
 
     /// Parses `vN.metadata.json`, including the Timelake contract in its properties.
     pub fn parse(json: &str) -> Result<Self> {
-        let raw: RawMeta = serde_json::from_str(json)?;
-        let schema = raw
-            .schemas
-            .iter()
-            .find(|s| s.schema_id == raw.current_schema_id)
-            .or(raw.schemas.last())
-            .ok_or_else(|| Error::invalid("table metadata has no schema"))?;
-        let fields = schema
-            .fields
-            .iter()
-            .map(|f| Field {
-                id: f.id,
-                name: f.name.clone(),
-                ty: f.ty.as_str().unwrap_or("nested").to_string(),
-                required: f.required,
+        let metadata = Metadata::parse(json.as_bytes())?;
+        let properties = metadata.properties();
+        let contract = Contract::from_properties(&properties)?;
+        contract.check_readable().map_err(|e| Error::invalid(e.0))?;
+        let schema = metadata
+            .columns()?
+            .into_iter()
+            .map(|c| Field {
+                id: c.id,
+                name: c.name,
+                ty: c.iceberg_type.unwrap_or_else(|| "nested".into()),
+                required: c.required,
             })
             .collect();
-        let contract = Contract::from_properties(&raw.properties)?;
-        contract.check_readable().map_err(|e| Error::invalid(e.0))?;
-        let current = raw.current_snapshot_id.and_then(|id| raw.snapshots.iter().find(|s| s.snapshot_id == id));
-        let mut snapshots: Vec<SnapshotInfo> = raw.snapshots.iter().map(RawSnapshot::info).collect();
+        let all = metadata.snapshot_list();
+        let current = metadata.current_snapshot_id().and_then(|id| all.iter().find(|s| s.id == id));
+        let mut snapshots: Vec<SnapshotInfo> = all.iter().map(SnapshotInfo::from).collect();
         snapshots.sort_by_key(|s| Reverse(s.timestamp_ms));
         snapshots.truncate(MAX_SNAPSHOTS);
         Ok(Self {
-            location: raw.location,
-            format_version: raw.format_version,
-            schema: fields,
+            location: metadata.location().to_string(),
+            format_version: metadata.format_version(),
+            schema,
             time_column: contract.time_column,
             series_key: contract.series_key,
             chunk: contract.chunk.map(|c| c.as_str().to_string()),
             dedup: contract.dedup,
-            properties: raw.properties,
-            current_snapshot: current.map(RawSnapshot::info),
+            properties,
+            current_snapshot: current.map(SnapshotInfo::from),
             manifest_list: current.map(|s| s.manifest_list.clone()),
-            last_value_index: current.and_then(|s| s.summary.get(summary::LAST_VALUE_INDEX).cloned()),
-            snapshot_count: raw.snapshots.len(),
+            last_value_index: current.and_then(|s| s.last_value_index.clone()),
+            snapshot_count: all.len(),
             snapshots,
-            last_updated_ms: raw.last_updated_ms,
+            last_updated_ms: metadata.last_updated_ms(),
         })
     }
 }
 
-// --- Avro manifests -------------------------------------------------------------------------------
-
-/// Iceberg's integer codes in manifests.
-mod code {
-    /// `manifest_file.content` and `data_file.content`: data rather than deletes.
-    pub(super) const CONTENT_DATA: i64 = 0;
-    /// `manifest_file.content`: delete files.
-    pub(super) const CONTENT_DELETES: i64 = 1;
-    /// `manifest_entry.status`: the file was removed in this snapshot.
-    pub(super) const STATUS_DELETED: i64 = 2;
+fn by_id(schema: &[Field]) -> HashMap<i32, &Field> {
+    schema.iter().map(|f| (f.id, f)).collect()
 }
 
-/// Optional Avro fields are unions with null; this returns the value inside.
-fn strip_union(v: &Value) -> &Value {
-    match v {
-        Value::Union(_, inner) => strip_union(inner),
-        other => other,
-    }
-}
-
-fn field<'a>(record: &'a Value, name: &str) -> Option<&'a Value> {
-    match strip_union(record) {
-        Value::Record(fields) => fields.iter().find(|(n, _)| n == name).map(|(_, v)| strip_union(v)),
-        _ => None,
-    }
-}
-
-fn as_i64(v: Option<&Value>) -> Option<i64> {
-    match v? {
-        Value::Long(x) => Some(*x),
-        Value::Int(x) => Some(i64::from(*x)),
-        _ => None,
-    }
-}
-
-fn as_u64(v: Option<&Value>) -> u64 {
-    as_i64(v).and_then(|x| u64::try_from(x).ok()).unwrap_or(0)
-}
-
-fn as_string(v: Option<&Value>) -> Option<String> {
-    match v? {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn read_avro(bytes: &[u8]) -> Result<Vec<Value>> {
-    Ok(apache_avro::Reader::new(bytes)?.collect::<Result<_, _>>()?)
-}
-
-/// What a manifest tracks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ManifestContent {
-    Data,
-    Deletes,
-}
-
-/// One manifest of the current snapshot.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ManifestRef {
-    pub path: String,
-    pub length: i64,
-    pub content: ManifestContent,
-    pub sequence_number: i64,
-    pub added_snapshot_id: i64,
-}
-
-/// Parses a manifest list (`snap-….avro`).
-pub fn parse_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
-    read_avro(bytes)?
-        .iter()
-        .map(|r| {
-            let content = match as_i64(field(r, "content")).unwrap_or(code::CONTENT_DATA) {
-                code::CONTENT_DATA => ManifestContent::Data,
-                code::CONTENT_DELETES => ManifestContent::Deletes,
-                other => return Err(Error::invalid(format!("unknown manifest content {other}"))),
-            };
-            Ok(ManifestRef {
-                path: as_string(field(r, "manifest_path"))
-                    .ok_or_else(|| Error::invalid("manifest list entry without path"))?,
-                length: as_i64(field(r, "manifest_length")).unwrap_or(0),
-                content,
-                sequence_number: as_i64(field(r, "sequence_number")).unwrap_or(0),
-                added_snapshot_id: as_i64(field(r, "added_snapshot_id")).unwrap_or(0),
-            })
-        })
-        .collect()
-}
+// --- manifests ----------------------------------------------------------------------------------
 
 /// The data manifests of a manifest list. Delete manifests (row-level deletes another engine
 /// wrote) are an error: this reader doesn't apply them, and rows they delete would come back.
-pub fn data_manifests(bytes: &[u8]) -> Result<Vec<ManifestRef>> {
-    let manifests = parse_manifest_list(bytes)?;
-    if let Some(m) = manifests.iter().find(|m| m.content == ManifestContent::Deletes) {
+pub fn data_manifests(bytes: &[u8]) -> Result<Vec<ManifestFile>> {
+    let manifests = read_manifest_list(bytes)?;
+    if let Some(m) = manifests.iter().find(|m| m.content == Content::Deletes) {
         return Err(deletes_unsupported(&m.path));
     }
     Ok(manifests)
@@ -271,6 +139,20 @@ fn deletes_unsupported(path: &str) -> Error {
     Error::invalid(format!(
         "the table has delete files ({path}), which this reader doesn't apply; read it with an engine that does"
     ))
+}
+
+/// The live data files of `manifest`, read from its `bytes`. Entries without sequence numbers
+/// inherit the manifest's, as Iceberg says.
+pub fn parse_manifest(manifest: &ManifestFile, bytes: &[u8], schema: &[Field]) -> Result<Vec<DataFile>> {
+    let by_id = by_id(schema);
+    read_manifest(manifest, bytes)?
+        .iter()
+        .filter(|e| e.status != Status::Deleted)
+        .map(|e| match e.file.content {
+            Content::Data => Ok(DataFile::from_entry(e, &by_id)),
+            Content::Deletes => Err(deletes_unsupported(&e.file.path)),
+        })
+        .collect()
 }
 
 /// A live data file with its column bounds, keyed by column name.
@@ -322,57 +204,25 @@ pub(crate) fn decode_bound(f: &Field, bytes: &[u8], upper: bool) -> Option<Bound
     })
 }
 
-/// Column bounds by name (see [`decode_bound`]).
-fn bounds(v: Option<&Value>, by_id: &HashMap<i32, &Field>, upper: bool) -> HashMap<String, Bound> {
-    let Some(Value::Array(entries)) = v else { return HashMap::new() };
-    entries
-        .iter()
-        .filter_map(|e| {
-            let id = i32::try_from(as_i64(field(e, "key"))?).ok()?;
-            let Some(Value::Bytes(b)) = field(e, "value") else { return None };
-            let f = by_id.get(&id)?;
-            Some((f.name.clone(), decode_bound(f, b, upper)?))
-        })
-        .collect()
-}
-
-/// Parses a data manifest; returns its live (not deleted) data files. Entries without a sequence
-/// number inherit `sequence_number`, the manifest's in the manifest list.
-pub fn parse_manifest(bytes: &[u8], schema: &[Field], sequence_number: i64) -> Result<Vec<DataFile>> {
-    let by_id: HashMap<i32, &Field> = schema.iter().map(|f| (f.id, f)).collect();
-    let mut out = vec![];
-    for entry in read_avro(bytes)? {
-        if as_i64(field(&entry, "status")) == Some(code::STATUS_DELETED) {
-            continue;
-        }
-        let Some(df) = field(&entry, "data_file") else { continue };
-        if as_i64(field(df, "content")).unwrap_or(code::CONTENT_DATA) != code::CONTENT_DATA {
-            return Err(deletes_unsupported(&as_string(field(df, "file_path")).unwrap_or_default()));
-        }
-        let partition = match field(df, "partition") {
-            Some(Value::Record(fs)) => fs.first().and_then(|(_, v)| match strip_union(v) {
-                // A day partition is an Avro `date`.
-                Value::Date(days) => Some(i64::from(*days)),
-                other => as_i64(Some(other)),
-            }),
-            _ => None,
-        };
-        out.push(DataFile {
-            path: as_string(field(df, "file_path")).ok_or_else(|| Error::invalid("data file without path"))?,
-            size: as_u64(field(df, "file_size_in_bytes")),
-            records: as_u64(field(df, "record_count")),
-            partition,
-            sequence_number: as_i64(field(&entry, "sequence_number")).unwrap_or(sequence_number),
-            lower: bounds(field(df, "lower_bounds"), &by_id, false),
-            upper: bounds(field(df, "upper_bounds"), &by_id, true),
-        });
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use timelake_format::iceberg::{
+        self as shared, ManifestContext, ManifestWrite, write_manifest, write_manifest_list,
+    };
+
     use super::*;
+
+    fn entry(file: shared::DataFile) -> Entry {
+        Entry {
+            status: Status::Added,
+            snapshot_id: 1,
+            sequence_number: 1,
+            file_sequence_number: 1,
+            file: Arc::new(file),
+        }
+    }
 
     #[test]
     fn nanosecond_bounds_are_microseconds() {
@@ -380,25 +230,18 @@ mod tests {
             Field { id: 1, name: "ns".into(), ty: "timestamptz_ns".into(), required: true },
             Field { id: 2, name: "us".into(), ty: "timestamptz".into(), required: true },
         ];
-        let by_id = fields.iter().map(|f| (f.id, f)).collect();
-        let entry = |id: i32, x: i64| {
-            Value::Record(vec![
-                ("key".into(), Value::Int(id)),
-                ("value".into(), Value::Bytes(x.to_le_bytes().to_vec())),
-            ])
-        };
-        let v = Value::Array(vec![entry(1, 1_500_001), entry(2, 1_500_001)]);
-        let lower = bounds(Some(&v), &by_id, false);
-        let upper = bounds(Some(&v), &by_id, true);
-        assert_eq!((&lower["ns"], &upper["ns"]), (&Bound::Int(1500), &Bound::Int(1501)));
-        assert_eq!((&lower["us"], &upper["us"]), (&Bound::Int(1_500_001), &Bound::Int(1_500_001)));
+        let bound = |x: i64| x.to_le_bytes().to_vec();
+        let bounds = BTreeMap::from([(1, bound(1_500_001)), (2, bound(1_500_001)), (3, bound(7))]);
+        let file = shared::DataFile { lower_bounds: bounds.clone(), upper_bounds: bounds, ..Default::default() };
+        let f = DataFile::from_entry(&entry(file), &by_id(&fields));
+        assert_eq!((&f.lower["ns"], &f.upper["ns"]), (&Bound::Int(1500), &Bound::Int(1501)));
+        assert_eq!((&f.lower["us"], &f.upper["us"]), (&Bound::Int(1_500_001), &Bound::Int(1_500_001)));
+        assert_eq!(f.lower.len(), 2, "columns not in the schema are left out");
     }
 
     /// Delete manifests and delete files are errors, not skipped: their rows would come back.
     #[test]
     fn delete_files_are_errors() {
-        use timelake_format::iceberg::{Content, ManifestFile, write_manifest_list};
-
         let data = ManifestFile {
             path: "m.avro".into(),
             length: 1,
@@ -418,24 +261,26 @@ mod tests {
         let deletes = ManifestFile { path: "d.avro".into(), content: Content::Deletes, ..data.clone() };
         let list = write_manifest_list(std::slice::from_ref(&data), 1, None, 1).unwrap();
         assert_eq!(data_manifests(&list).unwrap().iter().map(|m| m.path.as_str()).collect::<Vec<_>>(), ["m.avro"]);
-        let list = write_manifest_list(&[data, deletes], 1, None, 1).unwrap();
+        let list = write_manifest_list(&[data.clone(), deletes], 1, None, 1).unwrap();
         assert!(data_manifests(&list).unwrap_err().to_string().contains("delete files (d.avro)"));
 
-        let schema = apache_avro::Schema::parse_str(
-            r#"{"type": "record", "name": "manifest_entry", "fields": [
-                {"name": "status", "type": "int"},
-                {"name": "data_file", "type": {"type": "record", "name": "r2", "fields": [
-                    {"name": "content", "type": "int"}, {"name": "file_path", "type": "string"}
-                ]}}
-            ]}"#,
-        )
-        .unwrap();
-        let mut w = apache_avro::Writer::new(&schema, vec![]);
-        let file =
-            Value::Record(vec![("content".into(), Value::Int(1)), ("file_path".into(), Value::String("p".into()))]);
-        w.append(Value::Record(vec![("status".into(), Value::Int(1)), ("data_file".into(), file)])).unwrap();
-        let manifest = w.into_inner().unwrap();
-        assert!(parse_manifest(&manifest, &[], 0).unwrap_err().to_string().contains("delete files (p)"));
+        let ctx = ManifestContext {
+            schema_json: r#"{"schema-id":0,"type":"struct","fields":[]}"#,
+            schema_id: 0,
+            spec_fields_json: "[]",
+            spec_id: 0,
+            partition: None,
+        };
+        let file = shared::DataFile { content: Content::Deletes, path: "p".into(), ..Default::default() };
+        let write = ManifestWrite {
+            status: Status::Added,
+            snapshot_id: Some(1),
+            sequence_number: None,
+            file_sequence_number: None,
+            file: Arc::new(file),
+        };
+        let manifest = write_manifest(&ctx, &[write]).unwrap();
+        assert!(parse_manifest(&data, &manifest, &[]).unwrap_err().to_string().contains("delete files (p)"));
     }
 
     fn meta(format: &str) -> Result<TableMeta> {

@@ -1125,7 +1125,6 @@ dependencies = [
 name = "timelake-wasm"
 version = "0.7.0"
 dependencies = [
- "apache-avro",
  "arrow-arith",
  "arrow-array",
  "arrow-cast",

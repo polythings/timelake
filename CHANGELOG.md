@@ -67,6 +67,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- The TypeScript client and `TableWriter` let every manifest entry without a sequence number take its manifest's,
+  where Iceberg gives it only to files the manifest's snapshot added. Such an entry from another writer now counts as
+  the oldest data, as in the engine, so of two rows with the same key and time the newer write wins in both.
 - Two appends at once through one TypeScript `TableWriter`, or one Python `Table` from two threads, could leave the
   handle on the older of the two versions when they finished out of order. A handle now only moves forward.
 - The TypeScript client's `latest` on a table without a last-value index could return an older write of a reading

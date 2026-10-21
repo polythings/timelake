@@ -33,6 +33,7 @@ use crate::settings::{self, Level};
 use crate::storage::{Storage, warehouse_url};
 use crate::table::{FreshnessCheck, LiveEntry, Table};
 use timelake_format::INGEST_TIME_COLUMN;
+use timelake_format::iceberg::{Status, inherit_sequence};
 use timelake_format::layout::{
     hint_uri, metadata_prefix, metadata_uri, metadata_version, partition_field_name, table_location, tables_index_uri,
 };
@@ -420,8 +421,8 @@ impl Lake {
             entries
                 .iter()
                 .map(|e| {
-                    let added = e.status == ManifestStatus::Added;
-                    let inherit = |v: Option<i64>| v.or(added.then_some(mf.sequence_number)).unwrap_or(0);
+                    let status = if e.status == ManifestStatus::Added { Status::Added } else { Status::Existing };
+                    let inherit = |v: Option<i64>| inherit_sequence(status, v, mf.sequence_number);
                     LiveEntry {
                         status: e.status,
                         data_file: Arc::new(e.data_file.clone()),
