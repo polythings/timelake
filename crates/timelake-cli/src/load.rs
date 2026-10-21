@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
@@ -10,9 +10,9 @@ use timelake::arrow::array::RecordBatch;
 use timelake::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use timelake::datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use timelake::datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOptions, SessionContext};
-use timelake::{AppendOptions, AppendResult, Table, TableOptions, parse_duration};
+use timelake::{AppendOptions, AppendResult, Chunk, Table, TableOptions};
 
-use crate::parse_kv;
+use crate::{parse_duration, parse_kv};
 
 /// How to create a table.
 #[derive(clap::Args)]
@@ -31,10 +31,10 @@ pub(crate) struct TableDef {
     series_key: Vec<String>,
     /// Time partition size: hour, day or month (default day).
     #[arg(long)]
-    chunk: Option<String>,
+    chunk: Option<Chunk>,
     /// Drop data older than this, e.g. 90d.
-    #[arg(long)]
-    retention: Option<String>,
+    #[arg(long, value_parser = parse_duration)]
+    retention: Option<Duration>,
     /// Disable dedup of identical (series, time) rows during compaction.
     #[arg(long)]
     no_dedup: bool,
@@ -47,16 +47,16 @@ pub(crate) struct TableDef {
 }
 
 impl TableDef {
-    pub(crate) fn options(&self) -> Result<TableOptions> {
-        Ok(TableOptions {
+    pub(crate) fn options(&self) -> TableOptions {
+        TableOptions {
             time_column: self.time_column.clone(),
             series_key: self.series_key.clone(),
-            chunk: self.chunk.as_deref().map(str::parse).transpose()?,
+            chunk: self.chunk,
             dedup: self.no_dedup.then_some(false),
             ingest_time: self.no_ingest_time.then_some(false),
-            retention: self.retention.as_deref().map(parse_duration).transpose()?,
+            retention: self.retention,
             properties: self.props.iter().cloned().collect(),
-        })
+        }
     }
 
     /// The schema from `--schema`, else from `--from` or `fallback_file`.
@@ -111,7 +111,18 @@ fn has_extension(path: &Path, extension: &str) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(extension))
 }
 
-/// Reads a `.parquet` file or directory, or a `.csv`, `.csv.gz` or `.tsv` file with a header.
+/// The last `parts` extensions of `path` as written, with the dot: `.CSV.gz`. DataFusion checks a
+/// file's name against the extension it is given, in its case.
+fn suffix(path: &Path, parts: usize) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let pieces: Vec<&str> = name.rsplitn(parts + 1, '.').collect();
+    let mut extensions: Vec<&str> = pieces.into_iter().take(parts).collect();
+    extensions.reverse();
+    format!(".{}", extensions.join("."))
+}
+
+/// Reads a `.parquet` file or directory, or a `.csv`, `.csv.gz` or `.tsv` file with a header, the
+/// extension in any case.
 async fn read_file(ctx: &SessionContext, path: &str) -> Result<DataFrame> {
     let p = Path::new(path);
     let gzip = has_extension(p, "gz");
@@ -124,14 +135,18 @@ async fn read_file(ctx: &SessionContext, path: &str) -> Result<DataFrame> {
     if csv || tsv {
         let mut o = CsvReadOptions::new().has_header(true);
         if tsv {
-            o = o.delimiter(b'\t').file_extension(".tsv");
+            o = o.delimiter(b'\t');
         }
         if gzip {
-            o = o.file_compression_type(FileCompressionType::GZIP).file_extension(".csv.gz");
+            o = o.file_compression_type(FileCompressionType::GZIP);
         }
-        Ok(ctx.read_csv(path, o).await?)
-    } else if has_extension(p, "parquet") || p.is_dir() {
+        let extension = suffix(p, if gzip { 2 } else { 1 });
+        Ok(ctx.read_csv(path, o.file_extension(&extension)).await?)
+    } else if p.is_dir() {
         Ok(ctx.read_parquet(path, ParquetReadOptions::default()).await?)
+    } else if has_extension(p, "parquet") {
+        let extension = suffix(p, 1);
+        Ok(ctx.read_parquet(path, ParquetReadOptions::default().file_extension(&extension)).await?)
     } else {
         bail!("unsupported file type: {path} (use .parquet or .csv)")
     }
@@ -265,5 +280,11 @@ mod tests {
         );
         assert!(parse_schema("time").is_err());
         assert!(parse_schema("x:decimal").is_err());
+    }
+
+    #[test]
+    fn suffixes_keep_their_case() {
+        assert_eq!(suffix(Path::new("/d/a.b.CSV"), 1), ".CSV");
+        assert_eq!(suffix(Path::new("/d/a.b.CSV.Gz"), 2), ".CSV.Gz");
     }
 }

@@ -18,7 +18,8 @@ const JSON_SNAPSHOTS: usize = 50;
 pub(crate) struct TableInfo {
     name: String,
     version: u64,
-    format_version: String,
+    /// The Iceberg format version (1, 2 or 3).
+    format_version: u8,
     location: String,
     contract: Contract,
     /// `(name, type, nullable)` per column.
@@ -84,7 +85,7 @@ impl TableInfo {
                 SnapshotInfo {
                     id: s.snapshot_id(),
                     timestamp_ms: s.timestamp_ms(),
-                    operation: format!("{:?}", s.summary().operation).to_lowercase(),
+                    operation: s.summary().operation.as_str().to_string(),
                     added_records: count(summary::ADDED_RECORDS),
                     deleted_records: count(summary::DELETED_RECORDS),
                     added_files: count(summary::ADDED_DATA_FILES),
@@ -97,7 +98,7 @@ impl TableInfo {
         Ok(Self {
             name: t.name().to_string(),
             version: t.version(),
-            format_version: format!("{:?}", t.metadata().format_version()),
+            format_version: t.metadata().format_version() as u8,
             location: t.location().to_string(),
             columns: t
                 .schema()
@@ -162,7 +163,7 @@ fn megabytes(bytes: u64) -> f64 {
 impl fmt::Display for TableInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let c = &self.contract;
-        writeln!(f, "table      {} (v{}, Iceberg {})", self.name, self.version, self.format_version)?;
+        writeln!(f, "table      {} (v{}, Iceberg v{})", self.name, self.version, self.format_version)?;
         writeln!(f, "location   {}", self.location)?;
         if let Some(time_column) = &c.time_column {
             writeln!(f, "time       {time_column} (chunk {})", c.chunk.map_or("-", |c| c.as_str()))?;
@@ -181,7 +182,7 @@ impl fmt::Display for TableInfo {
         writeln!(f, "format     {} (timelake.format-version)", c.format_version)?;
         writeln!(f, "snapshots  {} (manifests in current: {})", self.snapshot_count, self.manifests)?;
         for s in self.snapshots.iter().take(TEXT_SNAPSHOTS) {
-            let when = chrono::DateTime::from_timestamp_millis(s.timestamp_ms).map(|t| t.format("%Y-%m-%d %H:%M:%S"));
+            let when = chrono::DateTime::from_timestamp_millis(s.timestamp_ms).map(|t| t.format("%Y-%m-%dT%H:%M:%SZ"));
             let current = if Some(s.id) == self.current_snapshot { "  ← current" } else { "" };
             let when = when.map(|w| w.to_string()).unwrap_or_default();
             writeln!(f, "  {:<20} {when} {:<8} {:>12} rows{current}", s.id, s.operation, s.total_records)?;

@@ -15,7 +15,8 @@ one wins:
   Set it at creation (`--prop`, `properties=`) or later (`timelake alter`, `Table.set_properties`). Other engines
   ignore these properties.
 - **Session:** for one SQL session, overriding the table's value: `SET timelake.read_dedup = false` in SQL,
-  `--set timelake.read_dedup=false` on the CLI, `Lake(..., settings={...})` in Python. `SHOW timelake.read_dedup`
+  `--set read_dedup=false` on the CLI, `Lake(..., settings={...})` in Python (any spelling: `read-dedup`,
+  `timelake.read_dedup`). `SHOW timelake.read_dedup`
   shows the session's value.
 - **Call:** for one append or maintenance run, through its options (`AppendOptions`, `MaintainOptions`, or the
   method's keyword arguments in Python).

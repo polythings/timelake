@@ -73,7 +73,7 @@ echo "SELECT * FROM readings LIMIT 5" | timelake sql --namespace iot --format cs
 | --- | --- |
 | `--format <table\|csv\|json\|none>` | Output format (default table). json writes one JSON object per line (newline-delimited), nulls included. none prints only the row count. |
 | `--namespace <ns>` | Namespace for unqualified table names (default default). |
-| `--set <key=value>` | A DataFusion or Timelake setting, e.g. --set datafusion.execution.target_partitions=32 or --set timelake.read_dedup=false. |
+| `--set <key=value>` | A DataFusion or Timelake setting, e.g. --set datafusion.execution.target_partitions=32 or --set read_dedup=false (`timelake.` is added to a name without a prefix). |
 
 ## latest
 

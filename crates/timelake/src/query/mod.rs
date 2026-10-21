@@ -47,7 +47,7 @@ mod stats;
 
 pub(crate) use rollup::{refresh_session, rollup_frame};
 pub use session::Session;
-pub use settings::SessionSettings;
+pub use settings::{SessionSettings, session_key};
 pub use statement::{RollupStatement, Statement};
 
 /// Name of the lake's catalog in SQL.

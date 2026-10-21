@@ -65,10 +65,13 @@ enum Cmd {
     /// Compact, apply retention, refresh rollups, expire snapshots. All tables if none given.
     Maintain {
         tables: Vec<String>,
+        /// Don't compact small or unsorted files.
         #[arg(long)]
         no_compact: bool,
+        /// Don't drop partitions older than the table's retention.
         #[arg(long)]
         no_retention: bool,
+        /// Don't expire old snapshots (nor delete the files only they use).
         #[arg(long)]
         no_expire: bool,
         /// Don't refresh the tables' rollups.
@@ -87,7 +90,7 @@ enum Cmd {
         #[arg(long)]
         no_compact: bool,
         /// How long every snapshot is kept, so the upgrade can be rolled back.
-        #[arg(long, default_value = "7d", value_parser = parse_keep)]
+        #[arg(long, default_value = "7d", value_parser = parse_duration)]
         keep_snapshots: std::time::Duration,
     },
     /// Change a table's settings: --set read-dedup=false, --unset retention (back to the default).
@@ -176,19 +179,20 @@ async fn main() {
     }
 }
 
-/// An error and its causes, joined by ": ", leaving out a cause the messages before it already say: DataFusion's errors
+/// An error and its causes, joined by ": ", leaving out a cause the message before it ends with: DataFusion's errors
 /// repeat their source in their own message.
 fn report(e: &anyhow::Error) -> String {
     let mut out = String::new();
+    let mut previous = String::new();
     for cause in e.chain() {
         let text = cause.to_string();
-        if out.contains(&text) {
-            continue;
+        if !previous.ends_with(&text) {
+            if !out.is_empty() {
+                out.push_str(": ");
+            }
+            out.push_str(&text);
         }
-        if !out.is_empty() {
-            out.push_str(": ");
-        }
-        out.push_str(&text);
+        previous = text;
     }
     out
 }
@@ -266,7 +270,7 @@ async fn run(cli: Cli) -> Result<()> {
 
 async fn create(lake: &Lake, table: &str, def: &TableDef) -> Result<()> {
     let schema = def.schema(None).await?;
-    let t = lake.create_table(table, &schema, def.options()?).await?;
+    let t = lake.create_table(table, &schema, def.options()).await?;
     println!("created {} at {}", t.name(), t.location());
     Ok(())
 }
@@ -276,7 +280,7 @@ async fn import(lake: &Lake, table: &str, files: &[String], def: &TableDef, load
         Ok(t) => t,
         Err(timelake::Error::NotFound(_)) => {
             let schema = def.schema(files.first().map(String::as_str)).await?;
-            let t = lake.create_table(table, &schema, def.options()?).await?;
+            let t = lake.create_table(table, &schema, def.options()).await?;
             eprintln!("created {}", t.name());
             t
         }
@@ -295,7 +299,7 @@ async fn sql(lake: Lake, args: SqlArgs, started: Instant) -> Result<()> {
     };
     let mut config = Session::config().with_default_catalog_and_schema("timelake", &args.namespace);
     for (k, v) in &args.settings {
-        config.options_mut().set(k, v)?;
+        config.options_mut().set(&timelake::session_key(k), v)?;
     }
     let session = Session::with_config(lake, config);
     if let Some(runs) = args.bench_runs {
@@ -307,7 +311,8 @@ async fn sql(lake: Lake, args: SqlArgs, started: Instant) -> Result<()> {
     Ok(())
 }
 
-fn parse_keep(s: &str) -> Result<std::time::Duration, String> {
+/// A duration argument: `90d`, `12h`, `30m`.
+fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
     timelake::parse_duration(s).map_err(|e| e.to_string())
 }
 
@@ -389,13 +394,25 @@ async fn duckdb(lake: &Lake, table: &str) -> Result<()> {
     Ok(())
 }
 
+/// Prints a result. A result without rows keeps its columns (a header, an empty table); a statement without columns
+/// (`SET`) prints nothing.
 async fn print_df(df: DataFrame, format: Format) -> Result<()> {
+    let schema = std::sync::Arc::new(df.schema().as_arrow().clone());
     let batches = df.collect().await?;
     let mut out = std::io::stdout().lock();
+    if schema.fields().is_empty() && !matches!(format, Format::None) {
+        return Ok(());
+    }
     match format {
-        Format::Table => writeln!(out, "{}", timelake::arrow::util::pretty::pretty_format_batches(&batches)?)?,
+        Format::Table => {
+            let table = timelake::arrow::util::pretty::pretty_format_batches_with_schema(schema, &batches)?;
+            writeln!(out, "{table}")?;
+        }
         Format::Csv => {
             let mut w = timelake::arrow::csv::Writer::new(out);
+            if batches.is_empty() {
+                w.write(&timelake::arrow::array::RecordBatch::new_empty(schema))?;
+            }
             for b in &batches {
                 w.write(b)?;
             }
@@ -414,4 +431,18 @@ async fn print_df(df: DataFrame, format: Format) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cause the message before it ends with is left out; one that only appears inside it is kept.
+    #[test]
+    fn report_leaves_out_repeated_causes() {
+        let repeated = anyhow::anyhow!("No field named nope").context("Schema error: No field named nope");
+        assert_eq!(report(&repeated), "Schema error: No field named nope");
+        let inside = anyhow::anyhow!("iot.r").context("loading iot.r failed");
+        assert_eq!(report(&inside), "loading iot.r failed: iot.r");
+    }
 }

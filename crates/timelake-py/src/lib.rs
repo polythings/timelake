@@ -62,12 +62,6 @@ fn arrow_err(err: ArrowError) -> PyErr {
     }
 }
 
-/// A Timelake setting's session key: `read-dedup` and `read_dedup` become `timelake.read_dedup`.
-fn session_key(name: &str) -> String {
-    let name = name.strip_prefix("timelake.").unwrap_or(name);
-    format!("timelake.{}", name.replace('-', "_"))
-}
-
 /// Locks a handle's state. Poisoning is harmless here: the state is only ever replaced whole.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -141,8 +135,10 @@ impl Lake {
     ) -> PyResult<Self> {
         let mut config = Session::config();
         for (key, value) in mapping::<String>(settings)? {
-            let key = if key.starts_with("datafusion.") { key } else { session_key(&key) };
-            config.options_mut().set(&key, &value).map_err(|err| PyValueError::new_err(err.to_string()))?;
+            config
+                .options_mut()
+                .set(&timelake::session_key(&key), &value)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
         }
         // Opening an object store may spawn tasks, so it needs a runtime context.
         let _guard = runtime().enter();

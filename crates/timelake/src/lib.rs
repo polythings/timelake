@@ -55,7 +55,7 @@ pub use lake::Lake;
 pub use lvi::latest_per_series;
 pub use maintain::{MaintainOptions, MaintainReport};
 pub use name::{DEFAULT_NAMESPACE, TableName};
-pub use query::{RollupStatement, Session, SessionSettings, Statement};
+pub use query::{RollupStatement, Session, SessionSettings, Statement, session_key};
 pub use rollup::RollupRefresh;
 pub use schema::align_batch;
 pub use table::{LiveEntry, Table};

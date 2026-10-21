@@ -187,3 +187,75 @@ fn upgrade_and_rollback() {
     let (out, _) = timelake(&warehouse, &args);
     assert!(out.contains("is current again"), "{out}");
 }
+
+/// Runs `timelake -w <warehouse> <args…>`, expecting it to fail; returns stderr.
+fn fails(warehouse: &Path, args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_timelake")).arg("-w").arg(warehouse).args(args).output().unwrap();
+    assert!(!out.status.success(), "{args:?} succeeded");
+    String::from_utf8(out.stderr).unwrap()
+}
+
+#[test]
+fn file_names_in_any_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let csv = dir.path().join("readings.CSV");
+    std::fs::write(&csv, "time,device,value\n2026-01-01T00:00:00Z,1,1.5\n").unwrap();
+    let csv = csv.to_str().unwrap();
+    let (out, _) = timelake(&warehouse, &["import", "iot.r", csv, "--time-column", "time", "--series-key", "device"]);
+    assert!(out.contains("appended 1 rows"), "{out}");
+}
+
+#[test]
+fn empty_results_keep_their_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let empty = "SELECT 1 AS a, 'x' AS b WHERE false";
+    let (out, _) = timelake(&warehouse, &["sql", "--format", "csv", empty]);
+    assert_eq!(out, "a,b\n");
+    let (out, _) = timelake(&warehouse, &["sql", empty]);
+    assert!(out.contains("| a | b |"), "{out}");
+    let (out, _) = timelake(&warehouse, &["sql", "--format", "json", empty]);
+    assert_eq!(out, "");
+}
+
+#[test]
+fn session_settings_take_any_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let show = "SELECT value FROM information_schema.df_settings WHERE name = 'timelake.read_dedup'";
+    for key in ["read_dedup", "read-dedup", "timelake.read_dedup"] {
+        let (out, _) = timelake(&warehouse, &["sql", "--format", "csv", "--set", &format!("{key}=false"), show]);
+        assert_eq!(out, "value\nfalse\n", "{key}");
+    }
+    assert!(fails(&warehouse, &["sql", "--set", "nope=1", "SELECT 1"]).contains("unknown setting"));
+}
+
+#[test]
+fn options_are_checked_when_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let create = ["create", "iot.r", "--schema", "time:timestamp", "--time-column", "time"];
+    let err = fails(&warehouse, &[&create[..], &["--chunk", "fortnight"]].concat());
+    assert!(err.contains("invalid value 'fortnight' for '--chunk"), "{err}");
+    let err = fails(&warehouse, &[&create[..], &["--retention", "soon"]].concat());
+    assert!(err.contains("invalid value 'soon' for '--retention"), "{err}");
+}
+
+#[test]
+fn info_prints_numbers_and_utc_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let warehouse = dir.path().join("warehouse");
+    let csv = dir.path().join("r.csv");
+    std::fs::write(&csv, "time,device,value\n2026-01-01T00:00:00Z,1,1.5\n").unwrap();
+    let csv = csv.to_str().unwrap();
+    timelake(&warehouse, &["import", "iot.r", csv, "--time-column", "time", "--series-key", "device"]);
+    let (out, _) = timelake(&warehouse, &["info", "iot.r", "--json"]);
+    let info: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(info["format_version"], 2, "{info}");
+    assert_eq!(info["snapshots"][0]["operation"], "append", "{info}");
+    let (out, _) = timelake(&warehouse, &["info", "iot.r"]);
+    assert!(out.contains("Iceberg v2"), "{out}");
+    let snapshot = out.lines().find(|l| l.contains("← current")).unwrap_or_else(|| panic!("{out}"));
+    assert!(snapshot.contains("Z append"), "{snapshot}");
+}

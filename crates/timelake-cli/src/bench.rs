@@ -1,6 +1,5 @@
 //! Benchmark mode of `timelake sql` (used by the benchmark scripts).
 
-use std::io::{Read, Write};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -8,6 +7,7 @@ use timelake::Session;
 use timelake::arrow::array::{ArrayRef, AsArray, RecordBatch};
 use timelake::arrow::compute::{cast, sum};
 use timelake::arrow::datatypes::{DataType, Float64Type, TimeUnit};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Runs `sql` 1 + `runs` times and prints `{"times": [...], "rows": n, "sums": [...], "setup_s": s}` as JSON,
 /// with block cache hits and misses per run when the cache is on, and request and byte counts per run when an
@@ -17,7 +17,10 @@ pub(crate) async fn run(session: &Session, sql: &str, runs: usize, setup_s: f64,
     let (mut hits, mut misses) = (vec![], vec![]);
     let cache = || session.lake().storage().cache_stats();
     for _ in 0..=runs {
-        let before = proxy.map(proxy_stats).transpose()?;
+        let before = match proxy {
+            Some(p) => Some(proxy_stats(p).await?),
+            None => None,
+        };
         let cache_before = cache();
         let started = Instant::now();
         let batches = session.sql(sql).await?.collect().await?;
@@ -29,9 +32,10 @@ pub(crate) async fn run(session: &Session, sql: &str, runs: usize, setup_s: f64,
             misses.push(c1.misses - c0.misses);
         }
         if let (Some((r0, b0)), Some(p)) = (before, proxy) {
-            let (r1, b1) = proxy_stats(p)?;
-            requests.push(r1 - r0);
-            bytes.push(b1 - b0);
+            let (r1, b1) = proxy_stats(p).await?;
+            // A proxy restarted mid-run starts again from zero.
+            requests.push(r1.saturating_sub(r0));
+            bytes.push(b1.saturating_sub(b0));
         }
     }
     let mut out = serde_json::json!({ "times": times, "rows": rows, "sums": check, "setup_s": setup_s });
@@ -76,11 +80,11 @@ fn column_sum(column: &ArrayRef) -> Option<f64> {
 }
 
 /// `(requests, bytes)` counters from tools/s3proxy's admin endpoint.
-fn proxy_stats(addr: &str) -> Result<(u64, u64)> {
-    let mut s = std::net::TcpStream::connect(addr)?;
-    write!(s, "GET /stats HTTP/1.0\r\nHost: {addr}\r\n\r\n")?;
+async fn proxy_stats(addr: &str) -> Result<(u64, u64)> {
+    let mut s = tokio::net::TcpStream::connect(addr).await?;
+    s.write_all(format!("GET /stats HTTP/1.0\r\nHost: {addr}\r\n\r\n").as_bytes()).await?;
     let mut resp = String::new();
-    s.read_to_string(&mut resp)?;
+    s.read_to_string(&mut resp).await?;
     let body = resp.split("\r\n\r\n").nth(1).context("bad proxy response")?;
     let v: serde_json::Value = serde_json::from_str(body.trim())?;
     Ok((v["requests"].as_u64().unwrap_or(0), v["bytes"].as_u64().unwrap_or(0)))

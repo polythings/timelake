@@ -10,6 +10,14 @@ use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions}
 use datafusion::error::{DataFusionError, Result as DfResult};
 use timelake_format::settings::{self, Level, SETTINGS};
 
+/// A session setting's key as the session's configuration takes it: a name without a prefix
+/// (`read_dedup`, `read-dedup`) is Timelake's (`timelake.read_dedup`); prefixed keys
+/// (`timelake.…`, `datafusion.…`) stay as they are.
+pub fn session_key(name: &str) -> String {
+    let name = name.trim();
+    if name.contains('.') { name.to_string() } else { format!("{}{}", settings::PREFIX, name.replace('-', "_")) }
+}
+
 /// Timelake settings for one session; unset ones follow each table's properties.
 #[derive(Clone, Debug, Default)]
 pub struct SessionSettings {
@@ -103,6 +111,14 @@ mod tests {
             let err = options.set(key, "maybe").unwrap_err().to_string();
             assert!(err.contains(msg), "{key}: {err}");
         }
+    }
+
+    #[test]
+    fn session_keys_get_the_prefix() {
+        assert_eq!(session_key("read-dedup"), "timelake.read_dedup");
+        assert_eq!(session_key("read_dedup"), "timelake.read_dedup");
+        assert_eq!(session_key("timelake.read-dedup"), "timelake.read-dedup");
+        assert_eq!(session_key("datafusion.execution.batch_size"), "datafusion.execution.batch_size");
     }
 
     #[test]

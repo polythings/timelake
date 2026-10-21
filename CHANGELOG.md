@@ -188,6 +188,18 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - The engine (and so the CLI and Python) read the delete files of a table another engine had written row-level deletes
   to as data, so deleted rows came back, and its commits and compaction would carry them on. Reads and writes of such
   a table are now an error naming the delete file, as in the TypeScript client.
+- `timelake import` and `append` failed on a file whose extension isn't lower case (`data.CSV`). Any case works.
+- `timelake sql` printed nothing for an empty result with `--format csv` and `++` as a table; both now show the
+  result's columns. A statement without columns (`SET`) prints nothing.
+- The CLI's error messages could leave out a cause whose text appeared inside an earlier message. Only a cause the
+  message before it ends with (DataFusion's repeats) is left out.
+- `timelake sql --set read_dedup=false` failed: the name needed its `timelake.` prefix. A name without a prefix is now
+  a Timelake setting, as in Python.
+- `timelake info --json` gives `format_version` as a number (`2`, as the TypeScript client's `info()` does), not
+  `"V2"`, and the text output shows snapshot times in UTC, marked `Z`. `timelake maintain --help` describes
+  `--no-compact`, `--no-retention` and `--no-expire`.
+- `--chunk` and `--retention` of `timelake create` and `import` are checked when the arguments are parsed, with the
+  usage message, before any file is read.
 
 ### Changed
 
