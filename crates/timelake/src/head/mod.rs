@@ -22,7 +22,6 @@ use crate::TableName;
 use crate::background;
 use crate::error::Result;
 use crate::lake::Lake;
-use crate::schema::align_batch;
 use crate::storage::{Storage, VersionedWrite};
 use crate::table::{LiveEntry, Table};
 use crate::{footer, lvi};
@@ -31,6 +30,7 @@ use timelake_format::head::content::{Contents, HeadBuilder, footer_order};
 pub use timelake_format::head::{ArrowCodec, HeadCodec, HeadDoc, JsonCodec};
 use timelake_format::head::{Header, MAX_HEADER};
 use timelake_format::layout::head_uri;
+use timelake_format::rows::align_batch;
 
 /// Attempts to replace a head that other writers keep changing; they write newer ones anyway.
 const WRITE_ATTEMPTS: usize = 5;

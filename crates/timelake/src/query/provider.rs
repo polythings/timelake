@@ -36,6 +36,7 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use parquet::file::metadata::PageIndexPolicy;
 use timelake_format::footer;
+use timelake_format::rows::ASCENDING;
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
@@ -44,7 +45,6 @@ use super::series_order::Order;
 use super::settings::SessionSettings;
 use super::stats::{FileStats, file_statistics};
 use crate::property;
-use crate::sort::ASCENDING;
 use crate::summary;
 use crate::table::{LiveEntry, Table};
 
@@ -852,6 +852,7 @@ mod tests {
     use arrow::array::{AsArray, RecordBatch};
     use arrow::datatypes::Float64Type;
     use datafusion::prelude::SessionConfig;
+    use timelake_format::rows::sort_and_split;
 
     use crate::testing::{T0, append_unsorted, batch, faulty_lake, opts, schema};
 
@@ -865,7 +866,7 @@ mod tests {
     async fn an_unsorted_file_is_sorted_for_order_by() {
         let (lake, _store) = faulty_lake();
         let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-        let day = crate::write::sort_and_split(&t, &[batch(&[(T0, 1, 0.0)])]).unwrap()[0].0;
+        let day = sort_and_split(&t.schema(), t.contract(), &[batch(&[(T0, 1, 0.0)])], 0).unwrap()[0].0;
         append_unsorted(&t, day, batch(&[(T0 + 5, 2, 3.0), (T0, 1, 1.0), (T0 + 1, 2, 2.0)])).await;
         let session = crate::Session::with_config(lake, SessionConfig::new().with_target_partitions(1));
         session.sql("SET timelake.read_dedup = false").await.unwrap();

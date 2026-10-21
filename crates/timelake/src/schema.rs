@@ -1,8 +1,7 @@
-//! Mapping Arrow data onto a table's schema: on create (types Iceberg can store) and on write
-//! (incoming batches cast and reordered to the table schema).
+//! Mapping Arrow schemas onto what a table can store, on create. Batches are fitted to a table's
+//! schema on write by `timelake_format::rows::align_batch`.
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
 use crate::error::{Error, Result};
 
@@ -43,18 +42,8 @@ fn normalize_type(dt: &DataType) -> Result<DataType> {
     })
 }
 
-/// Casts and reorders a batch to the table schema by column name. Missing nullable columns are
-/// filled with nulls; extra columns are an error (add them to the schema first).
-pub fn align_batch(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
-    Ok(timelake_format::rows::align_batch(batch, schema)?)
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arrow::array::{Array, Int8Array, Int32Array, StringArray};
-
     use super::*;
 
     #[test]
@@ -96,50 +85,5 @@ mod tests {
     fn rejects_uint64() {
         let schema = Schema::new(vec![Field::new("n", DataType::UInt64, true)]);
         assert!(normalize_schema(&schema, None).is_err());
-    }
-
-    fn table_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("name", DataType::Utf8, true)]))
-    }
-
-    #[test]
-    fn aligns_by_name_and_casts() {
-        let input = Arc::new(Schema::new(vec![Field::new("id", DataType::Int8, false)]));
-        let batch = RecordBatch::try_new(input, vec![Arc::new(Int8Array::from(vec![1, 2]))]).unwrap();
-        let aligned = align_batch(&batch, &table_schema()).unwrap();
-        assert_eq!(aligned.schema(), table_schema());
-        assert_eq!(aligned.column(0).as_any().downcast_ref::<Int32Array>().unwrap().values(), &[1, 2]);
-        assert_eq!(aligned.column(1).null_count(), 2);
-
-        let reordered = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("name", DataType::Utf8, true),
-                Field::new("id", DataType::Int32, false),
-            ])),
-            vec![Arc::new(StringArray::from(vec!["a"])), Arc::new(Int32Array::from(vec![7]))],
-        )
-        .unwrap();
-        let aligned = align_batch(&reordered, &table_schema()).unwrap();
-        assert_eq!(aligned.column(0).as_any().downcast_ref::<Int32Array>().unwrap().value(0), 7);
-    }
-
-    #[test]
-    fn rejects_extra_and_missing_required_columns() {
-        let extra = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("x", DataType::Int32, true),
-            ])),
-            vec![Arc::new(Int32Array::from(vec![1])), Arc::new(Int32Array::from(vec![1]))],
-        )
-        .unwrap();
-        assert!(align_batch(&extra, &table_schema()).is_err());
-
-        let missing = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)])),
-            vec![Arc::new(StringArray::from(vec!["a"]))],
-        )
-        .unwrap();
-        assert!(align_batch(&missing, &table_schema()).is_err());
     }
 }

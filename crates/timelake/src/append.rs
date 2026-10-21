@@ -15,7 +15,9 @@ use crate::rollup::RollupRefresh;
 use crate::storage::Uploads;
 use crate::summary;
 use crate::table::Table;
-use crate::write::{PartitionRows, row_groups, sort_and_split, write_partition, writer_properties};
+use timelake_format::rows::{PartitionRows, sort_and_split};
+
+use crate::write::{row_groups, write_partition, writer_properties};
 
 /// How many partitions an append writes at once.
 const CONCURRENT_PARTITION_WRITES: usize = 8;
@@ -62,7 +64,8 @@ impl Table {
     /// `(series_key…, time)` (the last of equal keys kept when dedup is on), and written to one file
     /// per time partition. Returns the new table version.
     pub async fn append(&self, batches: &[RecordBatch], opts: AppendOptions) -> Result<(Table, AppendResult)> {
-        let partitions = sort_and_split(self, batches)?;
+        let now = chrono::Utc::now().timestamp_micros();
+        let partitions = sort_and_split(&self.schema(), self.contract(), batches, now)?;
         let rows = partitions.iter().flat_map(|(_, b)| b).map(RecordBatch::num_rows).sum();
         let touched: HashSet<Option<i32>> = partitions.iter().map(|(p, _)| *p).collect();
         // Each partition is sorted: its last row per series is its newest (no second sort).

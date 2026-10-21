@@ -16,13 +16,12 @@ use parquet::file::properties::WriterProperties;
 use timelake_format::duration_micros;
 use timelake_format::layout::{metadata_dir, metadata_version};
 use timelake_format::merge::{Merge, Step};
+use timelake_format::rows::{align_batch, stable_sort};
 use tokio::sync::mpsc;
 
 use crate::commit::{Change, commit, publish_retrying};
 use crate::error::{Error, Result};
 use crate::rollup::{RollupRefresh, refresh_all};
-use crate::schema::align_batch;
-use crate::sort::stable_sort;
 use crate::storage::Uploads;
 use crate::summary;
 use crate::table::{LiveEntry, Table};
@@ -350,7 +349,7 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
             let reader = ParquetObjectReader::new(storage.object_store(), storage.path(&uri)?).with_file_size(size);
             let stream =
                 ParquetRecordBatchStreamBuilder::new(reader).await?.with_batch_size(READ_BATCH_ROWS).build()?;
-            Ok::<_, Error>(stream.map(|b| align_batch(&b?, &schema)))
+            Ok::<_, Error>(stream.map(|b| Ok::<_, Error>(align_batch(&b?, &schema)?)))
         };
         let mut stream = match read.await {
             Ok(s) => s.boxed(),
@@ -364,7 +363,7 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
                 let batches: Vec<RecordBatch> = stream.try_collect().await?;
                 // A whole file's sort is CPU work: off the async workers.
                 let schema = Arc::clone(&schema);
-                let sort = move || stable_sort(&concat_batches(&schema, &batches)?, &order);
+                let sort = move || Ok::<_, Error>(stable_sort(&concat_batches(&schema, &batches)?, &order)?);
                 tokio::task::spawn_blocking(sort).await.map_err(std::io::Error::other)?
             };
             stream = match sorted.await {
@@ -523,6 +522,8 @@ mod tests {
 
     use super::*;
     use crate::append::AppendOptions;
+    use timelake_format::rows::sort_and_split;
+
     use crate::testing::{T0, batch, faulty_lake, opts, schema};
     use crate::{Lake, Session};
 
@@ -613,7 +614,7 @@ mod tests {
         let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
         let (t, _) =
             t.append(&[batch(&[(T0, 1, 1.0), (T0 + 2, 1, 1.0), (T0, 2, 1.0)])], no_maintenance()).await.unwrap();
-        let day = crate::write::sort_and_split(&t, &[batch(&[(T0, 1, 0.0)])]).unwrap()[0].0;
+        let day = sort_and_split(&t.schema(), t.contract(), &[batch(&[(T0, 1, 0.0)])], 0).unwrap()[0].0;
         let t = append_unsorted(&t, day, batch(&[(T0 + 2, 1, 2.0), (T0 + 1, 1, 2.0), (T0 + 2, 1, 3.0)])).await;
         let (t, _) = t.append(&[batch(&[(T0 + 1, 1, 4.0), (T0 + 3, 2, 4.0)])], no_maintenance()).await.unwrap();
 

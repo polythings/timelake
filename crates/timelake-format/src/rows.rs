@@ -694,4 +694,147 @@ mod tests {
         let values = merged.column(2).as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec();
         assert_eq!(values, [7.0, 9.0, 6.0, 8.0, 4.0, 10.0]);
     }
+
+    /// Batches matched to a table by column name (moved from the engine with `align_batch`).
+    mod align {
+        use arrow_array::{Array, Int8Array, Int32Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+
+        use super::super::*;
+
+        fn table_schema() -> SchemaRef {
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("name", DataType::Utf8, true),
+            ]))
+        }
+
+        #[test]
+        fn aligns_by_name_and_casts() {
+            let input = Arc::new(Schema::new(vec![Field::new("id", DataType::Int8, false)]));
+            let batch = RecordBatch::try_new(input, vec![Arc::new(Int8Array::from(vec![1, 2]))]).unwrap();
+            let aligned = align_batch(&batch, &table_schema()).unwrap();
+            assert_eq!(aligned.schema(), table_schema());
+            assert_eq!(aligned.column(0).as_any().downcast_ref::<Int32Array>().unwrap().values(), &[1, 2]);
+            assert_eq!(aligned.column(1).null_count(), 2);
+
+            let reordered = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("name", DataType::Utf8, true),
+                    Field::new("id", DataType::Int32, false),
+                ])),
+                vec![Arc::new(StringArray::from(vec!["a"])), Arc::new(Int32Array::from(vec![7]))],
+            )
+            .unwrap();
+            let aligned = align_batch(&reordered, &table_schema()).unwrap();
+            assert_eq!(aligned.column(0).as_any().downcast_ref::<Int32Array>().unwrap().value(0), 7);
+        }
+
+        #[test]
+        fn rejects_extra_and_missing_required_columns() {
+            let extra = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("x", DataType::Int32, true),
+                ])),
+                vec![Arc::new(Int32Array::from(vec![1])), Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            assert!(align_batch(&extra, &table_schema()).is_err());
+
+            let missing = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)])),
+                vec![Arc::new(StringArray::from(vec!["a"]))],
+            )
+            .unwrap();
+            assert!(align_batch(&missing, &table_schema()).is_err());
+        }
+    }
+
+    /// The newest row per series (moved from the engine with `latest_per_series`).
+    mod latest {
+        use std::collections::HashMap;
+
+        use arrow_array::{Array, Float64Array, Int64Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+
+        use super::super::*;
+        use crate::property;
+
+        fn schema() -> SchemaRef {
+            Arc::new(Schema::new(vec![
+                Field::new("time", DataType::Int64, false),
+                Field::new("device", DataType::Utf8, true),
+                Field::new("value", DataType::Float64, true),
+            ]))
+        }
+
+        fn batch(rows: &[(i64, Option<&str>, f64)]) -> RecordBatch {
+            RecordBatch::try_new(
+                schema(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                    Arc::new(rows.iter().map(|r| r.1).collect::<StringArray>()),
+                    Arc::new(Float64Array::from_iter_values(rows.iter().map(|r| r.2))),
+                ],
+            )
+            .unwrap()
+        }
+
+        fn contract(time: Option<&str>, key: &str) -> Contract {
+            let mut p = HashMap::from([(property::SERIES_KEY.to_string(), key.to_string())]);
+            if let Some(t) = time {
+                p.insert(property::TIME_COLUMN.into(), t.into());
+            }
+            Contract::from_properties(&p).unwrap()
+        }
+
+        fn values(b: &RecordBatch) -> Vec<f64> {
+            b.column(2).as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec()
+        }
+
+        #[test]
+        fn newest_row_per_series() {
+            let c = contract(Some("time"), "device");
+            let b = batch(&[(2, Some("a"), 1.0), (1, Some("b"), 2.0), (3, Some("a"), 3.0), (1, Some("b"), 4.0)]);
+            let latest = latest_per_series(&schema(), &c, &[b]).unwrap().unwrap();
+            // Device b has two rows at time 1: the later one wins.
+            assert_eq!(values(&latest), [3.0, 4.0]);
+        }
+
+        #[test]
+        fn equal_times_across_batches_take_the_later_batch() {
+            let c = contract(Some("time"), "device");
+            let first = batch(&[(5, Some("a"), 1.0)]);
+            let second = batch(&[(5, Some("a"), 2.0), (4, Some("a"), 3.0)]);
+            let latest = latest_per_series(&schema(), &c, &[first, second]).unwrap().unwrap();
+            assert_eq!(values(&latest), [2.0]);
+        }
+
+        #[test]
+        fn null_series_key_is_its_own_series() {
+            let c = contract(Some("time"), "device");
+            let b = batch(&[(1, None, 1.0), (2, Some("a"), 2.0), (3, None, 3.0)]);
+            let latest = latest_per_series(&schema(), &c, &[b]).unwrap().unwrap();
+            assert_eq!(values(&latest), [3.0, 2.0]);
+            assert!(latest.column(1).is_null(0));
+        }
+
+        #[test]
+        fn empty_series_key_keeps_the_single_newest_row() {
+            let c = contract(Some("time"), "");
+            let b = batch(&[(2, Some("a"), 1.0), (9, Some("b"), 2.0), (9, Some("c"), 3.0), (1, Some("d"), 4.0)]);
+            let latest = latest_per_series(&schema(), &c, &[b]).unwrap().unwrap();
+            assert_eq!(values(&latest), [3.0]);
+        }
+
+        #[test]
+        fn nothing_without_time_column_or_rows() {
+            let b = batch(&[(1, Some("a"), 1.0)]);
+            assert!(latest_per_series(&schema(), &contract(None, "device"), &[b]).unwrap().is_none());
+            let c = contract(Some("time"), "device");
+            assert!(latest_per_series(&schema(), &c, &[]).unwrap().is_none());
+            assert!(latest_per_series(&schema(), &c, &[batch(&[])]).unwrap().is_none());
+        }
+    }
 }

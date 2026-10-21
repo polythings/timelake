@@ -15,22 +15,6 @@ use crate::error::{Error, Result};
 use crate::storage::{DeferredWriter, Uploads};
 use crate::table::Table;
 
-pub(crate) use timelake_format::rows::PartitionRows;
-
-/// Concatenates, sorts by `(partition, series…, time)` with input order as the tiebreak, splits by
-/// partition and, when dedup is on, keeps the last of rows with the same `(series…, time)`: every
-/// file is then free of duplicates on its own, which dedup on read relies on.
-pub(crate) fn sort_and_split(table: &Table, batches: &[RecordBatch]) -> Result<Vec<PartitionRows>> {
-    let now = chrono::Utc::now().timestamp_micros();
-    Ok(timelake_format::rows::sort_and_split(&table.schema(), table.contract(), batches, now)?)
-}
-
-/// `batch` with its insertion-time `column` set to `now` where it is missing or null.
-#[cfg(test)]
-pub(crate) fn with_ingest_time(batch: &RecordBatch, column: &str, now: i64) -> Result<RecordBatch> {
-    Ok(timelake_format::rows::with_ingest_time(batch, column, now)?)
-}
-
 /// Parquet settings for the table's data files (see `timelake_format::file::writer_properties`).
 pub(crate) fn writer_properties(table: &Table) -> Result<WriterProperties> {
     let page_rows = timelake_format::file::DATA_PAGE_ROWS;
@@ -205,6 +189,7 @@ pub(crate) fn row_groups(batch: RecordBatch, rows: usize) -> impl Iterator<Item 
 #[cfg(test)]
 mod tests {
     use iceberg::writer::file_writer::{FileWriter as _, FileWriterBuilder, ParquetWriterBuilder};
+    use timelake_format::rows::sort_and_split;
 
     use super::*;
     use crate::testing::{T0, batch, faulty_lake, opts, schema};
@@ -218,7 +203,7 @@ mod tests {
         let rows: Vec<(i64, i32, f64)> = (0..50_000)
             .map(|i| (T0 + i64::from(i), i % 9, if i % 7 == 0 { f64::NAN } else { f64::from(i) / 3.0 }))
             .collect();
-        let (partition, mut sorted) = sort_and_split(&t, &[batch(&rows)]).unwrap().remove(0);
+        let (partition, mut sorted) = sort_and_split(&t.schema(), t.contract(), &[batch(&rows)], 0).unwrap().remove(0);
         let sorted = sorted.remove(0);
         let props = writer_properties(&t).unwrap();
 

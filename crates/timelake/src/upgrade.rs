@@ -12,13 +12,13 @@ use std::time::Duration;
 use arrow::compute::concat_batches;
 use iceberg::spec::{MAIN_BRANCH, SnapshotReference, SnapshotRetention};
 use timelake_format::head::NO_HEAD;
+use timelake_format::rows::align_batch;
 use timelake_format::{FORMAT_VERSION, FormatVersion, duration_millis};
 
 use crate::alter::write_properties;
 use crate::commit::{Change, commit, publish_retrying};
 use crate::error::{Error, Result};
 use crate::maintain::{MaintainOptions, compaction_plan};
-use crate::schema::align_batch;
 use crate::storage::Uploads;
 use crate::table::Table;
 use crate::{Session, head, property, summary};
@@ -190,7 +190,7 @@ async fn build_index(table: &Table) -> Result<Table> {
     let session = Session::new(table.lake().clone());
     let batches = session.latest(table.name().clone()).await?.collect().await?;
     let schema = table.schema();
-    let aligned = batches.iter().map(|b| align_batch(b, &schema)).collect::<Result<Vec<_>>>()?;
+    let aligned = batches.iter().map(|b| align_batch(b, &schema)).collect::<Result<Vec<_>, _>>()?;
     let latest = concat_batches(&schema, &aligned)?;
     Ok(commit(table, Change::Index { latest }, HashMap::new(), Uploads::default()).await?.0)
 }

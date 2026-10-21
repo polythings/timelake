@@ -22,10 +22,11 @@ use object_store::{
 };
 
 use iceberg::spec::DataFileBuilder;
+use timelake_format::rows::{align_batch, sort_and_split, with_ingest_time};
 
 use crate::commit::{Change, commit};
 use crate::storage::{Storage, Uploads};
-use crate::write::{sort_and_split, write_partition, writer_properties};
+use crate::write::{write_partition, writer_properties};
 use crate::{Lake, Table, TableOptions};
 
 /// Which operation a [`Fault`] breaks.
@@ -275,7 +276,7 @@ pub(crate) async fn append_without_index(table: &Table, batches: &[RecordBatch])
     let props = writer_properties(table).unwrap();
     let uploads = Uploads::default();
     let mut files = vec![];
-    for (partition, batches) in sort_and_split(table, batches).unwrap() {
+    for (partition, batches) in sort_and_split(&table.schema(), table.contract(), batches, 0).unwrap() {
         files.extend(write_partition(table, partition, batches, &props, &uploads).await.unwrap());
     }
     commit(table, Change::Append { files, latest: None }, HashMap::new(), uploads).await.unwrap().0
@@ -288,10 +289,10 @@ pub(crate) async fn append_unsorted(table: &Table, partition: Option<i32>, batch
     let uploads = Uploads::default();
     let spec_id = table.metadata().default_partition_spec().spec_id();
     let batch = match &table.contract().ingest_time_column {
-        Some(c) => crate::write::with_ingest_time(&batch, c, 0).unwrap(),
+        Some(c) => with_ingest_time(&batch, c, 0).unwrap(),
         None => batch,
     };
-    let batch = crate::schema::align_batch(&batch, &table.schema()).unwrap();
+    let batch = align_batch(&batch, &table.schema()).unwrap();
     let files = write_partition(table, partition, [batch], &props, &uploads).await.unwrap().into_iter().map(|f| {
         DataFileBuilder::default()
             .content(f.content_type())
