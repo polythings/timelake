@@ -68,6 +68,7 @@ export interface MaintainOptions {
   maxBytes?: number
 }
 
+/** What maintenance did: the fields of the engine's report (and Python's), in camelCase. */
 export interface MaintainReport {
   partitionsCompacted: number
   filesRewritten: number
@@ -75,12 +76,17 @@ export interface MaintainReport {
   rowsRewritten: number
   bytesRewritten: number
   duplicatesRemoved: number
-  /** Compaction stopped at `maxBytes` with more to do. */
+  /** Compaction left files a later run merges: it stopped at `maxBytes`, or merged a large group in parts. */
   moreToCompact: boolean
   partitionsDropped: number
   filesDropped: number
+  /** Always 0 here: the engine refreshes rollups, the WebAssembly writer doesn't. */
+  rollupsRefreshed: number
+  rollupRows: number
   snapshotsExpired: number
   objectsDeleted: number
+  /** Time the run took. */
+  seconds: number
   /** The table version after maintenance. */
   version: number
 }

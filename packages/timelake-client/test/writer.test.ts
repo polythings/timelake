@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
-import { Lake, TableWriter, memoryStore, type Store } from "../src/index"
+import { Lake, TableWriter, memoryStore, type MaintainReport, type Store } from "../src/index"
 import { buildFixture, type Fixture } from "./fixture"
 
 let fx: Fixture
@@ -172,6 +172,25 @@ test("appends compact small files inline, and maintain compacts the rest", async
   expect(rewritten).toBe(3)
   const maintained = await writer.maintain()
   expect(maintained).toMatchObject({ filesRewritten: 2, filesWritten: 1, moreToCompact: false })
+  // Every field of the interface, and no other: the type and the WebAssembly module agree.
+  const fields = {
+    partitionsCompacted: true,
+    filesRewritten: true,
+    filesWritten: true,
+    rowsRewritten: true,
+    bytesRewritten: true,
+    duplicatesRemoved: true,
+    moreToCompact: true,
+    partitionsDropped: true,
+    filesDropped: true,
+    rollupsRefreshed: true,
+    rollupRows: true,
+    snapshotsExpired: true,
+    objectsDeleted: true,
+    seconds: true,
+    version: true,
+  } satisfies Record<keyof MaintainReport, true>
+  expect(Object.keys(maintained).sort()).toEqual(Object.keys(fields).sort())
   expect(count("iot.small")).toBe(80)
   expect(fx.sql("SELECT count(*) AS n FROM iot.small WHERE temp = 3")).toEqual([{ n: 20 }])
 })
