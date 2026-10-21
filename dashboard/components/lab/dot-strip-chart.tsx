@@ -3,11 +3,8 @@
 import { useEffect, useRef } from "react"
 
 import { generated, looped } from "@/components/lab/strip-chart"
+import { CELL, DOT, cssVar, fitCanvas } from "@/lib/dot-canvas"
 
-/** A square and the gap after it, in pixels: the same grid as the races. */
-const DOT = 3
-const GAP = 1
-const CELL = DOT + GAP
 /** Columns between the pen and the right edge. */
 const MARGIN = 10
 
@@ -40,10 +37,7 @@ export function DotStripChart({
     let rows = 0
     let trace: number[] = []
     const resize = () => {
-      const dpr = window.devicePixelRatio || 1
-      c.width = c.clientWidth * dpr
-      c.height = c.clientHeight * dpr
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      fitCanvas(c, ctx, c.clientWidth, c.clientHeight)
       cols = Math.floor(c.clientWidth / CELL)
       rows = Math.floor(c.clientHeight / CELL)
       while (trace.length < cols - MARGIN) trace.push(source.next().value as number)
@@ -52,8 +46,7 @@ export function DotStripChart({
     const ro = new ResizeObserver(resize)
     ro.observe(c)
 
-    const css = getComputedStyle(c)
-    const color = (name: string) => css.getPropertyValue(name).trim()
+    const color = (name: string) => cssVar(c, name)
     // The row a value lands on: the top and bottom fifth of the strip stay clear.
     const row = (v: number) => Math.round((1 - (hi === lo ? 0.5 : (v - lo) / (hi - lo))) * rows * 0.6 + rows * 0.2)
 

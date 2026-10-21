@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react"
 
+import { fitCanvas } from "@/lib/dot-canvas"
+import { formatNumber } from "@/lib/format"
+
 type Line = { kind: "user" | "agent" | "cmd" | "out"; text: string }
 
 /** An agent answering a question with the CLI. The commands ran on the lab's demo table; the output is theirs. */
@@ -115,16 +118,13 @@ function Agents() {
     const c = canvas.current
     const ctx = c?.getContext("2d")
     if (!c || !ctx) return
-    const dpr = window.devicePixelRatio || 1
     const width = c.clientWidth
     const size = 4
     const gap = 3
     const perRow = Math.max(1, Math.floor(width / (size + gap)))
     const rows = Math.ceil(AGENTS / perRow)
-    c.width = width * dpr
-    c.height = rows * (size + gap) * dpr
     c.style.height = `${rows * (size + gap)}px`
-    ctx.scale(dpr, dpr)
+    fitCanvas(c, ctx, width, rows * (size + gap))
     const css = getComputedStyle(c)
     const glow = new Float32Array(AGENTS)
     let frame = 0
@@ -168,7 +168,7 @@ export function AgentTerminal() {
       </div>
       <div className="flex flex-col gap-4 p-5">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="label-mono">{AGENTS.toLocaleString("en")} agents</span>
+          <span className="label-mono">{formatNumber(AGENTS)} agents</span>
           <span className="font-mono text-[11px] text-muted-foreground">database load: no database</span>
         </div>
         <Agents />

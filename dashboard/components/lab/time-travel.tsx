@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 
+import { formatNumber } from "@/lib/format"
+
 /** One snapshot from the table's metadata: its version, what the commit did, and the table's totals after it. */
 export type Snapshot = { version: number; id: string; operation: string; added: number; rows: number; files: number }
 
@@ -42,7 +44,7 @@ export function TimeTravel({ snapshots, days }: { snapshots: Snapshot[]; days: s
           {[
             ["version", `v${s.version}`],
             ["commit", s.operation],
-            ["rows", s.rows.toLocaleString("en")],
+            ["rows", formatNumber(s.rows)],
             ["files", String(s.files)],
           ].map(([k, v]) => (
             <div key={k} className="flex flex-col gap-0.5">

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react"
 
+import { CELL, DOT, fitCanvas, resolveColor } from "@/lib/dot-canvas"
 import { watchTheme } from "@/lib/theme"
 
 /** The picture each card draws, in squares: the use cases, then the benefits. */
@@ -25,8 +26,6 @@ export type ArtKind =
 /** Columns in a picture, unless a wider one is asked for. */
 const COLS = 64
 const ROWS = 14
-const DOT = 3
-const CELL = 4
 /** Milliseconds to draw the picture in, left to right. */
 const REVEAL_MS = 1100
 
@@ -283,12 +282,6 @@ const PICTURES: Record<ArtKind, (cols: number) => Cell[]> = {
   },
 }
 
-/** "var(--chart-3)" → its color here. */
-function resolve(el: Element, color: string): string {
-  const m = /^var\((--[\w-]+)\)$/.exec(color)
-  return m?.[1] ? getComputedStyle(el).getPropertyValue(m[1]).trim() : color
-}
-
 /**
  * A use case's picture in squares on a dim grid. It draws itself in once, left to right, when it comes into view,
  * and again when the card is hovered; otherwise it stays still.
@@ -300,10 +293,7 @@ export function UseCaseArt({ kind, cols = COLS }: { kind: ArtKind; cols?: number
     const c = canvas.current
     const ctx = c?.getContext("2d")
     if (!c || !ctx) return
-    const dpr = window.devicePixelRatio || 1
-    c.width = cols * CELL * dpr
-    c.height = ROWS * CELL * dpr
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    fitCanvas(c, ctx, cols * CELL, ROWS * CELL)
     const cells = PICTURES[kind](cols).filter((p) => p.x >= 0 && p.x < cols && p.y >= 0 && p.y < ROWS)
     // How far the picture is drawn, so a theme change can redraw it as it was.
     let drawn = -1
@@ -311,8 +301,8 @@ export function UseCaseArt({ kind, cols = COLS }: { kind: ArtKind; cols?: number
     let colors = new Map<string, string>()
     let paper = ""
     const readColors = () => {
-      colors = new Map(cells.map((p) => [p.color, resolve(c, p.color)]))
-      paper = resolve(c, "var(--dot)")
+      colors = new Map(cells.map((p) => [p.color, resolveColor(c, p.color)]))
+      paper = resolveColor(c, "var(--dot)")
     }
     readColors()
 

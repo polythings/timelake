@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react"
 
+import { GAP, fitCanvas, resolveColor } from "@/lib/dot-canvas"
+import { formatNumber } from "@/lib/format"
 import { watchTheme } from "@/lib/theme"
 
 /** One system in a race: how much it ends up with (`value`, drawn as `dots`), and how long that took. */
@@ -14,8 +16,6 @@ export type Racer = {
   /** The system's chart color, e.g. "var(--chart-3)". */
   color: string
 }
-
-const GAP = 1
 
 /**
  * Systems side by side, each a lane of dots with its total and how long it took. What a dot stands for is in `unit`
@@ -50,30 +50,32 @@ export function Race({
 
 function Lane({ racer, unit, decimals, dot }: { racer: Racer; unit: string; decimals: number; dot: number }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const value = racer.value.toLocaleString("en", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 
+  // Lays the lane out to its width and paints it, again when the width or the theme changes.
   useEffect(() => {
     const c = canvas.current
-    if (!c) return
-    const width = c.clientWidth
-    const perRow = Math.max(1, Math.floor(width / (dot + GAP)))
-    const rows = Math.ceil(racer.dots / perRow)
-    const dpr = window.devicePixelRatio || 1
-    c.width = width * dpr
-    c.height = rows * (dot + GAP) * dpr
-    c.style.height = `${rows * (dot + GAP)}px`
-    const ctx = c.getContext("2d")
-    if (!ctx) return
-    ctx.scale(dpr, dpr)
-    const css = getComputedStyle(c)
+    const ctx = c?.getContext("2d")
+    if (!c || !ctx) return
+    const cell = dot + GAP
     const draw = () => {
-      ctx.fillStyle = css.getPropertyValue(/^var\((--[\w-]+)\)$/.exec(racer.color)?.[1] ?? "--muted-foreground").trim()
-      for (let i = 0; i < racer.dots; i++) {
-        ctx.fillRect((i % perRow) * (dot + GAP), Math.floor(i / perRow) * (dot + GAP), dot, dot)
-      }
+      const width = c.clientWidth
+      // Hidden (in a closed tab): drawn once it shows.
+      if (width === 0) return
+      const perRow = Math.max(1, Math.floor(width / cell))
+      const height = Math.ceil(racer.dots / perRow) * cell
+      c.style.height = `${height}px`
+      fitCanvas(c, ctx, width, height)
+      ctx.fillStyle = resolveColor(c, racer.color)
+      for (let i = 0; i < racer.dots; i++) ctx.fillRect((i % perRow) * cell, Math.floor(i / perRow) * cell, dot, dot)
     }
     draw()
-    return watchTheme(draw)
+    const ro = new ResizeObserver(draw)
+    ro.observe(c)
+    const unwatch = watchTheme(draw)
+    return () => {
+      ro.disconnect()
+      unwatch()
+    }
   }, [racer, dot])
 
   return (
@@ -81,8 +83,8 @@ function Lane({ racer, unit, decimals, dot }: { racer: Racer; unit: string; deci
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 text-sm">
         <span className={racer.timelake ? "font-medium" : "text-muted-foreground"}>{racer.label}</span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
-          <span className="text-foreground">{value}</span>
-          {` ${unit} · ${racer.seconds.toFixed(2)} s`}
+          <span className="text-foreground">{formatNumber(racer.value, decimals)}</span>
+          {` ${unit} · ${formatNumber(racer.seconds, 2)} s`}
         </span>
       </div>
       <canvas ref={canvas} className="w-full" />
