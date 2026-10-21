@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, UploadPart,
 };
 
 use iceberg::spec::DataFileBuilder;
@@ -41,6 +42,10 @@ pub(crate) enum Op {
     LandThenLose,
     /// Put-if-absent writes the object, then fails: a timeout after the write landed.
     LandThenFail,
+    /// A part of a multipart upload.
+    PutPart,
+    /// Completing a multipart upload, which then stays open (as on S3).
+    Complete,
 }
 
 /// Fails `op` on every path containing `pattern`.
@@ -50,15 +55,22 @@ pub(crate) struct Fault {
     pub pattern: String,
 }
 
-/// An in-memory store with switchable faults and latency.
+/// An in-memory store with switchable faults and latency, which counts the multipart uploads left
+/// open.
 #[derive(Debug, Default)]
 pub(crate) struct FaultyStore {
     inner: InMemory,
-    faults: Mutex<Vec<Fault>>,
-    latency: Mutex<Duration>,
+    faults: Arc<Mutex<Vec<Fault>>>,
+    latency: Arc<Mutex<Duration>>,
+    open_uploads: Arc<AtomicUsize>,
 }
 
 impl FaultyStore {
+    /// Multipart uploads started and neither completed nor aborted.
+    pub(crate) fn open_uploads(&self) -> usize {
+        self.open_uploads.load(Ordering::SeqCst)
+    }
+
     /// Delays every request by `latency`, like a round trip to a remote store. With Tokio's clock
     /// paused, a test's elapsed time divided by `latency` is the number of requests made one after
     /// another.
@@ -67,10 +79,7 @@ impl FaultyStore {
     }
 
     async fn round_trip(&self) {
-        let latency = *self.latency.lock().unwrap_or_else(PoisonError::into_inner);
-        if !latency.is_zero() {
-            tokio::time::sleep(latency).await;
-        }
+        round_trip(&self.latency).await;
     }
 
     pub(crate) fn fail(&self, op: Op, pattern: &str) {
@@ -93,17 +102,72 @@ impl FaultyStore {
     }
 
     fn check(&self, op: Op, path: &Path) -> object_store::Result<()> {
-        let hit = self.faults().iter().any(|f| f.op == op && path.as_ref().contains(&f.pattern));
-        if !hit {
-            return Ok(());
+        check(&self.faults, op, path)
+    }
+}
+
+async fn round_trip(latency: &Mutex<Duration>) {
+    let latency = *latency.lock().unwrap_or_else(PoisonError::into_inner);
+    if !latency.is_zero() {
+        tokio::time::sleep(latency).await;
+    }
+}
+
+/// The error `faults` inject for `op` on `path`, if any.
+fn check(faults: &Mutex<Vec<Fault>>, op: Op, path: &Path) -> object_store::Result<()> {
+    let faults = faults.lock().unwrap_or_else(PoisonError::into_inner);
+    if !faults.iter().any(|f| f.op == op && path.as_ref().contains(&f.pattern)) {
+        return Ok(());
+    }
+    let path = path.to_string();
+    Err(match op {
+        Op::LoseCreate | Op::LandThenLose => object_store::Error::AlreadyExists { path, source: "injected".into() },
+        Op::Get | Op::Put | Op::LandThenFail | Op::PutPart | Op::Complete => {
+            object_store::Error::Generic { store: "faulty", source: format!("{op:?} {path}").into() }
         }
-        let path = path.to_string();
-        Err(match op {
-            Op::LoseCreate | Op::LandThenLose => object_store::Error::AlreadyExists { path, source: "injected".into() },
-            Op::Get | Op::Put | Op::LandThenFail => {
-                object_store::Error::Generic { store: "faulty", source: format!("{op:?} {path}").into() }
-            }
-        })
+    })
+}
+
+/// A multipart upload of a [`FaultyStore`].
+#[derive(Debug)]
+struct FaultyUpload {
+    inner: Box<dyn MultipartUpload>,
+    path: Path,
+    faults: Arc<Mutex<Vec<Fault>>>,
+    latency: Arc<Mutex<Duration>>,
+    open_uploads: Arc<AtomicUsize>,
+    open: bool,
+}
+
+impl FaultyUpload {
+    fn close(&mut self) {
+        if std::mem::take(&mut self.open) {
+            self.open_uploads.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[async_trait]
+impl MultipartUpload for FaultyUpload {
+    fn put_part(&mut self, data: PutPayload) -> UploadPart {
+        match check(&self.faults, Op::PutPart, &self.path) {
+            Ok(()) => self.inner.put_part(data),
+            Err(e) => Box::pin(async move { Err(e) }),
+        }
+    }
+
+    async fn complete(&mut self) -> object_store::Result<PutResult> {
+        round_trip(&self.latency).await;
+        check(&self.faults, Op::Complete, &self.path)?;
+        let result = self.inner.complete().await?;
+        self.close();
+        Ok(result)
+    }
+
+    async fn abort(&mut self) -> object_store::Result<()> {
+        self.inner.abort().await?;
+        self.close();
+        Ok(())
     }
 }
 
@@ -141,7 +205,16 @@ impl ObjectStore for FaultyStore {
     ) -> object_store::Result<Box<dyn MultipartUpload>> {
         self.round_trip().await;
         self.check(Op::Put, location)?;
-        self.inner.put_multipart_opts(location, opts).await
+        let inner = self.inner.put_multipart_opts(location, opts).await?;
+        self.open_uploads.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(FaultyUpload {
+            inner,
+            path: location.clone(),
+            faults: Arc::clone(&self.faults),
+            latency: Arc::clone(&self.latency),
+            open_uploads: Arc::clone(&self.open_uploads),
+            open: true,
+        }))
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> object_store::Result<GetResult> {
@@ -230,6 +303,13 @@ pub(crate) fn faulty_lake() -> (Lake, Arc<FaultyStore>) {
     let store = Arc::new(FaultyStore::default());
     let lake = Lake::with_storage(Storage::from_store(store.clone(), "memory://test"), "memory://test/wh");
     (lake, store)
+}
+
+/// A lake on a [`FaultyStore`] that uploads files of more than 1 KiB in parts.
+pub(crate) fn faulty_lake_multipart() -> (Lake, Arc<FaultyStore>) {
+    let store = Arc::new(FaultyStore::default());
+    let storage = Storage::from_store(store.clone(), "memory://test").upload_buffer(1 << 10);
+    (Lake::with_storage(storage, "memory://test/wh"), store)
 }
 
 /// Another lake on the same store, with cold caches: what a new process sees.

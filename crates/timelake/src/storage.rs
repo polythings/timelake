@@ -53,7 +53,12 @@ pub struct Storage {
     list_on_load: bool,
     /// The block cache under `store`, if on.
     cache: Option<Arc<CachedStore>>,
+    /// Bytes a file's upload buffers before it becomes a multipart upload.
+    upload_buffer: usize,
 }
+
+/// What a file's upload buffers before it becomes a multipart upload: object_store's default.
+const UPLOAD_BUFFER: usize = 10 << 20;
 
 /// A store's raw-prefix listing.
 #[derive(Clone)]
@@ -241,6 +246,7 @@ impl Storage {
             warm_connections: 0,
             list_on_load: true,
             cache: None,
+            upload_buffer: UPLOAD_BUFFER,
         })
     }
 
@@ -253,6 +259,18 @@ impl Storage {
     #[cfg(test)]
     pub(crate) fn from_store(store: Arc<dyn ObjectStore>, base: &str) -> Self {
         Self::new(store, base.to_string(), true).unwrap()
+    }
+
+    /// This store with files uploaded in parts of `bytes`, so tests see multipart uploads.
+    #[cfg(test)]
+    pub(crate) fn upload_buffer(mut self, bytes: usize) -> Self {
+        self.upload_buffer = bytes;
+        self
+    }
+
+    /// A buffered upload of `path`.
+    fn buf_writer(&self, path: Path) -> BufWriter {
+        BufWriter::with_capacity(self.store.clone(), path, self.upload_buffer)
     }
 
     /// This store as `timelake_version_lookup=hint` would open it.
@@ -496,7 +514,7 @@ impl Storage {
     /// A multipart upload of `uri` whose completion is queued in `uploads`, like
     /// [`Storage::deferred_output_file`], for writers that produce bytes themselves.
     pub(crate) fn deferred_writer(&self, uri: &str, uploads: &Uploads) -> Result<DeferredWriter> {
-        Ok(DeferredWriter { inner: BufWriter::new(self.store.clone(), self.path(uri)?), uploads: uploads.clone() })
+        Ok(DeferredWriter { inner: self.buf_writer(self.path(uri)?), uploads: uploads.clone() })
     }
 
     pub(crate) fn deferred_output_file(&self, uri: &str, uploads: &Uploads) -> OutputFile {
@@ -551,10 +569,11 @@ impl Uploads {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Sends everything queued so far, concurrently.
+    /// Sends everything queued so far, concurrently. Every upload runs to its end even when one
+    /// fails: one dropped halfway would leave its multipart upload open.
     pub(crate) async fn send(&self) -> Result<()> {
         let pending = std::mem::take(&mut *self.queue());
-        futures::stream::iter(pending)
+        let results: Vec<Result<()>> = futures::stream::iter(pending)
             .map(|p| async move {
                 match p {
                     Pending::Put { store, path, bytes } => {
@@ -562,11 +581,12 @@ impl Uploads {
                     }
                     Pending::Writer(mut w) => w.shutdown().await?,
                 }
-                Ok::<_, Error>(())
+                Ok(())
             })
             .buffer_unordered(UPLOAD_CONCURRENCY)
-            .try_collect::<()>()
-            .await
+            .collect()
+            .await;
+        results.into_iter().collect()
     }
 
     /// Drops everything queued, aborting multipart uploads already started.
@@ -661,7 +681,7 @@ impl iceberg::io::Storage for IcebergStorage {
     }
 
     async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn FileWrite>> {
-        let inner = Some(BufWriter::new(self.s()?.store.clone(), self.p(path)?));
+        let inner = Some(self.s()?.buf_writer(self.p(path)?));
         Ok(Box::new(ObjectWrite { inner, uploads: self.uploads.clone() }))
     }
 
@@ -754,6 +774,12 @@ impl DeferredWriter {
     /// Queues the end of the upload, to be sent with the commit.
     pub(crate) fn close(self) {
         self.uploads.push(Pending::Writer(self.inner));
+    }
+
+    /// Aborts the upload, if it started one.
+    pub(crate) async fn abort(mut self) {
+        // An upload that can't be aborted is left to the bucket's lifecycle rules.
+        let _ = self.inner.abort().await;
     }
 }
 

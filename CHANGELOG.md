@@ -167,6 +167,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - With `SET timelake.filter_pushdown = false`, a newest-first query (`ORDER BY time DESC LIMIT k`, or the newest `k`
   buckets) with a filter that file statistics can't rule out returned too few rows, often none: it stopped after the
   newest partition's unfiltered rows. Each partition's rows are now filtered before they count.
+- A failed append or compaction could leave multipart uploads open on object storage, billed until a lifecycle rule
+  removes them: the upload of the file being written, those of the other partitions' files, and uploads cut off when
+  another one failed. They are now aborted, or run to their end and deleted. (A part that fails only once the file is
+  finished can still leave its upload open: object_store gives no way to abort it.)
 
 ### Changed
 

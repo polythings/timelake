@@ -56,7 +56,10 @@ pub(crate) async fn write_partition(
 ) -> Result<Vec<DataFile>> {
     let mut writer = PartitionWriter::new(table, partition, props, uploads);
     for batch in batches {
-        writer.write(&batch).await?;
+        if let Err(e) = writer.write(&batch).await {
+            writer.abort().await;
+            return Err(e);
+        }
     }
     writer.finish().await
 }
@@ -94,43 +97,62 @@ impl<'a> PartitionWriter<'a> {
         Self { table, partition, props, uploads, dir, target: contract.target_file_size, open: None, files: vec![] }
     }
 
-    /// Writes rows that sort after every row written so far.
+    /// Writes rows that sort after every row written so far. After an error, call
+    /// [`abort`](Self::abort).
     pub(crate) async fn write(&mut self, batch: &RecordBatch) -> Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        let (uri, mut writer, mut upload) = if let Some(open) = self.open.take() {
-            open
-        } else {
-            let uri = format!("{}/{}.parquet", self.dir, uuid::Uuid::now_v7());
-            let writer = FileWriter::new(self.table.schema(), self.props.clone())?;
-            let upload = self.table.lake().storage().deferred_writer(&uri, self.uploads)?;
-            (uri, writer, upload)
+        // Kept in `open` while it is written, so `abort` finds its upload if anything fails.
+        let (_, writer, upload) = match &mut self.open {
+            Some(open) => open,
+            None => {
+                let uri = format!("{}/{}.parquet", self.dir, uuid::Uuid::now_v7());
+                let writer = FileWriter::new(self.table.schema(), self.props.clone())?;
+                let upload = self.table.lake().storage().deferred_writer(&uri, self.uploads)?;
+                self.open.insert((uri, writer, upload))
+            }
         };
         writer.write(batch)?;
         upload.put(writer.take()).await?;
         if writer.size() >= self.target {
-            self.close(uri, writer, upload).await?;
-        } else {
-            self.open = Some((uri, writer, upload));
+            self.close().await?;
         }
         Ok(())
     }
 
-    async fn close(&mut self, uri: String, writer: FileWriter, mut upload: DeferredWriter) -> Result<()> {
-        let (rest, stats) = writer.finish()?;
-        upload.put(rest).await?;
-        upload.close();
-        self.files.push(data_file(self.table, uri, self.partition, &stats)?);
-        Ok(())
+    /// Finishes the open file and queues the end of its upload.
+    async fn close(&mut self) -> Result<()> {
+        let Some((uri, writer, mut upload)) = self.open.take() else { return Ok(()) };
+        let finished = match writer.finish() {
+            Ok((rest, stats)) => upload.put(rest).await.map(|()| stats),
+            Err(e) => Err(e.into()),
+        };
+        match finished {
+            Ok(stats) => {
+                upload.close();
+                self.files.push(data_file(self.table, uri, self.partition, &stats)?);
+                Ok(())
+            }
+            Err(e) => {
+                upload.abort().await;
+                Err(e)
+            }
+        }
     }
 
     /// Closes the last file; returns the files written.
     pub(crate) async fn finish(mut self) -> Result<Vec<DataFile>> {
-        if let Some((uri, writer, upload)) = self.open.take() {
-            self.close(uri, writer, upload).await?;
-        }
+        self.close().await?;
         Ok(self.files)
+    }
+
+    /// After a failed write: aborts the open file's upload. The files already closed are queued
+    /// in the uploads, for their owner to send or abort.
+    pub(crate) async fn abort(self) {
+        if let Some((_, _, upload)) = self.open {
+            upload.abort().await;
+        }
     }
 }
 

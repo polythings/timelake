@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use arrow::array::RecordBatch;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use iceberg::spec::DataFile;
 
 use crate::commit::{Change, CommitInfo, commit};
@@ -68,7 +68,13 @@ impl Table {
         // Each partition is sorted: its last row per series is its newest (no second sort).
         let latest = timelake_format::rows::latest_of_sorted(&self.schema(), self.contract(), &partitions)?;
         let uploads = Uploads::default();
-        let files = self.write_partitions(partitions, &uploads).await?;
+        let files = match self.write_partitions(partitions, &uploads).await {
+            Ok(files) => files,
+            Err(e) => {
+                uploads.abort().await;
+                return Err(e);
+            }
+        };
         if files.is_empty() {
             let commit = CommitInfo {
                 snapshot_id: 0,
@@ -114,7 +120,8 @@ impl Table {
         }
     }
 
-    /// Writes each partition's rows to Parquet, a few partitions at a time.
+    /// Writes each partition's rows to Parquet, a few partitions at a time. Every partition's write
+    /// runs to its end, so one that fails doesn't drop the others halfway with their uploads open.
     async fn write_partitions(&self, partitions: Vec<PartitionRows>, uploads: &Uploads) -> Result<Vec<DataFile>> {
         let props = writer_properties(self)?;
         let rows_per_group = self.contract().row_group_rows;
@@ -127,9 +134,9 @@ impl Table {
                 write_partition(self, partition, groups, &props, uploads)
             })
             .collect();
-        let files: Vec<Vec<DataFile>> =
-            futures::stream::iter(writes).buffered(CONCURRENT_PARTITION_WRITES).try_collect().await?;
-        Ok(files.into_iter().flatten().collect())
+        let files: Vec<Result<Vec<DataFile>>> =
+            futures::stream::iter(writes).buffered(CONCURRENT_PARTITION_WRITES).collect().await;
+        Ok(files.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten().collect())
     }
 
     /// Cheap checks after an append: compact size tiers of the touched partitions that crossed
@@ -297,6 +304,43 @@ mod tests {
         assert_eq!(values(&lake, sql).await, [2.0]);
         t.maintain(MaintainOptions::default()).await.unwrap();
         assert_eq!(values(&lake, sql).await, [2.0]);
+    }
+
+    /// Two days of readings whose values don't compress: tens of 1 KiB parts per file.
+    fn two_days() -> RecordBatch {
+        const DAY: i64 = 86_400_000_000;
+        let rows: Vec<(i64, i32, f64)> =
+            (0..6000).map(|i: i32| (T0 + i64::from(i % 2) * DAY + i64::from(i), i % 7, f64::from(i).sin())).collect();
+        batch(&rows)
+    }
+
+    /// A failed append leaves no multipart upload open and no data file behind, whether a part of
+    /// a file fails, or starting the upload of the second partition's file.
+    #[tokio::test]
+    async fn a_failed_append_aborts_its_uploads() {
+        for op in [Op::PutPart, Op::Put] {
+            let (lake, store) = crate::testing::faulty_lake_multipart();
+            let mut o = opts();
+            // Row groups of 100 rows: a failed part shows while the file is written.
+            o.properties.insert(crate::property::ROW_GROUP_ROWS.into(), "100".into());
+            let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+            store.fail(op, "time_day=2026-01-02");
+            assert!(t.append(&[two_days()], AppendOptions::default()).await.is_err(), "{op:?}");
+            assert_eq!(store.open_uploads(), 0, "{op:?}");
+            assert!(store.paths().await.iter().all(|p| !p.contains("/data/")), "{op:?}");
+        }
+    }
+
+    /// When completing one file's upload fails, the others aren't left half done.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_upload_leaves_the_others_complete_or_aborted() {
+        let (lake, store) = crate::testing::faulty_lake_multipart();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        store.set_latency(std::time::Duration::from_millis(100));
+        store.fail(Op::Complete, "time_day=2026-01-02");
+        assert!(t.append(&[two_days()], AppendOptions::default()).await.is_err());
+        assert_eq!(store.open_uploads(), 0);
+        assert!(store.paths().await.iter().all(|p| !p.contains("/data/")));
     }
 
     #[tokio::test]

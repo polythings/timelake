@@ -247,15 +247,22 @@ async fn rewrite_partition(
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
     let mut merge = Merge::new(table.schema(), &keys, unique, files.len(), MERGED_BATCH_ROWS)?;
     let mut writer = PartitionWriter::new(table, partition, props, uploads);
-    loop {
-        match merge.step()? {
-            Step::Need(i) => {
-                let batch = inputs[i].recv().await.transpose()?;
-                merge.push(i, batch)?;
+    let merged = async {
+        loop {
+            match merge.step()? {
+                Step::Need(i) => {
+                    let batch = inputs[i].recv().await.transpose()?;
+                    merge.push(i, batch)?;
+                }
+                Step::Output(batch) => writer.write(&batch).await?,
+                Step::Done => return Ok::<_, Error>(()),
             }
-            Step::Output(batch) => writer.write(&batch).await?,
-            Step::Done => break,
         }
+    }
+    .await;
+    if let Err(e) = merged {
+        writer.abort().await;
+        return Err(e);
     }
     let (rows_in, rows_out, _) = merge.stats();
     report.duplicates_removed += rows_in - rows_out;
@@ -534,6 +541,24 @@ mod tests {
 
     fn no_maintenance() -> AppendOptions {
         AppendOptions { maintain: Some(false), ..AppendOptions::default() }
+    }
+
+    /// A compaction whose new file fails to upload leaves no multipart upload open.
+    #[tokio::test]
+    async fn a_failed_compaction_aborts_its_upload() {
+        let (lake, store) = crate::testing::faulty_lake_multipart();
+        let mut o = opts();
+        o.properties.insert(crate::property::ROW_GROUP_ROWS.into(), "100".into());
+        let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
+        for i in 0..2 {
+            let rows: Vec<(i64, i32, f64)> = (0..2000).map(|j: i32| (T0 + i, j, f64::from(j).sin())).collect();
+            t = t.append(&[batch(&rows)], no_maintenance()).await.unwrap().0;
+        }
+        let before = store.paths().await;
+        store.fail(crate::testing::Op::PutPart, "/data/");
+        assert!(t.maintain(MaintainOptions::default()).await.is_err());
+        assert_eq!(store.open_uploads(), 0);
+        assert_eq!(store.paths().await, before);
     }
 
     async fn values_of_device_1(lake: &Lake) -> Vec<f64> {

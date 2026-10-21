@@ -323,7 +323,9 @@ impl<'a> SnapshotWriter<'a> {
         let list: Vec<ManifestFile> = manifests.new.into_iter().chain(manifests.carried).collect();
         let list_uri = self.write_manifest_list(&list).await?;
         // One round of uploads: the data files (on the first attempt) and this attempt's files.
-        futures::try_join!(data.send(), self.uploads.send())?;
+        // Both run to their end, so neither is dropped halfway with uploads open.
+        let (data_sent, sent) = futures::join!(data.send(), self.uploads.send());
+        data_sent.and(sent)?;
         let mut summary = props.clone();
         // What a rollup reflects stays recorded until a refresh records something newer.
         for key in [summary::ROLLUP_SOURCE_SNAPSHOT, summary::ROLLUP_SOURCE_SEQUENCE] {
