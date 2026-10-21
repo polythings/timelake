@@ -89,7 +89,7 @@ enum Cmd {
         #[arg(long)]
         no_compact: bool,
         /// How long every snapshot is kept, so the upgrade can be rolled back.
-        #[arg(long, default_value = timelake::format_duration(timelake::DEFAULT_KEEP_SNAPSHOTS), value_parser = parse_duration)]
+        #[arg(long, default_value = timelake::format_duration(timelake::DEFAULT_KEEP_SNAPSHOTS), value_parser = timelake::parse_duration)]
         keep_snapshots: std::time::Duration,
     },
     /// Change a table's settings: --set read-dedup=false, --unset retention (back to the default).
@@ -307,11 +307,6 @@ async fn sql(lake: Lake, args: SqlArgs, started: Instant) -> Result<()> {
         print_df(session.execute(statement).await?, args.format).await?;
     }
     Ok(())
-}
-
-/// A duration argument: `90d`, `12h`, `30m`.
-fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
-    timelake::parse_duration(s).map_err(|e| e.to_string())
 }
 
 /// Each table with the name to print: as the user wrote it, or qualified when listing them all.

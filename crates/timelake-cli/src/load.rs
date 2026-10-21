@@ -13,7 +13,7 @@ use timelake::datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOption
 use timelake::{AppendOptions, AppendResult, Chunk, IcebergType, Table, TableOptions};
 
 use crate::info::megabytes;
-use crate::{parse_duration, parse_kv};
+use crate::parse_kv;
 
 /// How to create a table.
 #[derive(clap::Args)]
@@ -35,7 +35,7 @@ pub(crate) struct TableDef {
     #[arg(long)]
     chunk: Option<Chunk>,
     /// Drop data older than this, e.g. 90d.
-    #[arg(long, value_parser = parse_duration)]
+    #[arg(long, value_parser = timelake::parse_duration)]
     retention: Option<Duration>,
     /// Disable dedup of identical (series, time) rows during compaction.
     #[arg(long)]
