@@ -17,11 +17,12 @@
 //! use std::sync::Arc;
 //! use arrow_array::{Int64Array, RecordBatch};
 //! use arrow_schema::{DataType, Field, Schema};
-//! use timelake_format::merge::{Merge, Step};
+//! use timelake_format::merge::{Merge, MergeOptions, Step};
 //!
 //! let schema = Arc::new(Schema::new(vec![Field::new("t", DataType::Int64, false)]));
 //! let batch = |v: Vec<i64>| RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(v))]).unwrap();
-//! let mut merge = Merge::new(schema.clone(), &["t"], 1, 2, 1024).unwrap();
+//! let options = MergeOptions { inputs: 2, unique: 1, batch_rows: 1024 };
+//! let mut merge = Merge::new(schema.clone(), &["t"], options).unwrap();
 //! let mut inputs = vec![vec![batch(vec![1, 3])].into_iter(), vec![batch(vec![2, 3])].into_iter()];
 //! let mut rows: Vec<i64> = vec![];
 //! loop {
@@ -101,17 +102,21 @@ pub struct Merge {
     runs: u64,
 }
 
+/// The shape of a [`Merge`]: how many inputs, what it keeps, and how large its output batches are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MergeOptions {
+    /// How many inputs there are.
+    pub inputs: usize,
+    /// Keep only the last row of each run equal in the first `unique` keys (0: keep every row).
+    pub unique: usize,
+    /// Rows per output batch, about.
+    pub batch_rows: usize,
+}
+
 impl Merge {
-    /// A merge of `inputs` inputs with columns `schema`, sorted by the columns `keys`, keeping the
-    /// last row of each run equal in the first `unique` keys (0 for no dedup), and outputting
-    /// batches of about `batch_rows` rows.
-    pub fn new(
-        schema: SchemaRef,
-        keys: &[&str],
-        unique: usize,
-        inputs: usize,
-        batch_rows: usize,
-    ) -> Result<Self, ArrowError> {
+    /// A merge of inputs with columns `schema`, sorted by the columns `keys`.
+    pub fn new(schema: SchemaRef, keys: &[&str], options: MergeOptions) -> Result<Self, ArrowError> {
+        let MergeOptions { inputs, unique, batch_rows } = options;
         let keys: Vec<usize> = keys.iter().map(|k| schema.index_of(k)).collect::<Result<_, _>>()?;
         if unique > keys.len() {
             return Err(ArrowError::InvalidArgumentError(format!("dedup on {unique} of {} keys", keys.len())));
@@ -337,7 +342,8 @@ mod tests {
 
     /// Runs a merge over inputs given as lists of batches; returns the output tags.
     fn run(inputs: Vec<Vec<RecordBatch>>, unique: usize, batch_rows: usize) -> Vec<String> {
-        let mut merge = Merge::new(schema(), &["s", "t"], unique, inputs.len(), batch_rows).unwrap();
+        let options = MergeOptions { inputs: inputs.len(), unique, batch_rows };
+        let mut merge = Merge::new(schema(), &["s", "t"], options).unwrap();
         let mut feeds: Vec<_> = inputs.into_iter().map(Vec::into_iter).collect();
         let mut out = vec![];
         loop {
@@ -389,7 +395,8 @@ mod tests {
     fn disjoint_inputs_are_taken_as_runs() {
         let a = vec![batch(&[("a", 1, "1"), ("a", 2, "2"), ("a", 3, "3")])];
         let b = vec![batch(&[("b", 1, "4"), ("b", 2, "5")])];
-        let mut merge = Merge::new(schema(), &["s", "t"], 2, 2, 1024).unwrap();
+        let mut merge =
+            Merge::new(schema(), &["s", "t"], MergeOptions { inputs: 2, unique: 2, batch_rows: 1024 }).unwrap();
         let mut feeds = [a.into_iter(), b.into_iter()];
         loop {
             match merge.step().unwrap() {
@@ -403,7 +410,7 @@ mod tests {
 
     #[test]
     fn without_keys_inputs_follow_one_another() {
-        let mut merge = Merge::new(schema(), &[], 0, 2, 1024).unwrap();
+        let mut merge = Merge::new(schema(), &[], MergeOptions { inputs: 2, unique: 0, batch_rows: 1024 }).unwrap();
         let mut feeds = [vec![batch(&[("b", 1, "1")])].into_iter(), vec![batch(&[("a", 1, "2")])].into_iter()];
         let mut out = vec![];
         loop {

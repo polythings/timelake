@@ -143,6 +143,24 @@ pub(super) enum Keep {
     All,
 }
 
+/// How [`DedupExec`] splits rows into slices, its output partitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Split {
+    /// How many slices.
+    pub slices: usize,
+    /// What the hash that picks a row's slice is of.
+    pub by: SplitBy,
+}
+
+/// What [`DedupExec`] hashes to pick a row's slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SplitBy {
+    /// The series: each series whole in one slice, sorted by time.
+    Series,
+    /// The whole key, series and time: every core busy when a query reads few series.
+    Key,
+}
+
 /// Keeps the newest write of each key. Its input is sorted by the key and the commit rank (each
 /// partition on its own); it splits the rows into `slices` by a hash of the series (of the key,
 /// without a series), so every copy of a key lands in the same slice, merges each slice in order
@@ -158,35 +176,44 @@ pub(super) struct DedupExec {
     /// Key column indices in the input schema.
     keys: Vec<usize>,
     ordering: LexOrdering,
-    by_series: bool,
+    split_by: SplitBy,
     keep: Keep,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl DedupExec {
-    /// `ordering` is the input's sort order, the key columns `keys` first; `slices` the number of
-    /// output partitions, split by a hash of the series (`by_series`) or of the whole key.
+    /// `ordering` is the input's sort order, the key columns `keys` first.
     pub(super) fn try_new(
         input: Arc<dyn ExecutionPlan>,
         keys: Vec<usize>,
         ordering: LexOrdering,
-        slices: usize,
-        by_series: bool,
+        split: Split,
         keep: Keep,
     ) -> DfResult<Self> {
         let schema = input.schema();
         // Copies share the series, so splitting by it alone is enough, and leaves each series whole
         // in one slice, sorted by time: what windows and groups by series need downstream. When a
         // query reads only a few series, splitting by the whole key keeps every core busy.
-        let by = if by_series && keys.len() > 1 { &keys[..keys.len() - 1] } else { &keys[..] };
+        let by = if split.by == SplitBy::Series && keys.len() > 1 { &keys[..keys.len() - 1] } else { &keys[..] };
         let hash = by.iter().map(|&k| Arc::new(Column::new(schema.field(k).name(), k)) as Arc<dyn PhysicalExpr>);
-        let partitioning = Partitioning::Hash(hash.collect(), slices.max(1));
-        let split = Arc::new(RepartitionExec::try_new(input.clone(), partitioning.clone())?.with_preserve_order());
+        let partitioning = Partitioning::Hash(hash.collect(), split.slices.max(1));
+        let repartition =
+            Arc::new(RepartitionExec::try_new(input.clone(), partitioning.clone())?.with_preserve_order());
         let eq = EquivalenceProperties::new_with_orderings(schema, [ordering.clone()]);
         let properties =
             Arc::new(PlanProperties::new(eq, partitioning, EmissionType::Incremental, Boundedness::Bounded));
-        Ok(Self { input, split, keys, ordering, by_series, keep, properties, metrics: ExecutionPlanMetricsSet::new() })
+        let split_by = split.by;
+        Ok(Self {
+            input,
+            split: repartition,
+            keys,
+            ordering,
+            split_by,
+            keep,
+            properties,
+            metrics: ExecutionPlanMetricsSet::new(),
+        })
     }
 }
 
@@ -233,9 +260,9 @@ impl ExecutionPlan for DedupExec {
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        let slices = self.properties.output_partitioning().partition_count();
-        let (keys, ordering, by_series, keep) = (self.keys.clone(), self.ordering.clone(), self.by_series, self.keep);
-        Ok(Arc::new(Self::try_new(children.swap_remove(0), keys, ordering, slices, by_series, keep)?))
+        let split = Split { slices: self.properties.output_partitioning().partition_count(), by: self.split_by };
+        let (keys, ordering, keep) = (self.keys.clone(), self.ordering.clone(), self.keep);
+        Ok(Arc::new(Self::try_new(children.swap_remove(0), keys, ordering, split, keep)?))
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DfResult<SendableRecordBatchStream> {

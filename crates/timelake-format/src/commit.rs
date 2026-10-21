@@ -21,8 +21,7 @@ use arrow_array::RecordBatch;
 use crate::error::{WriteError, WriteResult};
 use crate::host::{Host, uuid_v4};
 use crate::iceberg::{
-    DataFile, Entry, ManifestContext, ManifestFile, ManifestWrite, Status, manifest_file, write_manifest,
-    write_manifest_list,
+    DataFile, Entry, ManifestContext, ManifestFile, ManifestWrite, Status, write_manifest_file, write_manifest_list,
 };
 use crate::layout::{hint_uri, last_value_index_uri, manifest_list_uri, manifest_uri, metadata_uri};
 use crate::lvi;
@@ -534,8 +533,7 @@ async fn write_manifests<H: Host>(
     };
     let mut write = |kind: &str, entries: &[ManifestWrite]| -> WriteResult<ManifestFile> {
         let uri = manifest_uri(&base.location, uuid_v4(host), kind);
-        let bytes = write_manifest(&ctx, entries)?;
-        let mf = manifest_file(&uri, &bytes, spec_id, snapshot_id, entries, partition.is_some());
+        let (mf, bytes) = write_manifest_file(&ctx, &uri, snapshot_id, entries)?;
         uploads.push((uri, bytes));
         Ok(mf)
     };

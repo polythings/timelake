@@ -397,20 +397,20 @@ pub fn write_manifest_list(
 /// A sequence number the manifest list assigns when the snapshot commits.
 pub const UNASSIGNED: i64 = -1;
 
-/// The manifest-list entry of a manifest written as `bytes` at `path` with `entries`.
-pub fn manifest_file(
+/// A manifest of `entries` for the table `ctx` describes ([`write_manifest`]), and its entry in
+/// the manifest list of snapshot `snapshot_id`, which stores it at `path`.
+pub fn write_manifest_file(
+    ctx: &ManifestContext<'_>,
     path: &str,
-    bytes: &[u8],
-    spec_id: i32,
     snapshot_id: i64,
     entries: &[ManifestWrite],
-    partitioned: bool,
-) -> ManifestFile {
+) -> WriteResult<(ManifestFile, Vec<u8>)> {
+    let bytes = write_manifest(ctx, entries)?;
     let count = |s: Status| i32::try_from(entries.iter().filter(|e| e.status == s).count()).unwrap_or(i32::MAX);
     let rows = |s: Status| i64_of(entries.iter().filter(|e| e.status == s).map(|e| e.file.record_count).sum());
     // Entries that inherit the commit's sequence number sort after every explicit one.
     let min_sequence_number = entries.iter().filter_map(|e| e.sequence_number).min().unwrap_or(UNASSIGNED);
-    let partitions = partitioned.then(|| {
+    let partitions = ctx.partition.map(|_| {
         let values: Vec<Option<i32>> = entries.iter().map(|e| e.file.partition).collect();
         PartitionSummary {
             contains_null: values.iter().any(Option::is_none),
@@ -418,11 +418,11 @@ pub fn manifest_file(
             upper: values.iter().flatten().max().copied(),
         }
     });
-    ManifestFile {
+    let file = ManifestFile {
         path: path.to_string(),
         length: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
         content: Content::Data,
-        partition_spec_id: spec_id,
+        partition_spec_id: ctx.spec_id,
         sequence_number: UNASSIGNED,
         min_sequence_number,
         added_snapshot_id: snapshot_id,
@@ -433,7 +433,8 @@ pub fn manifest_file(
         existing_rows: rows(Status::Existing),
         deleted_rows: rows(Status::Deleted),
         partitions,
-    }
+    };
+    Ok((file, bytes))
 }
 
 // --- reading ---------------------------------------------------------------------------------
@@ -648,8 +649,7 @@ mod tests {
                 file: file("b", Some(19_999)),
             },
         ];
-        let bytes = write_manifest(&ctx, &entries).unwrap();
-        let mut mf = manifest_file("m.avro", &bytes, 0, 7, &entries, true);
+        let (mut mf, bytes) = write_manifest_file(&ctx, "m.avro", 7, &entries).unwrap();
         assert_eq!((mf.added_files, mf.existing_files, mf.added_rows), (1, 1, 10));
         assert_eq!(
             mf.partitions,

@@ -26,7 +26,7 @@ use crate::footer;
 use crate::host::Host;
 use crate::iceberg::{DataFile, Entry, read_manifest, read_manifest_list};
 use crate::layout::{hint_uri, metadata_prefix, metadata_uri};
-use crate::merge::{Merge, Step};
+use crate::merge::{Merge, MergeOptions, Step};
 use crate::metadata::SnapshotRef;
 use crate::rows::{align_batch, stable_sort};
 use crate::table::TableState;
@@ -205,7 +205,8 @@ async fn rewrite<H: Host>(
         inputs.push(Input::new(e.file.path.clone(), e.file.file_size, footer, sorted));
     }
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
-    let mut merge = Merge::new(table.schema.clone(), &keys, unique, files.len(), MERGED_BATCH_ROWS)?;
+    let options = MergeOptions { inputs: files.len(), unique, batch_rows: MERGED_BATCH_ROWS };
+    let mut merge = Merge::new(table.schema.clone(), &keys, options)?;
     let mut out = PartitionFiles::new(host, table, partition)?;
     let merged = async {
         loop {

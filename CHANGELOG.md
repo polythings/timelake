@@ -332,6 +332,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: `timelake_format::IcebergType` names a column's Iceberg type: `bounds::decode` takes one and
   `metadata::Column::iceberg_type` is one (`Nested` for structs, lists and maps). `NewSnapshot::operation` is an
   `Operation`, which moved to `timelake_format::metadata` (still re-exported from `commit`).
+- Rust API: `timelake_format::merge::Merge::new` takes a `MergeOptions` (inputs, `unique`, `batch_rows`) instead of
+  three positional numbers, and `iceberg::write_manifest_file` writes a manifest and returns its manifest-list entry,
+  replacing `manifest_file`.
 - Rust API: `timelake_format::FormatError` is an enum (`FormatError::Invalid` holds a message; Arrow and JSON errors
   of the head keep their cause), and `WriteError` reports its cause through `source()`, with Avro errors as
   `WriteError::Avro`. An append's `maintenance` error is the `WriteError` itself, not its message. Arrow errors are no

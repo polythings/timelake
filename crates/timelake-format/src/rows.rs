@@ -17,7 +17,7 @@ use arrow_select::zip::zip;
 
 use crate::Contract;
 use crate::error::{WriteError, WriteResult};
-use crate::merge::{Merge, Step};
+use crate::merge::{Merge, MergeOptions, Step};
 
 /// Ascending with nulls first: the order Timelake writes and declares for `(series…, time)`.
 pub const ASCENDING: SortOptions = SortOptions { descending: false, nulls_first: true };
@@ -287,7 +287,8 @@ fn merge_groups(
     let unique =
         if contract.dedup && !sort_columns.is_empty() { usize::from(partitioned) + sort_columns.len() } else { 0 };
     let names: Vec<&str> = keys.iter().map(String::as_str).collect();
-    let mut merge = Merge::new(keyed, &names, unique, runs.len(), contract.row_group_rows)?;
+    let options = MergeOptions { inputs: runs.len(), unique, batch_rows: contract.row_group_rows };
+    let mut merge = Merge::new(keyed, &names, options)?;
     let mut out: Vec<PartitionRows> = vec![];
     loop {
         match merge.step()? {
@@ -415,7 +416,8 @@ pub fn merge_latest(
     }
     let order = contract.write_order();
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
-    let mut merge = Merge::new(schema.clone(), &keys, contract.series_key.len(), parts.len(), rows)?;
+    let options = MergeOptions { inputs: parts.len(), unique: contract.series_key.len(), batch_rows: rows };
+    let mut merge = Merge::new(schema.clone(), &keys, options)?;
     let mut inputs: Vec<Option<RecordBatch>> = parts.into_iter().cloned().map(Some).collect();
     let mut out = vec![];
     loop {

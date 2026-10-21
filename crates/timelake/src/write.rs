@@ -310,7 +310,7 @@ mod shared_iceberg_tests {
         for (entry, theirs) in entries.iter().zip(&theirs) {
             assert_eq!(entry.data_file, *theirs.data_file);
         }
-        let mf = shared::manifest_file("memory://test/m.avro", &bytes, spec.spec_id(), 42, &writes, true);
+        let (mf, _) = shared::write_manifest_file(&ctx, "memory://test/m.avro", 42, &writes).unwrap();
         let list = shared::write_manifest_list(&[mf], 42, Some(7), 9).unwrap();
         let parsed = ManifestList::parse_with_version(&list, FormatVersion::V2).unwrap();
         let parsed = &parsed.entries()[0];

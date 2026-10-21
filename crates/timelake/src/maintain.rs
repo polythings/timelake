@@ -12,14 +12,13 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
-use parquet::file::properties::WriterProperties;
 use timelake_format::layout::metadata_prefix;
 use timelake_format::maintain::{
     CompactionPlan, Missing, PlanFile, SnapshotTime, compaction_plan as plan, expired_snapshots, pruned_metadata,
     retention_plan,
 };
 pub use timelake_format::maintain::{MaintainOptions, MaintainReport, MaintainSteps};
-use timelake_format::merge::{Merge, Step};
+use timelake_format::merge::{Merge, MergeOptions, Step};
 use timelake_format::rows::{align_batch, stable_sort};
 use tokio::sync::mpsc;
 
@@ -100,7 +99,8 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
         // The files are a run in commit order (older first, so "later row wins" means "latest write
         // wins"); the new files take the run's place in that order.
         let sequence_number = files.iter().map(|f| f.sequence_number).max().unwrap_or_default();
-        match rewrite_partition(table, partition, &files, &props, &uploads, report).await {
+        let writer = PartitionWriter::new(table, partition, &props, &uploads);
+        match rewrite_partition(table, &files, writer, report).await {
             Ok(written) => {
                 sequence_numbers.extend(std::iter::repeat_n(sequence_number, written.len()));
                 added.extend(written);
@@ -128,15 +128,13 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
     Ok(committed?.0)
 }
 
-/// Merges the rows of `files` (oldest commit first) into sorted, deduplicated new files, as
-/// streams (spec 19): memory is a few batches per file and the row group being written,
-/// however large the partition.
+/// Merges the rows of `files` (oldest commit first), files of one partition, into sorted,
+/// deduplicated new files that `writer` writes, as streams (spec 19): memory is a few batches per
+/// file and the row group being written, however large the partition.
 async fn rewrite_partition(
     table: &Table,
-    partition: Option<i32>,
     files: &[LiveEntry],
-    props: &WriterProperties,
-    uploads: &Uploads,
+    mut writer: PartitionWriter<'_>,
     report: &mut MaintainReport,
 ) -> Result<Vec<DataFile>> {
     let contract = table.contract();
@@ -151,8 +149,8 @@ async fn rewrite_partition(
         })
         .collect();
     let keys: Vec<&str> = order.iter().map(String::as_str).collect();
-    let mut merge = Merge::new(table.schema(), &keys, unique, files.len(), MERGED_BATCH_ROWS)?;
-    let mut writer = PartitionWriter::new(table, partition, props, uploads);
+    let options = MergeOptions { inputs: files.len(), unique, batch_rows: MERGED_BATCH_ROWS };
+    let mut merge = Merge::new(table.schema(), &keys, options)?;
     let merged = async {
         loop {
             match merge.step()? {

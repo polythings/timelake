@@ -482,7 +482,10 @@ fn new_table_metadata(
     ]);
     match &opts.time_column {
         Some(time_column) => {
-            time_series_layout(&mut creation, &mut props, &ice_schema, &normalized, time_column, opts)?;
+            let layout = time_series_layout(&ice_schema, &normalized, time_column, opts)?;
+            creation.partition_spec = Some(layout.partition_spec);
+            creation.sort_order = Some(layout.sort_order);
+            props.extend(layout.properties);
         }
         None if !opts.series_key.is_empty() => return Err(Error::invalid("series_key requires a time_column")),
         None => {}
@@ -518,16 +521,22 @@ fn with_ingest_time_column(schema: &ArrowSchema) -> Result<ArrowSchema> {
     Ok(ArrowSchema::new(fields))
 }
 
-/// Partitions a time-series table by time, sorts it by `(series_key…, time)`, and records the
-/// contract.
+/// How a time-series table is laid out: partitioned by time, sorted by `(series_key…, time)`, with
+/// its contract in its properties.
+struct TimeSeriesLayout {
+    partition_spec: UnboundPartitionSpec,
+    sort_order: SortOrder,
+    properties: Vec<(String, String)>,
+}
+
+/// The layout of a time-series table with `schema` (as Iceberg's and as `normalized` Arrow) and
+/// `opts`, whose time column is `time_column`.
 fn time_series_layout(
-    creation: &mut TableCreation,
-    props: &mut HashMap<String, String>,
     schema: &Schema,
     normalized: &ArrowSchema,
     time_column: &str,
     opts: &TableOptions,
-) -> Result<()> {
+) -> Result<TimeSeriesLayout> {
     let field_id = |column: &str, role: &str| {
         schema
             .field_by_name(column)
@@ -541,27 +550,27 @@ fn time_series_layout(
     }
     let chunk = opts.chunk.unwrap_or(Chunk::Day);
     let transform: Transform = chunk.transform_name().parse()?;
-    creation.partition_spec = Some(
-        UnboundPartitionSpec::builder()
-            .add_partition_field(time_id, partition_field_name(time_column, chunk), transform)?
-            .build(),
-    );
+    let partition_spec = UnboundPartitionSpec::builder()
+        .add_partition_field(time_id, partition_field_name(time_column, chunk), transform)?
+        .build();
     let mut order = SortOrder::builder();
     order.with_order_id(1);
     for column in &opts.series_key {
         order.with_sort_field(ascending(field_id(column, "series key")?));
     }
     order.with_sort_field(ascending(time_id));
-    creation.sort_order = Some(order.build(schema)?);
+    let sort_order = order.build(schema)?;
 
-    props.insert(property::TIME_COLUMN.into(), time_column.to_string());
-    props.insert(property::CHUNK.into(), chunk.to_string());
+    let mut properties = vec![
+        (property::TIME_COLUMN.into(), time_column.to_string()),
+        (property::CHUNK.into(), chunk.to_string()),
+        // Dedup defaults on when rows have an identity (series key + time).
+        (property::DEDUP.into(), opts.dedup.unwrap_or(!opts.series_key.is_empty()).to_string()),
+    ];
     if !opts.series_key.is_empty() {
-        props.insert(property::SERIES_KEY.into(), opts.series_key.join(","));
+        properties.push((property::SERIES_KEY.into(), opts.series_key.join(",")));
     }
-    // Dedup defaults on when rows have an identity (series key + time).
-    props.insert(property::DEDUP.into(), opts.dedup.unwrap_or(!opts.series_key.is_empty()).to_string());
-    Ok(())
+    Ok(TimeSeriesLayout { partition_spec, sort_order, properties })
 }
 
 fn ascending(source_id: i32) -> SortField {
