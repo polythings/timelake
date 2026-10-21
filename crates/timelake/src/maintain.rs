@@ -11,7 +11,6 @@ use arrow::compute::concat_batches;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{DataFile, ManifestStatus, SnapshotRef, TableMetadata};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use parquet::arrow::async_reader::ParquetObjectReader;
 use timelake_format::layout::metadata_prefix;
 use timelake_format::maintain::{
     CompactionPlan, MAX_MERGE_INPUTS, Missing, PlanFile, SnapshotTime, compaction_plan as plan, expired_snapshots,
@@ -244,7 +243,7 @@ fn read_ahead(table: &Table, df: &DataFile, sort: Option<Vec<String>>) -> mpsc::
     let (schema, uri, size) = (table.schema(), df.file_path().to_string(), df.file_size_in_bytes());
     tokio::spawn(async move {
         let read = async {
-            let reader = ParquetObjectReader::new(storage.object_store(), storage.path(&uri)?).with_file_size(size);
+            let reader = storage.parquet_file(&uri, size)?;
             let stream =
                 ParquetRecordBatchStreamBuilder::new(reader).await?.with_batch_size(READ_BATCH_ROWS).build()?;
             Ok::<_, Error>(stream.map(|b| Ok::<_, Error>(align_batch(&b?, &schema)?)))

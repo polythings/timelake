@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use arrow::array::{AsArray, RecordBatch};
 use arrow::datatypes::{SchemaRef, TimestampMicrosecondType};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result as DfResult};
@@ -200,6 +200,13 @@ impl ExecutionPlan for NewestFirstExec {
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> DfResult<Arc<dyn ExecutionPlan>> {
         let waves = children.into_iter().zip(self.waves.iter().map(|(_, newest)| *newest)).collect();
         Ok(Arc::new(Self::with_waves(waves, self.newest, self.time)))
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DfResult<TreeNodeRecursion>,
+    ) -> DfResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     // Filters above (the query's, and the sort's runtime filter) go into every partition's scan.

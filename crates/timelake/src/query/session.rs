@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use arrow::array::{RecordBatch, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::TableReference;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::{AggregateUDF, ExprFunctionExt};
 use datafusion::prelude::{DataFrame, SessionConfig, SessionContext, ident, lit};
-use datafusion::sql::TableReference;
 use datafusion::sql::sqlparser::dialect::dialect_from_str;
 
 use super::CATALOG;
@@ -110,7 +110,7 @@ impl Session {
         let options = &state.config().options().sql_parser;
         let dialect = dialect_from_str(options.dialect)
             .ok_or_else(|| Error::config(format!("unsupported SQL dialect {}", options.dialect)))?;
-        statement::parse(sql, dialect.as_ref(), options.recursion_limit)
+        statement::parse(sql, dialect.as_ref(), options.recursion_limit.get())
     }
 
     /// Plans one parsed statement. Statements about rollups run here and return a summary.
@@ -267,8 +267,13 @@ impl Session {
     }
 }
 
+/// The smallest scan DataFusion splits into byte ranges by default, and the smallest Timelake splits.
+const DATAFUSION_FILE_MIN_SIZE: usize = 1024 * 1024;
+const FILE_MIN_SIZE: usize = 10 * 1024 * 1024;
+
 /// `config` with what a Timelake session needs: its settings, the lake's catalog with the default
-/// schema as the namespace of unqualified names, and more partitions on remote storage.
+/// schema as the namespace of unqualified names, more partitions on remote storage, and larger
+/// scans before files are split.
 fn session_config(lake: &Lake, config: SessionConfig) -> SessionConfig {
     let namespace = match config.options().catalog.default_schema.as_str() {
         "public" => DEFAULT_NAMESPACE.to_string(),
@@ -290,6 +295,13 @@ fn session_config(lake: &Lake, config: SessionConfig) -> SessionConfig {
     // field ids: DataFusion's logical union drops metadata its inputs disagree on, the physical
     // union merges it, and its check of an aggregate's input schema rejects the difference.
     config.options_mut().execution.skip_physical_aggregate_schema_check = true;
+    // Split files into byte ranges from 10 MiB of a scan on, as DataFusion did before 55 (now 1 MiB), unless the
+    // caller changed it: a Timelake file holds few row groups, a range without one reads nothing, and a smaller scan
+    // runs on more cores with its batches spread after it.
+    let optimizer = &mut config.options_mut().optimizer;
+    if optimizer.repartition_file_min_size == DATAFUSION_FILE_MIN_SIZE {
+        optimizer.repartition_file_min_size = FILE_MIN_SIZE;
+    }
     config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace)
 }
 
@@ -372,11 +384,11 @@ impl datafusion::execution::context::QueryPlanner for Planner {
     async fn create_physical_plan(
         &self,
         logical_plan: &datafusion::logical_expr::LogicalPlan,
-        session_state: &datafusion::execution::SessionState,
+        session: &dyn datafusion::catalog::Session,
     ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
         use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
         DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(super::asof::AsofPlanner)])
-            .create_physical_plan(logical_plan, session_state)
+            .create_physical_plan(logical_plan, session)
             .await
     }
 }
@@ -446,6 +458,16 @@ mod tests {
         s.sql("SET timelake.rollup_routing = true").await.unwrap();
         s.sql(query).await.unwrap().collect().await.unwrap();
         assert!(prepared());
+    }
+
+    /// Scans are split into byte ranges from 10 MiB on, unless the caller chose otherwise.
+    #[tokio::test]
+    async fn files_split_from_ten_mib_unless_set() {
+        let min_size = |s: &Session| s.context().state().config().options().optimizer.repartition_file_min_size;
+        assert_eq!(min_size(&Session::new(faulty_lake().0)), FILE_MIN_SIZE);
+        let mut config = Session::config();
+        config.options_mut().optimizer.repartition_file_min_size = 4096;
+        assert_eq!(min_size(&Session::with_config(faulty_lake().0, config)), 4096);
     }
 
     /// Planning can run on a multi-threaded runtime (the Python package's does), DDL included.

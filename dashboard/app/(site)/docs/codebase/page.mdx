@@ -50,9 +50,9 @@ What lives where, which technologies are used and why, and how a write and a que
 | `Rust` | Language of the engine, CLI, Python bindings, and WASM reader | Fast, safe, and the language of the Arrow, Parquet, Iceberg, and DataFusion libraries Timelake builds on |
 | `Apache Arrow (arrow-rs)` | In-memory columns | The common format between the writer, the query engine, Python, and DuckDB |
 | `Apache Parquet (parquet-rs)` | Data files | Column storage with compression and min/max statistics |
-| `Apache Iceberg (iceberg-rust 0.10)` | Table metadata types | Timelake uses its types to read and write metadata, but writes its own commits (iceberg-rust only supports simple appends) |
+| `Apache Iceberg (iceberg-rust 0.10.1, as polythings-iceberg on Arrow 59)` | Table metadata types | Timelake uses its types to read and write metadata, but writes its own commits (iceberg-rust only supports simple appends) |
 | `object_store` | All file I/O | One interface for S3, GCS, Azure, HTTP, and local disk |
-| `Apache DataFusion 54` | SQL engine | Embeddable and extensible: Timelake adds a table provider and a query-rewrite rule |
+| `Apache DataFusion 55` | SQL engine | Embeddable and extensible: Timelake adds a table provider and a query-rewrite rule |
 | `Tokio` | Async runtime | Runs many storage requests in parallel |
 | `PyO3 + maturin` | Python bindings | Builds a native Python module from Rust; data crosses as Arrow without copies |
 | `wasm-bindgen` | WASM bindings | Exposes the Rust reader to JavaScript |

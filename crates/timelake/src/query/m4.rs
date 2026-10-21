@@ -322,7 +322,7 @@ mod tests {
         let mut all = AllGroups::new(M4Points::default());
         all.update_batch(&[times.clone(), values.clone()], &groups, Some(&filter), 3).unwrap();
         let mut merged = AllGroups::new(M4Points::default());
-        merged.merge_batch(&all.state(EmitTo::All).unwrap(), &[0, 1, 2], None, 3).unwrap();
+        merged.merge_batch(&all.state(EmitTo::All).unwrap(), &[0, 1, 2], 3).unwrap();
         let lists = merged.evaluate(EmitTo::All).unwrap();
         for g in 0..3 {
             let mut one = group();
@@ -331,5 +331,22 @@ mod tests {
             let ScalarValue::List(expected) = one.evaluate().unwrap() else { panic!("a list") };
             assert_eq!(lists.as_list::<i32>().value(g).to_data(), expected.value(0).to_data(), "group {g}");
         }
+    }
+
+    /// Rows turned into states of their own and merged give what updating with the rows gives, as
+    /// DataFusion merges them when partial aggregation doesn't reduce the rows.
+    #[test]
+    fn rows_converted_to_states_merge_as_updates() {
+        let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from((0..40).map(Some).collect::<Vec<_>>()));
+        let values: ArrayRef =
+            Arc::new(Float64Array::from((0..40).map(|i| Some(f64::from((i * 7) % 11))).collect::<Vec<_>>()));
+        let groups: Vec<usize> = (0..40).map(|i| i % 4).collect();
+        let filter = BooleanArray::from((0..40).map(|i| i % 3 != 0).collect::<Vec<_>>());
+        let mut updated = AllGroups::new(M4Points::default());
+        updated.update_batch(&[times.clone(), values.clone()], &groups, Some(&filter), 4).unwrap();
+        let states = AllGroups::new(M4Points::default()).convert_to_state(&[times, values], Some(&filter)).unwrap();
+        let mut merged = AllGroups::new(M4Points::default());
+        merged.merge_batch(&states, &groups, 4).unwrap();
+        assert_eq!(merged.evaluate(EmitTo::All).unwrap().to_data(), updated.evaluate(EmitTo::All).unwrap().to_data());
     }
 }

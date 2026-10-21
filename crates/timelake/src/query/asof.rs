@@ -27,15 +27,17 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, UInt32Array};
 use arrow::compute::{cast, concat_batches, take};
-use arrow::datatypes::{DataType, Int64Type, SchemaRef};
+use arrow::datatypes::{DataType, Int64Type, SchemaRef, UInt32Type};
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
+use datafusion::catalog::Session;
 use datafusion::common::config::ConfigOptions;
-use datafusion::common::tree_node::{Transformed, TransformedResult};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNodeRecursion};
 use datafusion::common::{DFSchemaRef, internal_err, plan_err};
 use datafusion::error::Result as DfResult;
-use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::logical_plan::builder::build_join_schema;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::utils::{conjunction, split_conjunction_owned};
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Extension, Filter, Join, JoinType, LogicalPlan, Operator, ScalarFunctionArgs,
@@ -45,7 +47,7 @@ use datafusion::optimizer::AnalyzerRule;
 use datafusion::optimizer::optimizer::ApplyOrder;
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, apply_expression_roots};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, ExecutionPlanProperties, PlanProperties, collect,
@@ -493,14 +495,15 @@ impl ExtensionPlanner for AsofPlanner {
         node: &dyn UserDefinedLogicalNode,
         logical_inputs: &[&LogicalPlan],
         physical_inputs: &[Arc<dyn ExecutionPlan>],
-        session_state: &SessionState,
+        session: &dyn Session,
+        planning_ctx: &PhysicalPlanningContext,
     ) -> DfResult<Option<Arc<dyn ExecutionPlan>>> {
         let Some(join) = node.as_any().downcast_ref::<AsofJoin>() else { return Ok(None) };
         let ([left_logical, right_logical], [left, right]) = (logical_inputs, physical_inputs) else {
             return internal_err!("an ASOF join has two inputs");
         };
-        let on_left = |e: &Expr| planner.create_physical_expr(e, left_logical.schema(), session_state);
-        let on_right = |e: &Expr| planner.create_physical_expr(e, right_logical.schema(), session_state);
+        let on_left = |e: &Expr| planner.create_physical_expr(e, left_logical.schema(), session, planning_ctx);
+        let on_right = |e: &Expr| planner.create_physical_expr(e, right_logical.schema(), session, planning_ctx);
         let left_keys = join.on.iter().map(|(l, _)| on_left(l)).collect::<DfResult<_>>()?;
         let right_keys = join.on.iter().map(|(_, r)| on_right(r)).collect::<DfResult<_>>()?;
         let matching = Matching {
@@ -627,14 +630,17 @@ impl AsofJoinExec {
                 Some(list[at].1)
             })
             .collect();
+        // An inner join drops the unmatched left rows first: its right columns may not hold nulls.
+        let (batch, matches) = if self.matching.keep_unmatched {
+            (batch.clone(), matches)
+        } else {
+            let matched = arrow::compute::is_not_null(&matches)?;
+            let kept = arrow::compute::filter(&matches, &matched)?;
+            (arrow::compute::filter_record_batch(batch, &matched)?, kept.as_primitive::<UInt32Type>().clone())
+        };
         let right = built.rows.columns().iter().map(|c| take(c, &matches, None)).collect::<Result<Vec<_>, _>>()?;
         let columns = batch.columns().iter().cloned().chain(right).collect();
-        let joined = RecordBatch::try_new(Arc::clone(&self.schema), columns)?;
-        if self.matching.keep_unmatched {
-            return Ok(joined);
-        }
-        let matched = arrow::compute::is_not_null(&matches)?;
-        Ok(arrow::compute::filter_record_batch(&joined, &matched)?)
+        Ok(RecordBatch::try_new(Arc::clone(&self.schema), columns)?)
     }
 }
 
@@ -659,6 +665,14 @@ impl ExecutionPlan for AsofJoinExec {
         let [left, right] = <[Arc<dyn ExecutionPlan>; 2]>::try_from(children)
             .map_err(|_| datafusion::error::DataFusionError::Internal("an ASOF join has two inputs".into()))?;
         Ok(Arc::new(Self::new(left, right, self.matching.clone(), Arc::clone(&self.schema))))
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DfResult<TreeNodeRecursion>,
+    ) -> DfResult<TreeNodeRecursion> {
+        let m = &self.matching;
+        apply_expression_roots(m.left_keys.iter().chain(&m.right_keys).chain([&m.left_time, &m.right_time]), f)
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DfResult<SendableRecordBatchStream> {

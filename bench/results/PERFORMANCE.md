@@ -3,6 +3,19 @@
 Measurements for the steps of the performance plan ([the milestone "Fast first queries on object storage"](../../spec/milestones/fast-first-queries.md)), newest first. Each step is
 measured from a laptop (M1 Pro) over the internet, against the numbers before it.
 
+## DataFusion 55 upgrade (2026-10-21, #184)
+
+DataFusion 55.2 and Arrow 59 against 54.1 and Arrow 58, TSBS IoT small, local, the reference checking every answer
+(all right; runs in [`experiments/2026-10-21`](experiments/2026-10-21/README.md)). One query got slower:
+breakdown-frequency after maintenance, 10.8 → 15.7 ms, 10.1 → 15.5 ms best of 10 with the two CLIs alternating.
+DataFusion 55 lowered `datafusion.optimizer.repartition_file_min_size` from 10 MiB to 1 MiB, so the 2 MB
+`diagnostics` table, three files of about one row group each, was split into 10 byte ranges instead of being read as
+3 partitions and spread over 10 after the scan; a range without a row group reads nothing, and the partial aggregate
+ran on fewer cores. Timelake sessions set 10 MiB again unless the caller sets it (`session_config`): 10.0 ms on both
+versions. With it, every query is within noise of DataFusion 54 (geometric mean of best repeats after maintenance
+4.21 → 4.03 ms, after ingest 5.24 → 5.34 ms) and ingest is unchanged (9.4 s). Splitting files at row-group
+boundaries, which the head's footers allow, could replace the threshold later.
+
 ## D23: tuned Timelake on industrial IoT (2026-10-20, #149)
 
 A tuned run (spec 44, D23) creates an hourly rollup per tag (`bench/tunings/iiot/timelake.sql`: min, max, sum,

@@ -5,7 +5,7 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
-# Separate workspace: Vortex 0.88 needs DataFusion 55 / Arrow 59 (and Rust 1.95), while Timelake is on DataFusion 54 / Arrow 58.
+# Separate workspace: Vortex is pinned exactly (=0.88) with the DataFusion it needs, apart from Timelake's dependencies.
 [workspace]
 
 [dependencies]

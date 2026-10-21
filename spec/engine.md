@@ -49,7 +49,8 @@ The reader also needs a provider of its own for dedup on read ([spec 12](0012-la
 | ID | Decision | Status |
 |---|---|---|
 | D3 | DataFusion as the embedded engine; shared function kernels; DuckDB extension as the user-facing SQL path ([embedded engine](engine.md)) | Proposed, pending a Phase 0 spike |
-| D20 | v0 pins **DataFusion 54.1**, the newest release on Arrow 58, which iceberg-rust 0.10 requires. Revisit when iceberg-rust moves to Arrow 59+. | Accepted (v0) |
+| D20 | v0 pins **DataFusion 54.1**, the newest release on Arrow 58, which iceberg-rust 0.10 requires. Revisit when iceberg-rust moves to Arrow 59+. | Superseded by D29 |
+| D29 | DataFusion follows its newest release, and Arrow with it ([spec 47](0047-format-boundaries.md)). While no iceberg-rust release is on that Arrow, the engine uses `polythings-iceberg` ([github.com/polythings/iceberg-rust](https://github.com/polythings/iceberg-rust)): iceberg 0.10.1 with only its Arrow version raised, dropped once an iceberg-rust release catches up or the engine no longer uses iceberg-rust ([#189](https://github.com/polythings/timelake/issues/189)) | Accepted |
 | D24 | The reader uses its own DataFusion `TableProvider` over `ParquetSource` and `object_store`, not `iceberg-datafusion`, whose scan is one partition through iceberg-rust's reader. Revisit if `iceberg-datafusion` plans per-file `ParquetSource` scans over `object_store`. | Accepted (v0) |
 
 ## Open questions and issues
@@ -63,3 +64,4 @@ None open.
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 5; a background page since the specs were regrouped one per feature.
 - 2026-10-20: D24 records why the reader has its own table provider instead of `iceberg-datafusion` (a v0 choice).
+- 2026-10-21: DataFusion 55.2 and Arrow 59 through `polythings-iceberg`, a fork of iceberg 0.10.1 on Arrow 59 (D29 supersedes D20, #184).

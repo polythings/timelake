@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::io::{
@@ -26,6 +27,9 @@ use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -391,6 +395,11 @@ impl Storage {
         let rest =
             uri.strip_prefix(&self.base).ok_or_else(|| Error::config(format!("{uri} is not under {}", self.base)))?;
         Ok(Path::parse(rest.trim_start_matches('/'))?)
+    }
+
+    /// The Parquet file at `uri`, of `size` bytes, for parquet's async reader.
+    pub(crate) fn parquet_file(&self, uri: &str, size: u64) -> Result<ParquetFile> {
+        Ok(ParquetFile { store: self.store.clone(), path: self.path(uri)?, size })
     }
 
     /// Reads a whole object.
@@ -810,6 +819,42 @@ impl iceberg::io::Storage for IcebergStorage {
     fn new_output(&self, path: &str) -> iceberg::Result<OutputFile> {
         let storage = IcebergStorage { inner: self.inner.clone(), uploads: self.uploads.clone() };
         Ok(OutputFile::new(Arc::new(storage), path.to_string()))
+    }
+}
+
+/// A Parquet file in the store, read by parquet's async reader: its byte ranges, and its metadata
+/// (with the page indexes when the reader's options ask for them).
+#[derive(Debug)]
+pub(crate) struct ParquetFile {
+    store: Arc<dyn ObjectStore>,
+    path: Path,
+    size: u64,
+}
+
+impl AsyncFileReader for ParquetFile {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        Box::pin(async move { Ok(self.store.get_range(&self.path, range).await?) })
+    }
+
+    fn get_byte_ranges(&mut self, ranges: Vec<Range<u64>>) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        Box::pin(async move { Ok(self.store.get_ranges(&self.path, &ranges).await?) })
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        Box::pin(async move {
+            let mut reader =
+                ParquetMetaDataReader::new().with_metadata_options(options.map(|o| o.metadata_options().clone()));
+            if let Some(o) = options {
+                reader = reader
+                    .with_column_index_policy(o.column_index_policy())
+                    .with_offset_index_policy(o.offset_index_policy());
+            }
+            let size = self.size;
+            Ok(Arc::new(reader.load_and_finish(self, size).await?))
+        })
     }
 }
 

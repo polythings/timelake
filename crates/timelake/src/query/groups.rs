@@ -81,13 +81,23 @@ impl<F: Fold> AllGroups<F> {
 
     fn add(&mut self, columns: &[ArrayRef], groups: &[usize], filter: Option<&BooleanArray>, n: usize) -> DfResult<()> {
         self.groups.resize_with(n, F::Group::default);
-        let (all, fold) = (&mut self.groups, &self.fold);
-        fold.items(columns, |row, item| {
-            if filter.is_none_or(|f| f.is_valid(row) && f.value(row)) {
-                fold.fold(&mut all[groups[row]], item);
-            }
-        })
+        fold_rows(&self.fold, &mut self.groups, columns, groups, filter)
     }
+}
+
+/// Folds each row's items that `filter` keeps into the group `groups[row]` of `all`.
+fn fold_rows<F: Fold>(
+    fold: &F,
+    all: &mut [F::Group],
+    columns: &[ArrayRef],
+    groups: &[usize],
+    filter: Option<&BooleanArray>,
+) -> DfResult<()> {
+    fold.items(columns, |row, item| {
+        if filter.is_none_or(|f| f.is_valid(row) && f.value(row)) {
+            fold.fold(&mut all[groups[row]], item);
+        }
+    })
 }
 
 impl<F: Fold> GroupsAccumulator for AllGroups<F> {
@@ -101,14 +111,17 @@ impl<F: Fold> GroupsAccumulator for AllGroups<F> {
         self.add(values, group_indices, opt_filter, total_num_groups)
     }
 
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
+    fn merge_batch(&mut self, values: &[ArrayRef], group_indices: &[usize], total_num_groups: usize) -> DfResult<()> {
+        self.add(values, group_indices, None, total_num_groups)
+    }
+
+    // Each row its own group: the state of that row alone (an empty group's where `opt_filter` drops it).
+    fn convert_to_state(&self, values: &[ArrayRef], opt_filter: Option<&BooleanArray>) -> DfResult<Vec<ArrayRef>> {
+        let rows = values.first().map_or(0, Array::len);
+        let mut groups = Vec::new();
+        groups.resize_with(rows, F::Group::default);
+        fold_rows(&self.fold, &mut groups, values, &(0..rows).collect::<Vec<_>>(), opt_filter)?;
+        Ok(vec![self.fold.states(groups.iter())])
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> DfResult<ArrayRef> {
