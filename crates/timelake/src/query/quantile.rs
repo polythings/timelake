@@ -18,7 +18,8 @@ use datafusion::functions_aggregate::approx_percentile_cont::approx_percentile_c
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Signature, Volatility};
-use datafusion::physical_expr::expressions::Literal;
+
+use super::functions::literal_arg;
 
 /// `quantile`, and `approx_quantile` as a name for `approx_percentile_cont`, to register.
 pub(super) fn udafs() -> Vec<AggregateUDF> {
@@ -35,7 +36,7 @@ struct Quantile {
 
 /// The quantile a call asks for: its second argument, a number literal from 0 to 1.
 fn q_of(args: &AccumulatorArgs<'_>) -> DfResult<f64> {
-    let q = args.exprs.get(1).and_then(|e| e.downcast_ref::<Literal>()).map(Literal::value);
+    let q = literal_arg(args.exprs, 1);
     match q.map(|v| v.cast_to(&DataType::Float64)) {
         Some(Ok(ScalarValue::Float64(Some(q)))) if (0.0..=1.0).contains(&q) => Ok(q),
         _ => plan_err!("quantile(x, q) takes q as a number from 0 to 1"),

@@ -22,9 +22,9 @@ use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
-use datafusion::physical_expr::expressions::Literal;
 use datafusion::prelude::{Expr, lit};
 
+use super::functions::literal_arg;
 use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 use super::time;
@@ -72,7 +72,7 @@ struct GapAggregate {
 /// The threshold a call names (its last argument, an interval literal of days and smaller units),
 /// in microseconds.
 fn threshold_of(args: &AccumulatorArgs<'_>) -> DfResult<i64> {
-    let literal = args.exprs.get(1).and_then(|e| e.downcast_ref::<Literal>()).map(Literal::value);
+    let literal = literal_arg(args.exprs, 1);
     let Some(threshold) = literal.and_then(threshold_of_literal) else {
         return plan_err!("the threshold must be an interval literal without months, such as INTERVAL '5 minutes'");
     };

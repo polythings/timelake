@@ -17,7 +17,8 @@ use datafusion::common::{ScalarValue, exec_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{PartitionEvaluatorArgs, WindowUDFFieldArgs};
 use datafusion::logical_expr::{PartitionEvaluator, Signature, Volatility, WindowUDF, WindowUDFImpl};
-use datafusion::physical_expr::expressions::Literal;
+
+use super::functions::literal_arg;
 
 /// Which statistic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,7 +60,7 @@ impl WindowUDFImpl for RollingFunction {
     fn partition_evaluator(&self, args: PartitionEvaluatorArgs<'_>) -> DfResult<Box<dyn PartitionEvaluator>> {
         let rows = match (self.stat, args.input_exprs()) {
             (Stat::Zscore, _) => 0,
-            (_, [_, n]) => match n.downcast_ref::<Literal>().map(Literal::value) {
+            (_, exprs @ [_, _]) => match literal_arg(exprs, 1) {
                 Some(&ScalarValue::Int64(Some(n))) if n > 0 => usize::try_from(n).unwrap_or(usize::MAX),
                 _ => return plan_err!("{}(x, n) takes a positive whole number of rows", self.name()),
             },

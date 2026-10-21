@@ -34,8 +34,8 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, GroupsAccumulator, ScalarFunctionArgs, ScalarUDF,
     ScalarUDFImpl, Signature, Volatility,
 };
-use datafusion::physical_expr::expressions::Literal;
 
+use super::functions::literal_arg;
 use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 
@@ -101,9 +101,11 @@ struct SignalAggregate {
 fn method_of(args: &AccumulatorArgs<'_>) -> DfResult<Method> {
     // After the readings `(time, value)`, or after a state.
     let at = if args.expr_fields.first().is_some_and(is_list) { 1 } else { 2 };
-    let Some(method) = args.exprs.get(at) else { return Ok(Method::ForwardFill) };
+    if args.exprs.get(at).is_none() {
+        return Ok(Method::ForwardFill);
+    }
     if let Some(ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) | ScalarValue::Utf8View(Some(s))) =
-        method.downcast_ref::<Literal>().map(Literal::value)
+        literal_arg(args.exprs, at)
     {
         s.parse().map_err(|e| plan_datafusion_err!("{e}"))
     } else {

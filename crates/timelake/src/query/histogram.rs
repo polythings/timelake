@@ -14,7 +14,8 @@ use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Signature, Volatility};
-use datafusion::physical_expr::expressions::Literal;
+
+use super::functions::literal_arg;
 
 /// The `histogram` aggregate function.
 pub(super) fn udaf() -> AggregateUDF {
@@ -32,7 +33,7 @@ struct Histogram {
 
 /// The literal at `i` of a call, as a double.
 fn literal(args: &AccumulatorArgs<'_>, i: usize) -> Option<f64> {
-    let value = args.exprs.get(i)?.downcast_ref::<Literal>()?.value().cast_to(&DataType::Float64).ok()?;
+    let value = literal_arg(args.exprs, i)?.cast_to(&DataType::Float64).ok()?;
     if let ScalarValue::Float64(v) = value { v } else { None }
 }
 

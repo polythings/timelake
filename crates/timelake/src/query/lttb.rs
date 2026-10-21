@@ -17,8 +17,8 @@ use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Signature, Volatility};
-use datafusion::physical_expr::expressions::Literal;
 
+use super::functions::literal_arg;
 use super::m4::{points, points_list};
 
 /// The `lttb` aggregate function.
@@ -63,8 +63,7 @@ impl AggregateUDFImpl for Lttb {
     }
 
     fn accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn Accumulator>> {
-        let n = args.exprs.get(2).and_then(|e| e.downcast_ref::<Literal>()).map(Literal::value);
-        let Some(&ScalarValue::Int64(Some(n))) = n else {
+        let Some(&ScalarValue::Int64(Some(n))) = literal_arg(args.exprs, 2) else {
             return plan_err!("lttb(time, value, n) takes n as a whole number");
         };
         let Ok(n @ 2..) = usize::try_from(n) else { return plan_err!("lttb needs n of 2 or more") };

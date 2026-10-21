@@ -20,6 +20,7 @@ mod catalog;
 mod changes;
 mod dedup;
 mod flatline;
+mod functions;
 mod gapfill;
 mod gaps;
 mod histogram;
