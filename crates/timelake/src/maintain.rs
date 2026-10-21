@@ -399,12 +399,8 @@ mod tests {
     use crate::append::AppendOptions;
     use timelake_format::rows::sort_and_split;
 
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{T0, batch, faulty_lake, no_maintenance, opts, schema};
     use crate::{Lake, Session};
-
-    fn no_maintenance() -> AppendOptions {
-        AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-    }
 
     /// A compaction whose new file fails to upload leaves no multipart upload open.
     #[tokio::test]

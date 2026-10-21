@@ -1,8 +1,8 @@
 //! Helpers shared by the integration tests: a small IoT schema, generated batches, SQL shortcuts,
-//! and plan inspection.
+//! and plan inspection. Test files declare it `pub mod common;`: its items are public then, so
+//! those a test binary doesn't use aren't dead code.
 
-#![allow(dead_code, reason = "each test binary uses a different subset")]
-#![allow(clippy::unwrap_used, reason = "test helpers")]
+#![expect(clippy::unwrap_used, reason = "test helpers")]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,12 +14,12 @@ use timelake::datafusion::datasource::physical_plan::{FileGroup, FileScanConfig}
 use timelake::datafusion::datasource::source::DataSourceExec;
 use timelake::datafusion::physical_plan::ExecutionPlan;
 use timelake::datafusion::physical_plan::empty::EmptyExec;
-use timelake::{Lake, Session, TableOptions};
+use timelake::{AppendOptions, Lake, Session, TableOptions};
 
-pub(crate) const DAY: i64 = 86_400_000_000;
-pub(crate) const T0: i64 = 1_767_225_600_000_000; // 2026-01-01T00:00:00Z
+pub const DAY: i64 = 86_400_000_000;
+pub const T0: i64 = 1_767_225_600_000_000; // 2026-01-01T00:00:00Z
 
-pub(crate) fn schema() -> Arc<Schema> {
+pub fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("time", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), false),
         Field::new("device", DataType::Int32, true),
@@ -29,7 +29,7 @@ pub(crate) fn schema() -> Arc<Schema> {
 }
 
 /// `devices` devices, one point every `step` µs from `start`, `n` points each, in time order.
-pub(crate) fn batch(start: i64, n: i64, step: i64, devices: i32, value: impl Fn(i32, i64) -> f64) -> RecordBatch {
+pub fn batch(start: i64, n: i64, step: i64, devices: i32, value: impl Fn(i32, i64) -> f64) -> RecordBatch {
     let points: Vec<(i64, i32)> = (0..n).flat_map(|i| (0..devices).map(move |d| (i, d))).collect();
     let times = points.iter().map(|&(i, _)| start + i * step);
     RecordBatch::try_new(
@@ -45,30 +45,35 @@ pub(crate) fn batch(start: i64, n: i64, step: i64, devices: i32, value: impl Fn(
 }
 
 /// A time-series table keyed by device.
-pub(crate) fn opts() -> TableOptions {
+pub fn opts() -> TableOptions {
     TableOptions { time_column: Some("time".into()), series_key: vec!["device".into()], ..Default::default() }
 }
 
+/// An append without inline maintenance, so a test controls the files.
+pub fn no_maintenance() -> AppendOptions {
+    AppendOptions { maintain: Some(false), ..AppendOptions::default() }
+}
+
 /// A lake in a fresh temporary directory (deleted when the guard drops).
-pub(crate) fn temp_lake() -> (tempfile::TempDir, Lake) {
+pub fn temp_lake() -> (tempfile::TempDir, Lake) {
     let dir = tempfile::tempdir().unwrap();
     let lake = Lake::open(dir.path().to_str().unwrap(), HashMap::new()).unwrap();
     (dir, lake)
 }
 
-pub(crate) async fn rows(s: &Session, sql: &str) -> Vec<RecordBatch> {
+pub async fn rows(s: &Session, sql: &str) -> Vec<RecordBatch> {
     s.sql(sql).await.unwrap().collect().await.unwrap()
 }
 
 /// The first value of the first column, as i64.
-pub(crate) async fn scalar_i64(s: &Session, sql: &str) -> i64 {
+pub async fn scalar_i64(s: &Session, sql: &str) -> i64 {
     let b = rows(s, sql).await;
     let c = arrow::compute::cast(b[0].column(0), &DataType::Int64).unwrap();
     c.as_any().downcast_ref::<Int64Array>().unwrap().value(0)
 }
 
 /// One string column of a result, concatenated across batches.
-pub(crate) fn strings(batches: &[RecordBatch], column: &str) -> Vec<String> {
+pub fn strings(batches: &[RecordBatch], column: &str) -> Vec<String> {
     batches
         .iter()
         .flat_map(|b| {
@@ -81,7 +86,7 @@ pub(crate) fn strings(batches: &[RecordBatch], column: &str) -> Vec<String> {
 
 /// What a scan in a physical plan reads.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Scan {
+pub enum Scan {
     /// The last-value index (an in-memory batch).
     LastValueIndex,
     /// This many data files.
@@ -92,18 +97,18 @@ pub(crate) enum Scan {
 
 /// The scans and operator names of a query's physical plan.
 #[derive(Debug)]
-pub(crate) struct Plan {
-    pub(crate) scans: Vec<Scan>,
-    pub(crate) operators: Vec<String>,
+pub struct Plan {
+    pub scans: Vec<Scan>,
+    pub operators: Vec<String>,
 }
 
 impl Plan {
-    pub(crate) fn has(&self, operator: &str) -> bool {
+    pub fn has(&self, operator: &str) -> bool {
         self.operators.iter().any(|o| o == operator)
     }
 }
 
-pub(crate) async fn plan(s: &Session, sql: &str) -> Plan {
+pub async fn plan(s: &Session, sql: &str) -> Plan {
     fn walk(node: &Arc<dyn ExecutionPlan>, plan: &mut Plan) {
         plan.operators.push(node.name().to_string());
         if node.downcast_ref::<EmptyExec>().is_some() {
@@ -128,7 +133,7 @@ pub(crate) async fn plan(s: &Session, sql: &str) -> Plan {
 }
 
 /// The `value` column of a result (or its only column), concatenated across batches.
-pub(crate) fn f64_values(batches: &[RecordBatch]) -> Vec<f64> {
+pub fn f64_values(batches: &[RecordBatch]) -> Vec<f64> {
     batches
         .iter()
         .flat_map(|b| {
@@ -136,4 +141,18 @@ pub(crate) fn f64_values(batches: &[RecordBatch]) -> Vec<f64> {
             c.as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec()
         })
         .collect()
+}
+
+/// Every file under `dir`, at any depth.
+pub fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = vec![];
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(files_under(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }

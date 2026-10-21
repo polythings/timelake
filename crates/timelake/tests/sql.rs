@@ -1,6 +1,6 @@
 //! SQL over a lake: catalog listing, statement handling, and the latest-row query.
 
-mod common;
+pub mod common;
 
 use common::{T0, batch, opts, rows, scalar_i64, schema, strings, temp_lake};
 use timelake::{AppendOptions, Session, TableOptions};

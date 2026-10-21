@@ -1,31 +1,17 @@
 //! Concurrent commits: writers that lose the race rebase or report a conflict, and leave no
 //! files behind.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![expect(clippy::unwrap_used, reason = "test code")]
 
-mod common;
+pub mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use common::{T0, batch, opts, scalar_i64, schema, temp_lake};
+use common::{T0, batch, files_under, no_maintenance, opts, scalar_i64, schema, temp_lake};
 use timelake::{AppendOptions, Error, MaintainOptions, Session};
-
-fn no_maintenance() -> AppendOptions {
-    AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-}
 
 fn compact_only() -> MaintainOptions {
     MaintainOptions { retention: false, expire: false, ..MaintainOptions::default() }
-}
-
-/// Every file under `dir`, recursively.
-fn files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut out = vec![];
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() { out.extend(files_under(&path)) } else { out.push(path) }
-    }
-    out
 }
 
 /// How many files under `dir` have a name containing `pattern`.

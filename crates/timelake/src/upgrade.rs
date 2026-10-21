@@ -210,7 +210,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::testing::{T0, append_without_index, batch, faulty_lake, opts};
+    use crate::testing::{T0, append_without_index, batch, faulty_lake, no_maintenance, opts};
     use crate::{AppendOptions, MaintainOptions};
 
     fn rows(t: &Table) -> u64 {
@@ -278,7 +278,7 @@ mod tests {
     async fn rolled_back_batches_can_be_appended_again() {
         let (lake, _store) = faulty_lake();
         let t = lake.create_table("iot.r", &crate::testing::schema(), opts()).await.unwrap();
-        let o = |id: &str| AppendOptions { batch_id: Some(id.into()), maintain: Some(false), ..Default::default() };
+        let o = |id: &str| AppendOptions { batch_id: Some(id.into()), ..no_maintenance() };
         let (t, _) = t.append(&[batch(&[(T0, 1, 1.0)])], o("a")).await.unwrap();
         let before = t.metadata().current_snapshot_id().unwrap();
         let (t, _) = t.append(&[batch(&[(T0 + 1, 1, 2.0)])], o("b")).await.unwrap();

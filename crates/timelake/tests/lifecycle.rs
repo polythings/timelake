@@ -1,28 +1,17 @@
 //! End-to-end table lifecycle on local storage: create, append, query, last-value index and
 //! query rewrite, compaction with dedup, retention, snapshot expiry, concurrent commits.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
-
-mod common;
+pub mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::{Float64Array, Int32Array, Int64Array, RecordBatch, StringArray};
+use arrow::array::{Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use common::{DAY, Scan, T0, batch, opts, plan, rows, scalar_i64, schema, strings, temp_lake};
+use common::{
+    DAY, Scan, T0, batch, f64_values, no_maintenance, opts, plan, rows, scalar_i64, schema, strings, temp_lake,
+};
 use timelake::{AppendOptions, MaintainOptions, Session, TableOptions, property};
-
-fn no_maintenance() -> AppendOptions {
-    AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-}
-
-fn f64_column(batches: &[RecordBatch], column: usize) -> Vec<f64> {
-    batches
-        .iter()
-        .flat_map(|b| b.column(column).as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec())
-        .collect()
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn append_query_latest_compact_expire() {
@@ -63,7 +52,7 @@ async fn append_query_latest_compact_expire() {
     let p = plan(&s, rn_sql).await;
     assert_eq!(p.scans, [Scan::LastValueIndex], "{p:?}");
     assert!(!p.has("BoundedWindowAggExec") && !p.has("WindowAggExec"), "{p:?}");
-    let values = f64_column(&rows(&s, rn_sql).await, 1);
+    let values = f64_values(&rows(&s, rn_sql).await);
     assert!((values[3] - (3000.0 + 359.0)).abs() < f64::EPSILON); // device 3, last point of the last append
     // Extra predicates next to rn = 1 (applied after picking the latest row) still use the index.
     let rn_and = "SELECT device FROM (SELECT device, value, ROW_NUMBER() OVER (PARTITION BY device ORDER BY time DESC) AS rn FROM iot.readings) WHERE rn = 1 AND value > 5000";
@@ -71,7 +60,7 @@ async fn append_query_latest_compact_expire() {
     assert_eq!(scalar_i64(&s, &format!("SELECT count(*) FROM ({rn_and})")).await, 5);
     let top1 = "SELECT time, value FROM iot.readings WHERE device = 7 ORDER BY time DESC LIMIT 1";
     assert_eq!(plan(&s, top1).await.scans, [Scan::LastValueIndex]);
-    assert_eq!(f64_column(&rows(&s, top1).await, 1), [7359.0]);
+    assert_eq!(f64_values(&rows(&s, top1).await), [7359.0]);
     // Filters on non-key columns must not use the index.
     let p = plan(&s, "SELECT time FROM iot.readings WHERE value < 5 ORDER BY time DESC LIMIT 1").await;
     assert!(!p.scans.is_empty() && p.scans.iter().all(|s| matches!(s, Scan::Files(_))), "{p:?}");
@@ -249,9 +238,8 @@ async fn expiry_deletes_nothing_when_a_kept_snapshot_is_broken() {
     o.properties.insert(property::SNAPSHOT_RETENTION.into(), "0s".into());
     o.properties.insert(property::MIN_SNAPSHOTS.into(), "1".into());
     let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-    let no_maintenance = AppendOptions { maintain: Some(false), ..AppendOptions::default() };
     for i in 0..3 {
-        t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance.clone()).await.unwrap().0;
+        t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap().0;
     }
     let data_files = || {
         std::fs::read_dir(dir.path().join("iot/r/data"))

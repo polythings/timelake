@@ -27,7 +27,7 @@ use timelake_format::rows::{align_batch, sort_and_split, with_ingest_time};
 use crate::commit::{Change, commit};
 use crate::storage::{Storage, Uploads};
 use crate::write::{write_partition, writer_properties};
-use crate::{Lake, Result, Session, Table, TableOptions};
+use crate::{AppendOptions, Lake, Result, Session, Table, TableOptions};
 
 /// Which operation a [`Fault`] breaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,12 +65,18 @@ pub(crate) struct FaultyStore {
     latency: Arc<Mutex<Duration>>,
     open_uploads: Arc<AtomicUsize>,
     deleted: Arc<Mutex<Vec<String>>>,
+    gets: Arc<AtomicUsize>,
 }
 
 impl FaultyStore {
     /// Every path a delete was asked for, in order (whether it existed or not).
     pub(crate) fn deleted(&self) -> Vec<String> {
         self.deleted.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Read requests so far.
+    pub(crate) fn gets(&self) -> usize {
+        self.gets.load(Ordering::SeqCst)
     }
 
     /// Multipart uploads started and neither completed nor aborted.
@@ -225,12 +231,14 @@ impl ObjectStore for FaultyStore {
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> object_store::Result<GetResult> {
+        self.gets.fetch_add(1, Ordering::SeqCst);
         self.round_trip().await;
         self.check(Op::Get, location)?;
         self.inner.get_opts(location, options).await
     }
 
     async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> object_store::Result<Vec<Bytes>> {
+        self.gets.fetch_add(1, Ordering::SeqCst);
         self.round_trip().await;
         self.check(Op::Get, location)?;
         self.inner.get_ranges(location, ranges).await
@@ -355,6 +363,11 @@ pub(crate) fn schema() -> Schema {
         Field::new("device", DataType::Int32, true),
         Field::new("value", DataType::Float64, true),
     ])
+}
+
+/// An append without inline maintenance, so a test controls the files.
+pub(crate) fn no_maintenance() -> AppendOptions {
+    AppendOptions { maintain: Some(false), ..AppendOptions::default() }
 }
 
 /// A time-series table keyed by device.

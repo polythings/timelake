@@ -1,14 +1,14 @@
 //! The block cache end to end (spec 22): the same answers with it on, through appends,
 //! compaction and expiry, from memory and from a disk cache another lake (process) filled.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![expect(clippy::unwrap_used, reason = "test code")]
 
-mod common;
+pub mod common;
 
 use std::collections::HashMap;
 
-use common::{DAY, T0, batch, opts, rows};
-use timelake::{AppendOptions, Lake, MaintainOptions, Session, property};
+use common::{DAY, T0, batch, no_maintenance, opts, rows};
+use timelake::{Lake, MaintainOptions, Session, property};
 
 const QUERIES: &[&str] = &[
     "SELECT device, count(*), sum(value) FROM iot.r GROUP BY 1 ORDER BY 1",
@@ -45,7 +45,7 @@ async fn cached_reads_give_the_same_answers() {
     let mut t = cached.create_table("iot.r", &common::schema(), o).await.unwrap();
     for i in 0..6 {
         let b = batch(T0 + i * DAY / 2, 720, 60_000_000, 8, |d, j| f64::from(d) * 100.0 + j as f64);
-        t = t.append(&[b], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap().0;
+        t = t.append(&[b], no_maintenance()).await.unwrap().0;
     }
     assert_eq!(answers(&cached).await, answers(&plain).await);
     // Compaction rewrites the files and expiry deletes the old ones: still the same answers.

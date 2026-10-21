@@ -812,56 +812,15 @@ fn sweep(dir: &std::path::Path, budget: u64) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use object_store::ObjectStoreExt;
-    use object_store::memory::InMemory;
 
     use super::*;
+    use crate::testing::FaultyStore;
 
-    /// An in-memory store that counts its reads.
-    #[derive(Debug, Default)]
-    struct Counting {
-        inner: InMemory,
-        gets: AtomicU64,
-    }
-
-    impl fmt::Display for Counting {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("Counting")
-        }
-    }
-
-    #[async_trait]
-    impl ObjectStore for Counting {
-        async fn put_opts(&self, l: &Path, p: PutPayload, o: PutOptions) -> object_store::Result<PutResult> {
-            self.inner.put_opts(l, p, o).await
-        }
-        async fn put_multipart_opts(
-            &self,
-            l: &Path,
-            o: PutMultipartOptions,
-        ) -> object_store::Result<Box<dyn MultipartUpload>> {
-            self.inner.put_multipart_opts(l, o).await
-        }
-        async fn get_opts(&self, l: &Path, o: GetOptions) -> object_store::Result<GetResult> {
-            self.gets.fetch_add(1, Ordering::SeqCst);
-            // A little latency, so concurrent reads overlap.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            self.inner.get_opts(l, o).await
-        }
-        fn delete_stream(
-            &self,
-            l: BoxStream<'static, object_store::Result<Path>>,
-        ) -> BoxStream<'static, object_store::Result<Path>> {
-            self.inner.delete_stream(l)
-        }
-        fn list(&self, p: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-            self.inner.list(p)
-        }
-        async fn list_with_delimiter(&self, p: Option<&Path>) -> object_store::Result<ListResult> {
-            self.inner.list_with_delimiter(p).await
-        }
-        async fn copy_opts(&self, f: &Path, t: &Path, o: CopyOptions) -> object_store::Result<()> {
-            self.inner.copy_opts(f, t, o).await
-        }
+    /// A store that counts its reads and answers after 5 ms, so concurrent reads overlap.
+    fn slow_store() -> Arc<FaultyStore> {
+        let store = Arc::new(FaultyStore::default());
+        store.set_latency(Duration::from_millis(5));
+        store
     }
 
     const BLOCK: u64 = 4096;
@@ -871,24 +830,24 @@ mod tests {
     }
 
     /// A cache over `store`, with blocks of 4 KiB, and a disk cache in `dir` if given.
-    fn cached(store: &Arc<Counting>, dir: Option<&std::path::Path>) -> Cached {
+    fn cached(store: &Arc<FaultyStore>, dir: Option<&std::path::Path>) -> Cached {
         let config =
             CacheConfig { block: BLOCK, request: 0, memory: 1 << 20, disk: dir.map(|d| (d.to_path_buf(), 1 << 20)) };
         Cached(Arc::new(CachedStore::new(store.clone(), "memory://".into(), config)))
     }
 
-    async fn gets_for<F: Future<Output = ()>>(store: &Counting, f: F) -> u64 {
-        let before = store.gets.load(Ordering::SeqCst);
+    async fn gets_for<F: Future<Output = ()>>(store: &FaultyStore, f: F) -> usize {
+        let before = store.gets();
         f.await;
-        store.gets.load(Ordering::SeqCst) - before
+        store.gets() - before
     }
 
     #[tokio::test]
     async fn repeat_reads_come_from_memory() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let path = Path::from("t/data/a.parquet");
         let bytes = data(10_000); // 2 whole blocks and a part
-        store.inner.put(&path, bytes.clone().into()).await.unwrap();
+        store.put(&path, bytes.clone().into()).await.unwrap();
         let c = cached(&store, None);
         let ranges = [100..200, 4000..9000, 9990..10_000];
         let n = gets_for(&store, async {
@@ -912,12 +871,12 @@ mod tests {
     }
 
     /// Runs of missing blocks apart from each other are fetched at the same time: three runs take
-    /// one request's latency (5 ms in `Counting`), not three.
+    /// one request's latency (5 ms), not three.
     #[tokio::test(start_paused = true)]
     async fn separate_runs_are_fetched_at_once() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let path = Path::from("t/data/b.parquet");
-        store.inner.put(&path, data(40_000).into()).await.unwrap();
+        store.put(&path, data(40_000).into()).await.unwrap();
         let c = cached(&store, None);
         let started = tokio::time::Instant::now();
         let n = gets_for(&store, async {
@@ -930,9 +889,9 @@ mod tests {
 
     #[tokio::test]
     async fn only_immutable_objects_are_cached() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let hint = Path::from("t/metadata/version-hint.text");
-        store.inner.put(&hint, Bytes::from("1").into()).await.unwrap();
+        store.put(&hint, Bytes::from("1").into()).await.unwrap();
         let c = cached(&store, None);
         let n = gets_for(&store, async {
             for _ in 0..3 {
@@ -945,7 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_and_deletes_update_the_cache() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let c = cached(&store, None);
         let path = Path::from("t/metadata/snap-1.avro");
         c.put(&path, data(5000).into()).await.unwrap();
@@ -960,9 +919,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_reads_share_one_fetch() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let path = Path::from("t/data/b.parquet");
-        store.inner.put(&path, data(3 * 4096).into()).await.unwrap();
+        store.put(&path, data(3 * 4096).into()).await.unwrap();
         let c = Arc::new(cached(&store, None));
         let n = gets_for(&store, async {
             let reads = (0..8).map(|_| {
@@ -981,9 +940,9 @@ mod tests {
     /// leaves the GET for a later read to resume: it finishes on its own and its blocks are kept.
     #[tokio::test(start_paused = true)]
     async fn a_dropped_read_leaves_nothing_behind() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let path = Path::from("t/data/d.parquet");
-        store.inner.put(&path, data(5000).into()).await.unwrap();
+        store.put(&path, data(5000).into()).await.unwrap();
         let c = cached(&store, None);
         let read = c.get_range(&path, 0..100);
         assert!(tokio::time::timeout(Duration::from_millis(1), read).await.is_err(), "dropped before its GET returns");
@@ -1002,7 +961,7 @@ mod tests {
     /// A missing object is `NotFound`, as from the store: callers tell it from other errors.
     #[tokio::test]
     async fn a_missing_object_is_not_found() {
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let c = cached(&store, None);
         let err = c.get_range(&Path::from("t/data/gone.parquet"), 0..100).await.unwrap_err();
         assert!(matches!(err, object_store::Error::NotFound { .. }), "{err:?}");
@@ -1011,9 +970,9 @@ mod tests {
     #[tokio::test]
     async fn the_disk_cache_serves_another_process() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Counting::default());
+        let store = slow_store();
         let path = Path::from("t/data/c.parquet");
-        store.inner.put(&path, data(9000).into()).await.unwrap();
+        store.put(&path, data(9000).into()).await.unwrap();
         let first = cached(&store, Some(dir.path()));
         first.get(&path).await.unwrap().bytes().await.unwrap();
         // Disk writes run in the background: wait for the three blocks (a slow runner took over 200 ms).

@@ -136,12 +136,10 @@ mod tests {
 
     use super::*;
     use crate::Error;
-    use crate::testing::{FaultyStore, Op, T0, batch, faulty_lake, opts, reopen, reopen_hint_lookup, schema};
-    use crate::{AppendOptions, Session, TableOptions, property};
-
-    fn no_maintenance() -> AppendOptions {
-        AppendOptions { maintain: Some(false), ..Default::default() }
-    }
+    use crate::testing::{
+        FaultyStore, Op, T0, batch, faulty_lake, no_maintenance, opts, reopen, reopen_hint_lookup, schema,
+    };
+    use crate::{Session, TableOptions, property};
 
     fn with_properties(kv: &[(&str, &str)]) -> TableOptions {
         let mut o = opts();

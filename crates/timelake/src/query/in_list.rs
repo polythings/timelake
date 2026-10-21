@@ -263,8 +263,8 @@ mod tests {
     use parquet::file::properties::WriterProperties;
 
     use super::*;
-    use crate::testing::{T0, answer, batch, faulty_lake, opts};
-    use crate::{AppendOptions, Session, property};
+    use crate::testing::{T0, answer, batch, faulty_lake, no_maintenance, opts};
+    use crate::{Session, property};
 
     /// Devices 0..100, 100 rows each, one page per device and 50 devices per row group.
     fn file() -> (Schema, ParquetMetaData) {
@@ -375,8 +375,7 @@ mod tests {
         let t = lake.create_table("iot.r", &crate::testing::schema(), o).await.unwrap();
         let rows: Vec<(i64, i32, f64)> =
             (0..60).flat_map(|d| (0..30).map(move |i| (T0 + i, d, f64::from(d)))).collect();
-        let no_maintenance = AppendOptions { maintain: Some(false), ..Default::default() };
-        t.append(&[batch(&rows)], no_maintenance.clone()).await.unwrap();
+        t.append(&[batch(&rows)], no_maintenance()).await.unwrap();
         let dims =
             Schema::new(vec![Field::new("device", DataType::Int32, false), Field::new("grp", DataType::Int32, false)]);
         let d = lake.create_table("iot.d", &dims, crate::TableOptions::default()).await.unwrap();
@@ -384,7 +383,7 @@ mod tests {
         let devices =
             RecordBatch::try_new(Arc::new(dims), vec![Arc::new(Int32Array::from_iter_values(0..60)), Arc::new(grp)])
                 .unwrap();
-        d.append(&[devices], no_maintenance).await.unwrap();
+        d.append(&[devices], no_maintenance()).await.unwrap();
 
         let list: Vec<String> = (10..35).map(|d| d.to_string()).collect();
         let queries = [

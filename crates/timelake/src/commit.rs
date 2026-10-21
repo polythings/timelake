@@ -489,12 +489,8 @@ mod tests {
 
     use timelake_format::layout::{hint_uri, metadata_uri};
 
-    use crate::testing::{Op, T0, batch, faulty_lake, opts, reopen, schema};
+    use crate::testing::{Op, T0, batch, faulty_lake, no_maintenance, opts, reopen, schema};
     use crate::{AppendOptions, Error};
-
-    fn no_maintenance() -> AppendOptions {
-        AppendOptions { maintain: Some(false), ..Default::default() }
-    }
 
     /// Manifests and the last-value index are written concurrently; if one fails, the files the
     /// other wrote are removed too.

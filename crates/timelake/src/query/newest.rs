@@ -382,8 +382,8 @@ impl NewestFirstRead {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{T0, answer, batch, faulty_lake, opts};
-    use crate::{AppendOptions, Session};
+    use crate::Session;
+    use crate::testing::{T0, answer, batch, faulty_lake, no_maintenance, opts};
 
     const MINUTE: i64 = 60_000_000;
 
@@ -397,7 +397,7 @@ mod tests {
         // Three days, one reading a minute; values grow with time, so `value % 10000 < 100` (which file
         // statistics can't prune with) is in the first day.
         let rows: Vec<(i64, i32, f64)> = (0..3 * 24 * 60).map(|i| (T0 + i * MINUTE, 1, i as f64)).collect();
-        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        t.append(&[batch(&rows)], no_maintenance()).await.unwrap();
         for sql in [
             "SELECT time, value FROM iot.r WHERE value % 10000 < 100 ORDER BY time DESC LIMIT 10",
             "SELECT time_bucket(INTERVAL '10 minutes', time) AS b, count(*) AS n FROM iot.r WHERE value % 10000 < 100
@@ -427,7 +427,7 @@ mod tests {
         o.properties.insert(crate::property::HEAD_FORMAT.into(), "none".into());
         let t = lake.create_table("iot.r", &crate::testing::schema(), o).await.unwrap();
         let rows: Vec<(i64, i32, f64)> = (0..6).map(|d| (T0 + d * 24 * 60 * MINUTE, 1, 1.0)).collect();
-        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        t.append(&[batch(&rows)], no_maintenance()).await.unwrap();
         let s = Session::new(crate::testing::reopen(&store));
         // Loads the table, but no footer.
         s.sql("DESCRIBE iot.r").await.unwrap().collect().await.unwrap();
@@ -448,7 +448,7 @@ mod tests {
         // Five days, one reading a minute, each from one of 7 devices: every time is distinct.
         let rows: Vec<(i64, i32, f64)> =
             (0..5 * 24 * 60).map(|i| (T0 + i * MINUTE, i32::try_from(i % 7).unwrap(), i as f64)).collect();
-        t.append(&[batch(&rows)], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+        t.append(&[batch(&rows)], no_maintenance()).await.unwrap();
         let queries = [
             "SELECT time, device, value FROM iot.r ORDER BY time DESC LIMIT 3",
             // More rows than the newest day holds.

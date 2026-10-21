@@ -1,14 +1,14 @@
 //! Materialized rollups end to end (spec 27): created from SQL, refreshed, and routed to,
 //! always giving the answer the raw table gives.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![expect(clippy::unwrap_used, reason = "test code")]
 
-mod common;
+pub mod common;
 
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
-use common::{DAY, T0, batch, opts, rows, scalar_i64, temp_lake};
+use common::{DAY, T0, batch, no_maintenance, opts, rows, scalar_i64, temp_lake};
 use timelake::{AppendOptions, Lake, Session, TableOptions, property};
 
 const HOUR: i64 = DAY / 24;
@@ -281,7 +281,7 @@ async fn a_wider_rollup_is_computed_from_a_narrower_one() {
     // A third day, then a refresh of both: the hourly rollup first, the daily from it.
     let t = lake.table("iot.r").await.unwrap();
     let b = batch(T0 + 2 * DAY, 24 * 60, MINUTE, 4, |d, i| f64::from(d) * 10_000.0 + i as f64);
-    t.append(&[b], AppendOptions { maintain: Some(false), ..AppendOptions::default() }).await.unwrap();
+    t.append(&[b], no_maintenance()).await.unwrap();
     rows(&s, "REFRESH MATERIALIZED ROLLUP iot.r_1h").await;
     rows(&s, "REFRESH MATERIALIZED ROLLUP iot.r_1d").await;
     assert_eq!(scalar_i64(&unrouted, "SELECT count(*) FROM iot.r_1d").await, 12);
@@ -295,9 +295,8 @@ async fn changes_since_the_refresh_come_from_the_raw_table() {
     // A newer write of an old reading (dedup keeps it), and a new hour, without refreshing.
     let late = batch(T0 + 3 * HOUR, 1, MINUTE, 2, |_, _| -1.0);
     let new = batch(T0 + 2 * DAY, 30, MINUTE, 4, |d, i| f64::from(d) + i as f64);
-    let no_maintenance = AppendOptions { maintain: Some(false), ..Default::default() };
-    let (t, _) = t.append(&[late], no_maintenance.clone()).await.unwrap();
-    let (t, _) = t.append(&[new], no_maintenance).await.unwrap();
+    let (t, _) = t.append(&[late], no_maintenance()).await.unwrap();
+    let (t, _) = t.append(&[new], no_maintenance()).await.unwrap();
     check_answers(&lake).await;
 
     let s = Session::new(lake.clone());
@@ -471,7 +470,7 @@ async fn reads_without_dedup_are_not_routed() {
     // A second write of an hour's readings: dedup keeps the newer one, a read without dedup both.
     let t = lake.table("iot.r").await.unwrap();
     let again = batch(T0 + 3 * HOUR, 60, MINUTE, 4, |_, _| -1.0);
-    t.append(&[again], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+    t.append(&[again], no_maintenance()).await.unwrap();
     rows(&Session::new(lake.clone()), "REFRESH MATERIALIZED ROLLUP iot.r_1h").await;
     let sql = QUERIES[0].0;
     for (table, session) in [

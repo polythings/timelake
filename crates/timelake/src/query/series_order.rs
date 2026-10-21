@@ -137,7 +137,7 @@ fn series_window(e: &Expr) -> Option<(HashSet<String>, String)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{T0, answer, batch, faulty_lake, opts, schema};
+    use crate::testing::{T0, answer, batch, faulty_lake, no_maintenance, opts, schema};
     use crate::{AppendOptions, Session, TableOptions};
 
     const SECOND: i64 = 1_000_000;
@@ -150,12 +150,11 @@ mod tests {
         let (lake, _) = faulty_lake();
         let o = TableOptions { dedup: Some(false), ..opts() };
         let t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-        let no_maintenance = AppendOptions { maintain: Some(false), ..Default::default() };
         // Device 1: values 0, 10, 20… every 10 s from one append, 5, 15… at the odd 5 s from another.
         let even: Vec<(i64, i32, f64)> = (0..30).map(|i| (T0 + i * 10 * SECOND, 1, (i * 10) as f64)).collect();
         let odd: Vec<(i64, i32, f64)> = (0..30).map(|i| (T0 + (i * 10 + 5) * SECOND, 1, (i * 10 + 5) as f64)).collect();
-        let (t, _) = t.append(&[batch(&even)], no_maintenance.clone()).await.unwrap();
-        t.append(&[batch(&odd)], no_maintenance).await.unwrap();
+        let (t, _) = t.append(&[batch(&even)], no_maintenance()).await.unwrap();
+        t.append(&[batch(&odd)], no_maintenance()).await.unwrap();
 
         let sql =
             "SELECT device, time_weighted_mean(time, value) AS ff, time_weighted_mean(time, value, 'linear') AS lin,
@@ -196,18 +195,12 @@ mod tests {
             let t = lake.create_table("iot.r", &schema(), TableOptions { dedup: Some(dedup), ..opts() }).await.unwrap();
             let mut t = t;
             for d in 0..12 {
-                t = t
-                    .append(&[batch(&day(d))], AppendOptions { maintain: Some(false), ..Default::default() })
-                    .await
-                    .unwrap()
-                    .0;
+                t = t.append(&[batch(&day(d))], no_maintenance()).await.unwrap().0;
             }
             let modes: &[&str] = &["auto", "segments", "merge"];
             for copy in [false, true] {
                 if copy {
-                    t.append(&[batch(&day(5))], AppendOptions { maintain: Some(false), ..Default::default() })
-                        .await
-                        .unwrap();
+                    t.append(&[batch(&day(5))], no_maintenance()).await.unwrap();
                 }
                 for mode in modes.iter().filter(|m| !(copy && !dedup && **m == "segments")) {
                     let s = Session::new(lake.clone());

@@ -100,7 +100,7 @@ pub(crate) async fn update_properties(
 #[cfg(test)]
 mod tests {
     use crate::property;
-    use crate::testing::{faulty_lake, opts, schema};
+    use crate::testing::{faulty_lake, no_maintenance, opts, schema};
 
     #[tokio::test]
     async fn settings_change_after_creation() {
@@ -137,16 +137,15 @@ mod tests {
         use std::time::Duration;
 
         use crate::testing::{Op, T0, batch};
-        use crate::{AppendOptions, Error, MaintainOptions};
+        use crate::{Error, MaintainOptions};
 
         let (lake, store) = faulty_lake();
         let mut o = opts();
         o.properties.insert(property::SNAPSHOT_RETENTION.into(), "0s".into());
         o.properties.insert(property::MIN_SNAPSHOTS.into(), "1".into());
         let mut t = lake.create_table("iot.r", &schema(), o).await.unwrap();
-        let no_maintenance = AppendOptions { maintain: Some(false), ..AppendOptions::default() };
         for i in 0..2 {
-            t = t.append(&[batch(&[(T0 + i, 1, 1.0)])], no_maintenance.clone()).await.unwrap().0;
+            t = t.append(&[batch(&[(T0 + i, 1, 1.0)])], no_maintenance()).await.unwrap().0;
         }
         let first = t.metadata().snapshots().map(|s| s.snapshot_id()).min().unwrap();
         // Every version is taken by "another writer", which never shows up.

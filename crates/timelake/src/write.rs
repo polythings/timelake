@@ -241,12 +241,7 @@ mod shared_iceberg_tests {
     use iceberg::spec::{FormatVersion, Manifest, ManifestList, ManifestStatus};
     use timelake_format::iceberg::{self as shared, ManifestContext, ManifestWrite, Status};
 
-    use crate::append::AppendOptions;
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
-
-    fn no_maintenance() -> AppendOptions {
-        AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-    }
+    use crate::testing::{T0, batch, faulty_lake, no_maintenance, opts, schema};
 
     #[tokio::test]
     async fn shared_manifests_match_iceberg_rust() {

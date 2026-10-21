@@ -3,16 +3,16 @@
 //! rows the shared writer appended (with dedup, the last-value index and the head), and compacts
 //! them.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![expect(clippy::unwrap_used, reason = "test code")]
 
-mod common;
+pub mod common;
 
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use common::{DAY, T0, batch, opts, rows, scalar_i64, schema, temp_lake};
+use common::{DAY, T0, batch, files_under, no_maintenance, opts, rows, scalar_i64, schema, temp_lake};
 use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};
@@ -172,10 +172,6 @@ impl Host for &EngineHost {
     }
 }
 
-fn no_maintenance() -> AppendOptions {
-    AppendOptions { maintain: Some(false), ..AppendOptions::default() }
-}
-
 fn shared_no_maintenance() -> SharedAppend {
     SharedAppend { maintain: Some(false), ..SharedAppend::default() }
 }
@@ -290,7 +286,7 @@ async fn shared_maintenance_compacts_and_expires() {
     let expire_only = SharedMaintain { compact: false, retention: false, ..SharedMaintain::default() };
     let (_, report) = maintain(&&host, state, &expire_only).await.unwrap();
     assert!(report.snapshots_expired >= 7 && report.objects_deleted > 0, "{report:?}");
-    let data = walk(dir.path()).into_iter().filter(|p| p.to_string_lossy().contains("/data/")).count();
+    let data = files_under(dir.path()).into_iter().filter(|p| p.to_string_lossy().contains("/data/")).count();
     assert_eq!(data, 1, "only the compacted data file is left");
     let s = Session::new(reopen(&dir));
     assert_eq!(scalar_i64(&s, "SELECT count(*) FROM iot.r").await, 180);
@@ -299,19 +295,6 @@ async fn shared_maintenance_compacts_and_expires() {
     let (t, _) = t.append(&[batch(T0 + DAY, 1, 1, 5, |_, _| 1.0)], AppendOptions::default()).await.unwrap();
     t.maintain(MaintainOptions::default()).await.unwrap();
     assert_eq!(scalar_i64(&Session::new(reopen(&dir)), "SELECT count(*) FROM iot.r").await, 185);
-}
-
-fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = vec![];
-    for e in std::fs::read_dir(dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.is_dir() {
-            out.extend(walk(&p));
-        } else {
-            out.push(p);
-        }
-    }
-    out
 }
 
 /// Compaction reads its inputs a window of pages at a time: on a table without dedup (where a row
@@ -519,7 +502,7 @@ async fn the_largest_counts_and_sizes_dont_overflow() {
 /// Tags `snapshot` as `name` the way another engine would: a new metadata version with the ref.
 fn tag(dir: &tempfile::TempDir, snapshot: i64, name: &str) {
     let mut versions: Vec<_> =
-        walk(dir.path()).into_iter().filter(|p| p.to_string_lossy().ends_with(".metadata.json")).collect();
+        files_under(dir.path()).into_iter().filter(|p| p.to_string_lossy().ends_with(".metadata.json")).collect();
     versions.sort_by_key(|p| {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         name.trim_start_matches('v').trim_end_matches(".metadata.json").parse::<u64>().unwrap()
@@ -658,7 +641,7 @@ async fn a_time_column_named_outside_avro_names() {
     }
     // Without the head, the engine reads the manifests too.
     timelake::flush().await;
-    for head in walk(dir.path()).into_iter().filter(|p| p.ends_with("timelake-head")) {
+    for head in files_under(dir.path()).into_iter().filter(|p| p.ends_with("timelake-head")) {
         std::fs::remove_file(head).unwrap();
     }
     assert_eq!(reopen(&dir).table("iot.r").await.unwrap().files().await.unwrap().len(), 2);
@@ -787,12 +770,12 @@ async fn shared_expiry_gives_up_after_max_attempts() {
         t = t.append(&[batch(T0 + i, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap().0;
     }
     timelake::flush().await;
-    let before = walk(dir.path());
+    let before = files_under(dir.path());
     let host = EngineHost::new(&lake);
     host.faults.metadata_put.store(METADATA_ALWAYS_LOSES, Ordering::Relaxed);
     let state = TableState::load(&&host, t.location()).await.unwrap();
     let expire_only = MaintainOptions { compact: false, retention: false, ..MaintainOptions::default() };
     let err = maintain(&&host, state, &expire_only).await.unwrap_err();
     assert!(matches!(err, WriteError::Conflict(ref m) if m.contains("gave up")), "{err}");
-    assert_eq!(walk(dir.path()), before);
+    assert_eq!(files_under(dir.path()), before);
 }

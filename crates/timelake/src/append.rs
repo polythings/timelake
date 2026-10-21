@@ -139,7 +139,7 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{Op, T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{Op, T0, batch, faulty_lake, no_maintenance, opts, schema};
 
     /// A failure in inline maintenance after the append committed is reported, not returned as an
     /// error: a caller retrying the "failed" append would write the rows twice.
@@ -268,13 +268,11 @@ mod tests {
     async fn the_latest_insertion_time_wins() {
         let (lake, _store) = faulty_lake();
         let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
-        let no_maintenance = AppendOptions { maintain: Some(false), ..AppendOptions::default() };
         // One append: the row inserted later (2) wins though it comes first.
-        let (t, r) =
-            t.append(&[with_ingest(&[(T0, 1, 2.0, 20), (T0, 1, 1.0, 10)])], no_maintenance.clone()).await.unwrap();
+        let (t, r) = t.append(&[with_ingest(&[(T0, 1, 2.0, 20), (T0, 1, 1.0, 10)])], no_maintenance()).await.unwrap();
         assert_eq!(r.rows, 1);
         // A later commit carrying an older insertion time loses.
-        let (t, _) = t.append(&[with_ingest(&[(T0, 1, 3.0, 15)])], no_maintenance).await.unwrap();
+        let (t, _) = t.append(&[with_ingest(&[(T0, 1, 3.0, 15)])], no_maintenance()).await.unwrap();
         let sql = "SELECT value FROM iot.r WHERE device = 1";
         assert_eq!(values(&lake, sql).await, [2.0]);
         t.maintain(MaintainOptions::default()).await.unwrap();
