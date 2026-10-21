@@ -334,6 +334,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: `timelake_format::rollup` holds a rollup's aggregates as `timelake.rollup-aggregates` stores them, each
   function a `RollupFunction` (the stored JSON is unchanged), and the settings registry checks that property against
   it.
+- Rust API: `RollupStatement`'s names are DataFusion `TableReference`s, parsed once, so a quoted name keeps its dots.
 - Rust API: `timelake_format::IcebergType` names a column's Iceberg type: `bounds::decode` takes one and
   `metadata::Column::iceberg_type` is one (`Nested` for structs, lists and maps). `NewSnapshot::operation` is an
   `Operation`, which moved to `timelake_format::metadata` (still re-exported from `commit`).

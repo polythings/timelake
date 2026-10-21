@@ -18,7 +18,7 @@ use super::rewrite::LatestRewrite;
 use super::rollup::{definition_of, refresh_session, rollup_frame};
 use super::route::{RollupRewrite, RouteMap, prepare};
 use super::settings::{SessionSettings, VERSION_CHECK_INTERVAL};
-use super::statement::{self, RollupStatement, Statement};
+use super::statement::{self, Options, RollupStatement, Statement, only};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
 use crate::rollup::{Definition, RollupRefresh};
@@ -148,11 +148,8 @@ impl Session {
 
     /// Plans one SQL statement.
     pub async fn sql(&self, sql: &str) -> Result<DataFrame> {
-        let mut statements = self.parse(sql)?;
-        match (statements.pop(), statements.is_empty()) {
-            (Some(statement), true) => self.execute(statement).await,
-            _ => Err(Error::invalid("expected one SQL statement")),
-        }
+        let statement = only(self.parse(sql)?).ok_or_else(|| Error::invalid("expected one SQL statement"))?;
+        self.execute(statement).await
     }
 
     /// Splits SQL text into statements (so a `;` inside a string literal or comment doesn't
@@ -243,13 +240,12 @@ impl Session {
     }
 
     /// Creates rollup `name` defined by `query` and computes it. Returns the rows written.
-    async fn create_rollup(&self, name: &TableName, query: &str, options: Vec<(String, String)>) -> Result<u64> {
+    async fn create_rollup(&self, name: &TableName, query: &str, options: Options) -> Result<u64> {
         // Plan the definition as written, not routed to another rollup.
         let mut config = self.ctx.copied_config();
         config.options_mut().set("timelake.rollup_routing", "false")?;
         let planner = Session::with_config(self.lake.clone(), config);
-        let mut statements = planner.parse(query)?;
-        let (Some(Statement::Sql(select)), true) = (statements.pop(), statements.is_empty()) else {
+        let Some(Statement::Sql(select)) = only(planner.parse(query)?) else {
             return Err(Error::invalid(format!("rollup {name}: AS must be followed by one SELECT")));
         };
         let plan = planner.execute_sql(*select).await?.into_optimized_plan()?;
@@ -261,12 +257,14 @@ impl Session {
         crate::rollup::create(&raw, name, &def, &schema, rollup_options(&def, options)?).await
     }
 
-    /// A table name, in the session's default namespace when it has none.
-    fn table_name(&self, name: &str) -> Result<TableName> {
-        match name.split_once('.') {
-            Some((namespace, table)) => Ok(TableName::new(namespace, table)?),
-            None => Ok(TableName::new(&self.ctx.state().config().options().catalog.default_schema, name)?),
+    /// A table of the lake, in the session's default namespace when `name` has none.
+    fn table_name(&self, name: &TableReference) -> Result<TableName> {
+        if name.catalog().is_some_and(|c| c != CATALOG) {
+            return Err(Error::invalid(format!("{name} isn't in the lake's catalog, {CATALOG}")));
         }
+        let state = self.ctx.state();
+        let namespace = name.schema().unwrap_or(&state.config().options().catalog.default_schema);
+        Ok(TableName::new(namespace, name.table())?)
     }
 
     /// The session's `version-check-interval`, if it sets one.
@@ -327,7 +325,7 @@ fn register_family<F: FunctionFamily>(ctx: &SessionContext, udaf: fn(F) -> Aggre
 
 /// The rollup table's options: bucket and keys from the definition, dedup on, no insertion time,
 /// and the `WITH` options (`chunk_interval`, `retention`, `refresh_interval`, or any table setting).
-fn rollup_options(def: &Definition, options: Vec<(String, String)>) -> Result<TableOptions> {
+fn rollup_options(def: &Definition, options: Options) -> Result<TableOptions> {
     let mut opts = TableOptions {
         time_column: Some(def.bucket.clone()),
         series_key: def.keys.clone(),

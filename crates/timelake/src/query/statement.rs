@@ -1,6 +1,7 @@
 //! SQL text split into statements: DataFusion's, and Timelake's own about rollups
 //! (`CREATE`, `DROP` and `REFRESH MATERIALIZED ROLLUP`, spec 27).
 
+use datafusion::sql::TableReference;
 use datafusion::sql::parser::DFParserBuilder;
 use datafusion::sql::sqlparser::dialect::Dialect;
 use datafusion::sql::sqlparser::tokenizer::{Location, Token, TokenWithSpan, Tokenizer};
@@ -16,32 +17,42 @@ pub enum Statement {
     Rollup(RollupStatement),
 }
 
+/// `WITH` options: key and value.
+pub(crate) type Options = Vec<(String, String)>;
+
 /// `CREATE`, `DROP` or `REFRESH MATERIALIZED ROLLUP`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RollupStatement {
     /// `CREATE MATERIALIZED ROLLUP [IF NOT EXISTS] <name> AS <query> [WITH (<key> = <value>, …)]`
     Create {
         /// The rollup table's name.
-        name: String,
+        name: TableReference,
         /// The `SELECT … GROUP BY …` that defines it.
         query: String,
         /// The `WITH` options: settings of the rollup table.
-        options: Vec<(String, String)>,
+        options: Options,
         /// Do nothing if a table of that name exists.
         if_not_exists: bool,
     },
     /// `DROP MATERIALIZED ROLLUP [IF EXISTS] <name>`
     Drop {
         /// The rollup table's name.
-        name: String,
+        name: TableReference,
         /// Do nothing if it doesn't exist.
         if_exists: bool,
     },
     /// `REFRESH MATERIALIZED ROLLUP <name>`: bring it up to date now.
     Refresh {
         /// The rollup table's name.
-        name: String,
+        name: TableReference,
     },
+}
+
+/// The one item of `items`, if there is exactly one.
+pub(super) fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
+    let mut items = items.into_iter();
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
 }
 
 /// Splits `sql` into statements at semicolons outside literals and comments.
@@ -58,18 +69,16 @@ pub(super) fn parse(sql: &str, dialect: &dyn Dialect, recursion_limit: usize) ->
         }
         let (text, duckdb_asof) = without_asof(&sql[offsets.at(first.span.start)..offsets.at(last.span.end)], dialect)?;
         let text = text.as_str();
-        let mut statements = DFParserBuilder::new(text)
+        let statements = DFParserBuilder::new(text)
             .with_dialect(dialect)
             .with_recursion_limit(recursion_limit)
             .build()?
             .parse_statements()?;
-        match statements.pop_front() {
-            Some(mut s) if statements.is_empty() => {
-                super::asof::rewrite_statement(&mut s, &duckdb_asof).map_err(Error::invalid)?;
-                out.push(Statement::Sql(Box::new(s)));
-            }
-            _ => return Err(Error::invalid(format!("can't parse {text:?} as one statement"))),
-        }
+        let Some(mut s) = only(statements) else {
+            return Err(Error::invalid(format!("can't parse {text:?} as one statement")));
+        };
+        super::asof::rewrite_statement(&mut s, &duckdb_asof).map_err(Error::invalid)?;
+        out.push(Statement::Sql(Box::new(s)));
     }
     Ok(out)
 }
@@ -165,8 +174,9 @@ impl<'a> Words<'a, '_> {
         matched
     }
 
-    /// A table name: `name` or `namespace.name`, each part a plain or quoted identifier.
-    fn table_name(&mut self) -> Result<String> {
+    /// A table name: `table`, `namespace.table` or `catalog.namespace.table`, each part a plain or
+    /// quoted identifier.
+    fn table_name(&mut self) -> Result<TableReference> {
         let mut parts = vec![];
         loop {
             match self.next().map(|t| &t.token) {
@@ -174,10 +184,16 @@ impl<'a> Words<'a, '_> {
                 other => return Err(Error::invalid(format!("expected a table name, found {other:?}"))),
             }
             if self.peek().map(|t| &t.token) != Some(&Token::Period) {
-                return Ok(parts.join("."));
+                break;
             }
             self.at += 1;
         }
+        Ok(match parts.as_slice() {
+            [table] => TableReference::bare(table.as_str()),
+            [namespace, table] => TableReference::partial(namespace.as_str(), table.as_str()),
+            [catalog, namespace, table] => TableReference::full(catalog.as_str(), namespace.as_str(), table.as_str()),
+            _ => return Err(Error::invalid(format!("{} isn't a table name", parts.join(".")))),
+        })
     }
 
     fn end(&self, statement: &str) -> Result<()> {
@@ -217,9 +233,6 @@ fn rollup_statement(sql: &str, offsets: &LineOffsets<'_>, words: &[&TokenWithSpa
     let query = sql[offsets.at(first.span.start)..offsets.at(last.span.end)].to_string();
     Ok(RollupStatement::Create { name, query, options, if_not_exists })
 }
-
-/// `WITH` options: key and value.
-type Options = Vec<(String, String)>;
 
 /// A trailing `WITH (key = value, …)`: where it starts, and the options.
 fn with_options(words: &[&TokenWithSpan]) -> Result<Option<(usize, Options)>> {
@@ -302,7 +315,7 @@ mod tests {
             rollups,
             [
                 &RollupStatement::Create {
-                    name: "iot.r_1m".into(),
+                    name: TableReference::partial("iot", "r_1m"),
                     query: "SELECT device, time_bucket(INTERVAL '1 minute', time) AS b, avg(value) FROM iot.r GROUP BY 1, 2"
                         .into(),
                     options: vec![
@@ -312,10 +325,14 @@ mod tests {
                     ],
                     if_not_exists: true,
                 },
-                &RollupStatement::Drop { name: "r_1m".into(), if_exists: true },
-                &RollupStatement::Refresh { name: "iot.r_1m".into() },
+                &RollupStatement::Drop { name: TableReference::bare("r_1m"), if_exists: true },
+                &RollupStatement::Refresh { name: TableReference::partial("iot", "r_1m") },
             ]
         );
+        // Names are parsed once: a quoted part keeps its dots.
+        let refresh = parse("REFRESH MATERIALIZED ROLLUP timelake.\"i.ot\".r_1m");
+        let expected = RollupStatement::Refresh { name: TableReference::full("timelake", "i.ot", "r_1m") };
+        assert!(matches!(&refresh[0], Statement::Rollup(r) if *r == expected));
         // A query ending in a parenthesis isn't taken for options.
         let create =
             parse("CREATE MATERIALIZED ROLLUP r AS SELECT max(v) FROM t GROUP BY date_bin(INTERVAL '1 h', ts)");
