@@ -209,7 +209,9 @@ impl Lake {
             return Err(Error::AlreadyExists(name.to_string()));
         }
         let metadata = new_table_metadata(&name, &location, schema, &opts, managed)?;
-        self.check_head_format(&Contract::from_properties(metadata.properties())?.head_format)?;
+        let contract = Contract::from_properties(metadata.properties())?;
+        self.check_head_format(contract.head_format.as_deref())?;
+        contract.compression.map_err(timelake_format::FormatError::from)?;
         if !storage.write_if_absent(&metadata_uri(&location, 1), Bytes::from(serde_json::to_vec(&metadata)?)).await? {
             return Err(Error::AlreadyExists(name.to_string()));
         }
@@ -225,12 +227,14 @@ impl Lake {
         Ok(table)
     }
 
-    /// Errors unless `format` is `none` or a head codec this lake has.
-    pub(crate) fn check_head_format(&self, format: &str) -> Result<()> {
-        if format == timelake_format::head::NO_HEAD || self.head_codecs().get(format).is_some() {
-            return Ok(());
+    /// Errors unless `format` is `None` (no head) or a head codec this lake has.
+    pub(crate) fn check_head_format(&self, format: Option<&str>) -> Result<()> {
+        match format {
+            Some(f) if self.head_codecs().get(f).is_none() => {
+                Err(Error::invalid(format!("unknown head format {f:?} (built in: arrow, json, none)")))
+            }
+            _ => Ok(()),
         }
-        Err(Error::invalid(format!("unknown head format {format:?} (built in: arrow, json, none)")))
     }
 
     /// Loads the current version of a table.

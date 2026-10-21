@@ -62,7 +62,7 @@ pub(crate) async fn write(table: &Table) -> Result<()> {
     let uri = head_uri(table.location());
     let contract = table.contract();
     let deleted = &lake.caches().deleted_heads;
-    let Some(codec) = lake.head_codecs().get(&contract.head_format) else {
+    let Some(codec) = contract.head_format.as_deref().and_then(|f| lake.head_codecs().get(f)) else {
         // Turned off, or a codec this process doesn't have: leave no head behind that could go
         // stale. Once is enough, not a request on every commit.
         if deleted.get(&uri).is_none() {

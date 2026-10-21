@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use arrow::compute::concat_batches;
 use iceberg::spec::{MAIN_BRANCH, SnapshotReference, SnapshotRetention};
-use timelake_format::head::NO_HEAD;
 use timelake_format::rows::align_batch;
 use timelake_format::{FORMAT_VERSION, FormatVersion, duration_millis};
 
@@ -190,7 +189,7 @@ async fn plan(table: &Table, opts: &UpgradeOptions) -> Result<Vec<UpgradeStep>> 
         }
     }
     let head_current = head::stored_version(table).await? == Some(table.version());
-    if c.head_format != NO_HEAD && (!steps.is_empty() || !head_current) {
+    if c.head_format.is_some() && (!steps.is_empty() || !head_current) {
         steps.push(UpgradeStep::WriteHead);
     }
     Ok(steps)
@@ -223,7 +222,7 @@ mod tests {
     async fn old_table() -> (crate::Lake, Table) {
         let (lake, _store) = faulty_lake();
         let mut o = opts();
-        o.properties = HashMap::from([(property::HEAD_FORMAT.into(), NO_HEAD.into())]);
+        o.properties = HashMap::from([(property::HEAD_FORMAT.into(), timelake_format::NO_HEAD.into())]);
         let t = lake.create_table("iot.r", &crate::testing::schema(), o).await.unwrap();
         let unversioned = [(property::FORMAT_VERSION.into(), FormatVersion::UNVERSIONED.to_string())];
         let t = write_properties(&t, &unversioned, &[]).await.unwrap();

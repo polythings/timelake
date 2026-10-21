@@ -136,7 +136,7 @@
       "value": "auto"
     },
     "description": "The Timelake reader applies filters while decoding Parquet pages, cheapest first, and decodes the other columns only for the rows that pass. Less decoding when filters keep few rows, but each row group's filter columns and other columns are fetched one after the other. `auto` is on for local files and off on object storage, where first queries wait for the extra round trip; `true` suits repeat queries served from the cache.",
-    "kind": "auto, true or false",
+    "kind": "auto, true, or false",
     "levels": ["table", "session"],
     "name": "filter-pushdown",
     "property": "timelake.filter-pushdown",
@@ -148,7 +148,7 @@
       "value": "auto"
     },
     "description": "How the signal aggregates (`time_weighted_mean`, `integral`, `counter_diff`, `counter_rate`) get each series' readings in time order. They sum runs of readings in order and join them; runs that overlap in time can't be joined. Files are read in time order, each partition a stretch of time. `auto`: files that overlap another on the series and time, or aren't sorted, are merged in order first (as dedup on read does), with the other files of the time they span. `segments`: only copies are merged (with dedup on read); overlaps are an error. `merge`: every file is merged.",
-    "kind": "auto, segments or merge",
+    "kind": "auto, segments, or merge",
     "levels": ["table", "session"],
     "name": "series-order",
     "property": "timelake.series-order",
@@ -160,7 +160,7 @@
       "value": "auto"
     },
     "description": "A window over each series in time order (`lead(…) OVER (PARTITION BY <series key> ORDER BY time)`) reads the series merged in order, already split by series, so the reader neither repartitions nor sorts the rows. Faster on one large file (a day of readings: 18% less), slower over many (a week: 50% more), with less memory either way. `auto`: when the files read are in one time partition.",
-    "kind": "auto, true or false",
+    "kind": "auto, true, or false",
     "levels": ["table", "session"],
     "name": "window-series-order",
     "property": "timelake.window-series-order",

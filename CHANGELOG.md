@@ -315,6 +315,17 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: `timelake::align_batch` and `timelake::latest_per_series` are `timelake-format`'s and return its
   `WriteError`, which `?` turns into a `timelake::Error`. `TableName` is `timelake-format`'s too (still re-exported),
   so a bad table name is an `Error::Format`, not an `Error::Invalid`.
+- A table property outside its setting's values (`read-dedup-strategy`, `filter-pushdown`, `series-order`,
+  `window-series-order`, `float-encoding`), which only another engine could have written, makes opening the table an
+  error naming the property, as a bad boolean or duration already did. `series-order` used to fall back to `auto`,
+  `float-encoding` to `dictionary`, and the others failed queries.
+- Table creation and `timelake alter` (`Table.set_properties` in Python and Rust) reject an unknown
+  `write.parquet.compression-codec`, or a `write.parquet.compression-level` the codec doesn't have, instead of letting
+  the next write fail. Set by another engine, such a value still fails writes only; the error is now a `ValueError` in
+  Python, where it was a `RuntimeError`.
+- Rust API: the contract's settings with fixed values are enums in `timelake_format::value` (`ReadDedupStrategy`,
+  `AutoBool`, `SeriesOrder`, `FloatEncoding`, `CompressionCodec`), `Contract::compression` holds the checked codec and
+  level, `Contract::head_format` is `None` for no head, and `Setting::kind` is a `settings::Kind`.
 - Rust API: `timelake_format::FormatError` is an enum (`FormatError::Invalid` holds a message; Arrow and JSON errors
   of the head keep their cause), and `WriteError` reports its cause through `source()`, with Avro errors as
   `WriteError::Avro`. An append's `maintenance` error is the `WriteError` itself, not its message. Arrow errors are no

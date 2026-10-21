@@ -3,14 +3,14 @@ number: 9
 title: Settings
 area: Tables and storage
 status: done
-updated: 2026-10-19
-versions: [0.5.0]
+updated: 2026-10-20
+versions: [0.5.0, unreleased]
 related: [4, 21]
 ---
 
 # 9. Settings
 
-**Done** · updated 2026-10-19 · versions 0.5.0 · milestone: [Installable, upgradable, switchable](milestones/upgrades-and-settings.md)
+**Done** · updated 2026-10-20 · versions 0.5.0, unreleased · milestone: [Installable, upgradable, switchable](milestones/upgrades-and-settings.md)
 · related: [spec 4](0004-table-contract.md), [spec 21](0021-reader.md)
 
 ## Summary
@@ -60,6 +60,7 @@ The existing `timelake.*` properties become registry entries unchanged. Hard-cod
 - Table level: properties are checked at creation and by `Table::set_properties` (CLI `timelake alter --set/--unset`, Python `Table.set_properties`). Unknown `timelake.*` names, bad values and settings not allowed at the table level are errors; properties a newer Timelake wrote are ignored when reading.
 - Session level: every setting the registry allows there can be `SET`, shown with `SHOW`, passed with `--set`, or given to Python's `Lake(settings=…)`. The CLI's `--set` no longer panics on a bad key.
 - `timelake settings [table] [--json]` lists them; the docs page "Settings" renders the same list (`dashboard/lib/settings.json`, checked by a test).
+- Unreleased: a setting's kind is a type (`settings::Kind`) that names its values for the docs and checks them; a setting with a fixed set of values is an enum (`timelake_format::value`) that the contract, the registry and the reader share. A table property outside its set is an error when the table is opened, naming the property, as a bad boolean or duration was: `series-order` used to fall back to `auto` and `float-encoding` to `dictionary`. Iceberg's compression codec and level are checked together at creation and by `set_properties`; set by another engine, a bad one fails writes, never reads.
 - Changes from the proposal: `dedup` is fixed at creation (files written with it off may hold copies, which dedup on read assumes they don't). `append-dedup` isn't built for the same reason: an append that keeps copies would need its files marked for the reader. `format-version` is managed by Timelake (create, upgrade) and can't be set by hand. `latest-by` and `as_of_inserted` wait for [spec 10](0010-supplemental-timestamps.md). Storage options (`timelake_freshness_check`, …) stay lake options, documented on the Storage page.
 
 ## Open questions and issues
@@ -72,3 +73,4 @@ None open.
 - 2026-10-19: 35 settings
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 25; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-20: typed kinds and values; values outside a setting's set are errors when a table is opened

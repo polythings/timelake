@@ -16,8 +16,13 @@
 //! ```
 
 use std::fmt;
+use std::str::FromStr;
 
-use crate::{Chunk, FormatError, FormatVersion, Result, parse_duration};
+use crate::name::TableName;
+use crate::value::{
+    AutoBool, Choice, Compression, CompressionError, FloatEncoding, ReadDedupStrategy, SeriesOrder, describe,
+};
+use crate::{Chunk, FormatError, FormatVersion, Result, parse_duration, parse_duration_or_off};
 
 /// The prefix of Timelake's table properties and session settings.
 pub const PREFIX: &str = "timelake.";
@@ -72,13 +77,127 @@ impl fmt::Display for DefaultValue {
     }
 }
 
+/// The kind of value a setting takes: what the docs call it, and which values are valid.
+#[derive(Clone, Copy, Debug)]
+pub enum Kind {
+    /// A column name.
+    Column,
+    /// Comma-separated column names, at least one.
+    Columns,
+    /// A table name, `[namespace.]table`.
+    TableName,
+    /// Comma-separated table names, at least one.
+    TableNames,
+    /// `true` or `false`, in any case.
+    Boolean,
+    /// A non-negative integer.
+    Count,
+    /// A positive integer: 0 would mean nothing (a row group of no rows).
+    PositiveCount,
+    /// A non-negative number of bytes.
+    Bytes,
+    /// A positive number of bytes.
+    PositiveBytes,
+    /// Milliseconds since the epoch.
+    EpochMillis,
+    /// A duration such as `90d` or `1 hour` ([`parse_duration`]).
+    Duration,
+    /// A duration, or `off`.
+    DurationOrOff,
+    /// One of a fixed set of names ([`Choice`]): how the docs list them, and the type's parser.
+    OneOf {
+        /// The names, as the docs list them.
+        names: fn() -> String,
+        /// Checks a value with the type's parser, which takes its other spellings too.
+        check: fn(&str) -> Result<()>,
+    },
+    /// A head codec's name, or `none`.
+    HeadFormat,
+    /// A semantic version, `MAJOR.MINOR.PATCH`.
+    Version,
+    /// JSON.
+    Json,
+}
+
+impl Kind {
+    /// One of the names of `T`.
+    pub const fn one_of<T: Choice + FromStr<Err = FormatError>>() -> Self {
+        Self::OneOf { names: describe::<T>, check: parses::<T> }
+    }
+
+    /// Errors when `value` (trimmed) isn't a valid value of this kind.
+    pub fn check(self, value: &str) -> Result<()> {
+        let s = value.trim();
+        match self {
+            Self::Column | Self::HeadFormat | Self::Json => non_empty(s),
+            Self::Columns => list(s, non_empty, "must name a column"),
+            Self::TableName => parses::<TableName>(s),
+            Self::TableNames => list(s, parses::<TableName>, "must name a table"),
+            Self::Boolean => match s.to_ascii_lowercase().as_str() {
+                "true" | "false" => Ok(()),
+                _ => Err(FormatError::new(format!("must be true or false, got {s:?}"))),
+            },
+            Self::Count | Self::Bytes | Self::EpochMillis => s
+                .parse::<u64>()
+                .map(drop)
+                .map_err(|_| FormatError::new(format!("must be a non-negative integer, got {s:?}"))),
+            Self::PositiveCount | Self::PositiveBytes => match s.parse::<u64>() {
+                Ok(n) if n > 0 => Ok(()),
+                _ => Err(FormatError::new(format!("must be a positive integer, got {s:?}"))),
+            },
+            Self::Duration => parse_duration(s).map(drop),
+            Self::DurationOrOff => parse_duration_or_off(s).map(drop),
+            Self::OneOf { check, .. } => check(s),
+            Self::Version => parses::<FormatVersion>(s),
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Column => "column",
+            Self::Columns => "columns",
+            Self::TableName => "table name",
+            Self::TableNames => "table names",
+            Self::Boolean => "boolean",
+            Self::Count | Self::PositiveCount => "count",
+            Self::Bytes | Self::PositiveBytes => "bytes",
+            Self::EpochMillis => "milliseconds since the epoch",
+            Self::Duration => "duration",
+            Self::DurationOrOff => "duration or off",
+            Self::OneOf { names, .. } => return f.write_str(&names()),
+            Self::HeadFormat => "codec name or none",
+            Self::Version => "semantic version",
+            Self::Json => "JSON",
+        })
+    }
+}
+
+fn parses<T: FromStr<Err = FormatError>>(s: &str) -> Result<()> {
+    s.parse::<T>().map(drop)
+}
+
+fn non_empty(s: &str) -> Result<()> {
+    if s.is_empty() { Err(FormatError::new("must not be empty")) } else { Ok(()) }
+}
+
+/// A comma-separated list of at least one item, each checked by `item`; empty items are skipped.
+fn list(s: &str, item: fn(&str) -> Result<()>, empty: &str) -> Result<()> {
+    let items: Vec<&str> = s.split(',').map(str::trim).filter(|i| !i.is_empty()).collect();
+    if items.is_empty() {
+        return Err(FormatError::new(empty));
+    }
+    items.into_iter().try_for_each(item)
+}
+
 /// One setting.
 #[derive(Debug)]
 pub struct Setting {
     /// The name in kebab-case, without the `timelake.` prefix.
     pub name: &'static str,
-    /// The kind of value, as the docs show it (`boolean`, `duration`, …).
-    pub kind: &'static str,
+    /// The kind of value: what the docs call it, and which values are valid.
+    pub kind: Kind,
     /// The value when nothing sets it.
     pub default: DefaultValue,
     /// Where it can be set. Empty for properties Timelake manages itself.
@@ -87,7 +206,6 @@ pub struct Setting {
     pub since: &'static str,
     /// What it does, for the docs.
     pub description: &'static str,
-    check: fn(&str) -> Result<()>,
 }
 
 impl Setting {
@@ -108,7 +226,7 @@ impl Setting {
 
     /// Errors when `value` isn't a valid value of this setting.
     pub fn check(&self, value: &str) -> Result<()> {
-        (self.check)(value.trim()).map_err(|e| FormatError::new(format!("{}: {e}", self.property())))
+        self.kind.check(value).map_err(|e| FormatError::new(format!("{}: {e}", self.property())))
     }
 }
 
@@ -130,11 +248,13 @@ pub fn check_properties<'a>(
 ) -> Result<Vec<(String, String)>> {
     let mut out = vec![];
     let mut given: Vec<(&'static str, &'a String)> = vec![];
+    let (mut codec, mut codec_level) = (None, None);
     for (key, value) in properties {
         if !key.trim().to_ascii_lowercase().starts_with(PREFIX) {
-            // Checked against the codec when a file is written; an integer at least, here.
-            if key.trim() == crate::property::COMPRESSION_LEVEL && value.trim().parse::<i32>().is_err() {
-                return Err(FormatError::new(format!("{key}: must be an integer, got {value:?}")));
+            match key.trim() {
+                crate::property::COMPRESSION_CODEC => codec = Some(value.as_str()),
+                crate::property::COMPRESSION_LEVEL => codec_level = Some(value.as_str()),
+                _ => {}
             }
             out.push((key.clone(), value.clone()));
             continue;
@@ -149,6 +269,15 @@ pub fn check_properties<'a>(
         }
         setting.check(value)?;
         out.push((setting.property(), value.trim().to_string()));
+    }
+    // The codec and level are checked together; a level alone is checked against the table's codec
+    // by the caller, an integer at least here.
+    match (codec, codec_level) {
+        (Some(_), _) => drop(Compression::parse(codec, codec_level)?),
+        (None, Some(l)) if l.trim().parse::<i32>().is_err() => {
+            return Err(CompressionError::LevelNotInteger(l.to_string()).into());
+        }
+        _ => {}
     }
     Ok(out)
 }
@@ -177,45 +306,41 @@ pub fn not_settable(setting: &Setting, level: Level) -> FormatError {
 pub static SETTINGS: &[Setting] = &[
     Setting {
         name: "time-column",
-        kind: "column",
+        kind: Kind::Column,
         default: DefaultValue::Unset("none"),
         levels: &[Level::Create],
         since: "0.1.0",
         description: "The time column. Its presence makes the table a time-series table.",
-        check: column,
     },
     Setting {
         name: "series-key",
-        kind: "columns",
+        kind: Kind::Columns,
         default: DefaultValue::Unset("none"),
         levels: &[Level::Create],
         since: "0.1.0",
         description: "Comma-separated columns that identify a series.",
-        check: columns,
     },
     Setting {
         name: "chunk-interval",
-        kind: "hour, day, or month",
+        kind: Kind::one_of::<Chunk>(),
         default: DefaultValue::Derived("day for time-series tables"),
         levels: &[Level::Create],
         since: "0.1.0",
         description: "Partition size: how much time one partition covers.",
-        check: chunk,
     },
     Setting {
         name: "dedup",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Derived("true with a series key, else false"),
         levels: &[Level::Create],
         since: "0.1.0",
         description: "Rows with the same (series, time) count once; the latest write wins. Applied within an append, \
                       by the Timelake reader, and by compaction. Fixed at creation: files written with it off may \
                       hold copies, which the reader would then miss.",
-        check: boolean,
     },
     Setting {
         name: "ingest-time-column",
-        kind: "column",
+        kind: Kind::Column,
         default: DefaultValue::Derived("_ingest_ts for time-series tables"),
         levels: &[Level::Create],
         since: "0.5.0",
@@ -223,71 +348,64 @@ pub static SETTINGS: &[Setting] = &[
                       it out). Each append fills it with the time the append started, unless the input brings its \
                       own values. Among rows with the same (series, time), the latest insertion wins, then the \
                       later commit.",
-        check: column,
     },
     Setting {
         name: "retention",
-        kind: "duration",
+        kind: Kind::Duration,
         default: DefaultValue::Unset("forever"),
         levels: &[Level::Create, Level::Table],
         since: "0.1.0",
         description: "Maintenance drops partitions that end before now minus this duration, e.g. 90d.",
-        check: duration,
     },
     Setting {
         name: "auto-maintain",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Value("true"),
         levels: &[Level::Table, Level::Call],
         since: "0.1.0",
         description: "Run size-tiered compaction, retention, and snapshot expiry inline after appends. One append \
                       can override it (`maintain=` in Python, `--no-maintain` on the CLI).",
-        check: boolean,
     },
     Setting {
         name: "compact-min-files",
-        kind: "count",
+        kind: Kind::Count,
         default: DefaultValue::Value("8"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Inline compaction merges a size tier of a partition once it has this many files.",
-        check: count,
     },
     Setting {
         name: "compact-cold-after",
-        kind: "duration or off",
+        kind: Kind::DurationOrOff,
         default: DefaultValue::Value("1h"),
         levels: &[Level::Table, Level::Call],
         since: "0.5.0",
         description: "Inline maintenance rewrites a partition whole (sorted, duplicates removed) once the table holds \
                       data newer than the partition's end by this much and the partition has two small files, \
                       whether the append touched it or not. `off` leaves it to the size tiers.",
-        check: duration_or_off,
     },
     Setting {
         name: "read-dedup",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Derived("as dedup"),
         levels: &[Level::Table, Level::Session],
         since: "0.5.0",
         description: "The Timelake reader returns only the latest write of each (series, time), before compaction \
                       has removed the older copies. Has no effect on tables with dedup off.",
-        check: boolean,
     },
     Setting {
         name: "read-dedup-strategy",
-        kind: "merge or keys-first",
+        kind: Kind::one_of::<ReadDedupStrategy>(),
         default: DefaultValue::Value("merge"),
         levels: &[Level::Table, Level::Session],
         since: "0.5.0",
         description: "How the reader removes copies: `merge` merges the files that may share keys in key order; \
                       `keys-first` lists the older copies from the key columns, then reads the files like any scan \
                       and leaves them out (slower on the industrial IoT benchmark).",
-        check: read_dedup_strategy,
     },
     Setting {
         name: "filter-pushdown",
-        kind: "auto, true or false",
+        kind: Kind::one_of::<AutoBool>(),
         default: DefaultValue::Value("auto"),
         levels: &[Level::Table, Level::Session],
         since: "0.7.0",
@@ -296,11 +414,10 @@ pub static SETTINGS: &[Setting] = &[
                       each row group's filter columns and other columns are fetched one after the other. `auto` is \
                       on for local files and off on object storage, where first queries wait for the extra round \
                       trip; `true` suits repeat queries served from the cache.",
-        check: auto_or_boolean,
     },
     Setting {
         name: "series-order",
-        kind: "auto, segments or merge",
+        kind: Kind::one_of::<SeriesOrder>(),
         default: DefaultValue::Value("auto"),
         levels: &[Level::Table, Level::Session],
         since: "0.8.0",
@@ -311,11 +428,10 @@ pub static SETTINGS: &[Setting] = &[
                       sorted, are merged in order first (as dedup on read does), with the other files of the time \
                       they span. `segments`: only copies are merged (with dedup on read); overlaps are an error. \
                       `merge`: every file is merged.",
-        check: series_order,
     },
     Setting {
         name: "window-series-order",
-        kind: "auto, true or false",
+        kind: Kind::one_of::<AutoBool>(),
         default: DefaultValue::Value("auto"),
         levels: &[Level::Table, Level::Session],
         since: "0.8.0",
@@ -324,22 +440,20 @@ pub static SETTINGS: &[Setting] = &[
                       repartitions nor sorts the rows. Faster on one large file (a day of readings: 18% less), \
                       slower over many (a week: 50% more), with less memory either way. `auto`: when the files read \
                       are in one time partition.",
-        check: auto_or_boolean,
     },
     Setting {
         name: "shared-signal-state",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Value("true"),
         levels: &[Level::Session],
         since: "0.8.0",
         description: "Signal aggregates of the same readings in one query (`time_weighted_mean`, `integral`, \
                       `counter_diff`, `counter_rate` of one column, by one method) compute their runs of readings \
                       once and each result from them, instead of each computing its own.",
-        check: boolean,
     },
     Setting {
         name: "newest-first",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Value("true"),
         levels: &[Level::Table, Level::Session],
         since: "0.7.0",
@@ -347,11 +461,10 @@ pub static SETTINGS: &[Setting] = &[
                       reads the newest time partition first and older ones only while they can still hold one of \
                       the k newest rows. The same for the k newest buckets of a `GROUP BY time_bucket(…)` sorted by \
                       the bucket, newest first.",
-        check: boolean,
     },
     Setting {
         name: "in-list-pruning",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Value("true"),
         levels: &[Level::Table, Level::Session],
         since: "0.7.0",
@@ -359,109 +472,98 @@ pub static SETTINGS: &[Setting] = &[
                       values of a `column IN (…)` filter with more than 20 values, which DataFusion doesn't prune \
                       with: lists in the query, and, on scans that don't filter rows while decoding (object \
                       storage by default), the key lists of a join's runtime filter.",
-        check: boolean,
     },
     Setting {
         name: "target-file-size-bytes",
-        kind: "bytes",
+        kind: Kind::PositiveBytes,
         default: DefaultValue::Value("268435456"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Size at which compaction output and writes roll to a new file (256 MiB).",
-        check: positive,
     },
     Setting {
         name: "row-group-rows",
-        kind: "count",
+        kind: Kind::PositiveCount,
         default: DefaultValue::Value("1048576"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Parquet row group size. Page indexes keep single-series reads selective inside large row \
                       groups.",
-        check: positive,
     },
     Setting {
         name: "snapshot-retention",
-        kind: "duration",
+        kind: Kind::Duration,
         default: DefaultValue::Value("1h"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Expire snapshots older than this, keeping at least `min-snapshots` and at most \
                       `max-snapshots`.",
-        check: duration,
     },
     Setting {
         name: "min-snapshots",
-        kind: "count",
+        kind: Kind::Count,
         default: DefaultValue::Value("5"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Snapshots always kept, whatever their age.",
-        check: count,
     },
     Setting {
         name: "max-snapshots",
-        kind: "count",
+        kind: Kind::Count,
         default: DefaultValue::Value("100"),
         levels: &[Level::Table],
         since: "0.1.0",
         description: "Snapshots kept at most: older ones expire even if younger than `snapshot-retention`.",
-        check: count,
     },
     Setting {
         name: "head-format",
-        kind: "codec name or none",
+        kind: Kind::HeadFormat,
         default: DefaultValue::Value("arrow"),
         levels: &[Level::Table],
         since: "0.3.0",
         description: "Format of the head object (`metadata/timelake-head`): `arrow`, `json`, a registered codec, or \
                       `none` for no head.",
-        check: name,
     },
     Setting {
         name: "head-inline-bytes",
-        kind: "bytes",
+        kind: Kind::Bytes,
         default: DefaultValue::Value("1048576"),
         levels: &[Level::Table],
         since: "0.3.0",
         description: "Room in the head for the last-value index, then the Parquet footers of the newest files \
                       (1 MiB). What doesn't fit is read separately.",
-        check: count,
     },
     Setting {
         name: "keep-snapshots-until",
-        kind: "milliseconds since the epoch",
+        kind: Kind::EpochMillis,
         default: DefaultValue::Unset("none"),
         levels: &[Level::Table],
         since: "0.3.0",
         description: "No snapshot expires before this time. `timelake upgrade` sets it so the upgrade can be rolled \
                       back.",
-        check: count,
     },
     Setting {
         name: "rollup-routing",
-        kind: "boolean",
+        kind: Kind::Boolean,
         default: DefaultValue::Value("true"),
         levels: &[Level::Table, Level::Session],
         since: "0.5.0",
         description: "The Timelake reader answers a `GROUP BY time_bucket(…)` query on this table from a rollup \
                       that matches it. Buckets changed since the rollup's last refresh, and partial buckets at the \
                       edges of the time range, still come from this table, so the answer is the same either way.",
-        check: boolean,
     },
     Setting {
         name: "rollup-refresh-interval",
-        kind: "duration or off",
+        kind: Kind::DurationOrOff,
         default: DefaultValue::Value("1m"),
         levels: &[Level::Table],
         since: "0.5.0",
         description: "On a rollup: inline maintenance after an append to its raw table refreshes it once its last \
                       refresh is this old. `off` leaves it to `timelake maintain` and `REFRESH MATERIALIZED ROLLUP`.",
-        check: duration_or_off,
     },
     Setting {
         name: "float-encoding",
-        kind: "dictionary or byte-stream-split",
+        kind: Kind::one_of::<FloatEncoding>(),
         default: DefaultValue::Value("dictionary"),
         levels: &[Level::Table],
         since: "0.8.0",
@@ -470,11 +572,10 @@ pub static SETTINGS: &[Setting] = &[
                       a third of the size on the IIoT benchmark and up to twice as fast to scan on TSBS DevOps; \
                       random doubles cost 5% more space and 6% more scan time. `byte-stream-split`: byte-stream-split \
                       only. Applies to files written from then on.",
-        check: float_encoding,
     },
     Setting {
         name: "data-page-rows",
-        kind: "count",
+        kind: Kind::PositiveCount,
         default: DefaultValue::Derived("20,000; 8,192 when written from WebAssembly"),
         levels: &[Level::Table],
         since: "0.6.0",
@@ -482,11 +583,10 @@ pub static SETTINGS: &[Setting] = &[
                       use less memory (it holds a page per column of each file it merges: 8,192 rows peaked at 77 MiB \
                       merging 24 TSBS files, 20,000 at 123 MiB) and page pruning finer, at a few percent more bytes \
                       (TSBS: +3.6%) and slower scans below about 8,000 rows.",
-        check: positive,
     },
     Setting {
         name: "version-check-interval",
-        kind: "duration",
+        kind: Kind::Duration,
         default: DefaultValue::Value("1s"),
         levels: &[Level::Table, Level::Session],
         since: "0.6.0",
@@ -494,129 +594,49 @@ pub static SETTINGS: &[Setting] = &[
                       newer one, so queries in that time send no request for it and can miss commits by other \
                       processes. `0s` checks on every query. This process's own commits are seen at once, and \
                       writers always check.",
-        check: duration,
     },
     Setting {
         name: "rollups",
-        kind: "table names",
+        kind: Kind::TableNames,
         default: DefaultValue::Unset("none"),
         levels: &[],
         since: "0.5.0",
         description: "On a raw table: its rollups, comma-separated. `CREATE` and `DROP MATERIALIZED ROLLUP` keep it.",
-        check: columns,
     },
     Setting {
         name: "rollup-source",
-        kind: "table name",
+        kind: Kind::TableName,
         default: DefaultValue::Unset("none"),
         levels: &[],
         since: "0.5.0",
         description: "On a rollup: the raw table it summarises.",
-        check: name,
     },
     Setting {
         name: "rollup-bucket",
-        kind: "duration",
+        kind: Kind::Duration,
         default: DefaultValue::Unset("none"),
         levels: &[],
         since: "0.5.0",
         description: "On a rollup: the width of its time buckets.",
-        check: duration,
     },
     Setting {
         name: "rollup-aggregates",
-        kind: "JSON",
+        kind: Kind::Json,
         default: DefaultValue::Unset("none"),
         levels: &[],
         since: "0.5.0",
         description: "On a rollup: its aggregates, each an output column, a function, and the column it reads.",
-        check: name,
     },
     Setting {
         name: "format-version",
-        kind: "semantic version",
+        kind: Kind::Version,
         default: DefaultValue::Derived("the current format for new tables; 0.1.0 if absent"),
         levels: &[],
         since: "0.3.0",
         description: "The table format. Timelake refuses tables of a newer format it can't handle; `timelake upgrade` \
                       brings a table to the current format.",
-        check: format_version,
     },
 ];
-
-fn boolean(s: &str) -> Result<()> {
-    match s.to_ascii_lowercase().as_str() {
-        "true" | "false" => Ok(()),
-        _ => Err(FormatError::new(format!("must be true or false, got {s:?}"))),
-    }
-}
-
-fn auto_or_boolean(s: &str) -> Result<()> {
-    match s.to_ascii_lowercase().as_str() {
-        "auto" | "true" | "false" => Ok(()),
-        _ => Err(FormatError::new(format!("must be auto, true or false, got {s:?}"))),
-    }
-}
-
-fn series_order(s: &str) -> Result<()> {
-    match s.to_ascii_lowercase().as_str() {
-        "auto" | "segments" | "merge" => Ok(()),
-        _ => Err(FormatError::new(format!("must be auto, segments or merge, got {s:?}"))),
-    }
-}
-
-fn float_encoding(s: &str) -> Result<()> {
-    match s.to_ascii_lowercase().as_str() {
-        "dictionary" | "byte-stream-split" => Ok(()),
-        _ => Err(FormatError::new(format!("must be dictionary or byte-stream-split, got {s:?}"))),
-    }
-}
-
-fn count(s: &str) -> Result<()> {
-    s.parse::<u64>().map(drop).map_err(|_| FormatError::new(format!("must be a non-negative integer, got {s:?}")))
-}
-
-fn positive(s: &str) -> Result<()> {
-    match s.parse::<u64>() {
-        Ok(n) if n > 0 => Ok(()),
-        _ => Err(FormatError::new(format!("must be a positive integer, got {s:?}"))),
-    }
-}
-
-fn duration(s: &str) -> Result<()> {
-    parse_duration(s).map(drop)
-}
-
-fn duration_or_off(s: &str) -> Result<()> {
-    if s.eq_ignore_ascii_case("off") { Ok(()) } else { duration(s) }
-}
-
-fn chunk(s: &str) -> Result<()> {
-    s.parse::<Chunk>().map(drop)
-}
-
-fn read_dedup_strategy(s: &str) -> Result<()> {
-    match s.to_ascii_lowercase().as_str() {
-        "merge" | "keys-first" | "keys_first" => Ok(()),
-        _ => Err(FormatError::new(format!("must be merge or keys-first, got {s:?}"))),
-    }
-}
-
-fn format_version(s: &str) -> Result<()> {
-    s.parse::<FormatVersion>().map(drop)
-}
-
-fn name(s: &str) -> Result<()> {
-    if s.is_empty() { Err(FormatError::new("must not be empty")) } else { Ok(()) }
-}
-
-fn column(s: &str) -> Result<()> {
-    name(s)
-}
-
-fn columns(s: &str) -> Result<()> {
-    if s.split(',').any(|c| !c.trim().is_empty()) { Ok(()) } else { Err(FormatError::new("must name a column")) }
-}
 
 #[cfg(test)]
 mod tests {
@@ -729,6 +749,24 @@ mod tests {
         assert!(check("target-file-size-bytes", "0").is_err() && check("data-page-rows", "0").is_err());
         let err = check("read-dedup", "yes").unwrap_err().to_string();
         assert!(err.starts_with("timelake.read-dedup: must be true or false"), "{err}");
+        assert!(check("series-order", "Segments").is_ok() && check("series-order", "sorted").is_err());
+        assert!(check("filter-pushdown", "AUTO").is_ok() && check("filter-pushdown", "yes").is_err());
+        assert!(check("float-encoding", "byte-stream-split").is_ok() && check("float-encoding", "plain").is_err());
+        assert!(check("rollups", "iot.r_1m, iot.r_1h").is_ok() && check("rollups", "iot/r").is_err());
+        assert!(check("rollup-source", "iot.r").is_ok() && check("rollup-source", "a.b.c").is_err());
+        let err = check("window-series-order", "yes").unwrap_err().to_string();
+        assert_eq!(err, "timelake.window-series-order: must be auto, true, or false, got \"yes\"");
+    }
+
+    /// The docs name each kind of value; a fixed set of names is listed from its type.
+    #[test]
+    fn kinds_name_their_values() {
+        let kind = |name: &str| find(name).unwrap().kind.to_string();
+        assert_eq!(kind("chunk-interval"), "hour, day, or month");
+        assert_eq!(kind("read-dedup-strategy"), "merge or keys-first");
+        assert_eq!(kind("series-order"), "auto, segments, or merge");
+        assert_eq!(kind("compact-cold-after"), "duration or off");
+        assert_eq!(kind("target-file-size-bytes"), "bytes");
     }
 
     #[test]
@@ -750,7 +788,8 @@ mod tests {
             (("timelake.format-version", "0.3.0"), "set by Timelake itself"),
             (("timelake.no-such", "1"), "unknown setting"),
             (("timelake.retention", "forever"), "bad duration"),
-            (("write.parquet.compression-level", "high"), "must be an integer"),
+            (("write.parquet.compression-level", "high"), "is not an integer"),
+            (("write.parquet.compression-codec", "lzo"), "use zstd, lz4"),
         ] {
             let err = check_properties(&props(&[kv]), Level::Table).unwrap_err().to_string();
             assert!(err.contains(msg), "{kv:?}: {err}");

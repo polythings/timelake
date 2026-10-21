@@ -16,7 +16,7 @@ fn setting_json(s: &Setting, value: Option<&str>) -> Value {
         "name": s.name,
         "property": s.property(),
         "sql": s.sql_name(),
-        "kind": s.kind,
+        "kind": s.kind.to_string(),
         "default": default,
         "levels": s.levels.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
         "since": s.since,

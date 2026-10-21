@@ -139,7 +139,7 @@ impl TableState {
     /// replaces a head with a conditional PUT instead, so it never moves back.)
     pub async fn write_head<H: Host>(&self, host: &H) -> WriteResult<()> {
         let uri = head_uri(&self.location);
-        let Some(codec) = built_in(&self.contract.head_format) else {
+        let Some(codec) = self.contract.head_format.as_deref().and_then(built_in) else {
             // Turned off, or a codec the shared writer doesn't have: leave no stale head behind.
             return host.delete(&[uri]).await;
         };

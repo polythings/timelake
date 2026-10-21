@@ -10,11 +10,15 @@ use std::time::Duration;
 
 use chrono::Datelike;
 
+use crate::value::{AutoBool, Choice, Compression, CompressionError, FloatEncoding, ReadDedupStrategy, SeriesOrder};
 use crate::{FORMAT_VERSION, FormatError, FormatVersion, Result, property};
 
 const HOUR_MICROS: i64 = 3_600_000_000;
 const DAY_MICROS: i64 = 24 * HOUR_MICROS;
 const DAY_SECS: u64 = 86_400;
+
+/// `timelake.head-format` value that turns the head off.
+pub const NO_HEAD: &str = "none";
 
 /// Time partition granularity: how much time one partition covers.
 ///
@@ -105,16 +109,30 @@ impl Chunk {
     }
 }
 
+impl Choice for Chunk {
+    const ALL: &'static [Self] = &[Self::Hour, Self::Day, Self::Month];
+
+    fn name(self) -> &'static str {
+        self.as_str()
+    }
+
+    fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Hour => &["1h", "1 hour"],
+            Self::Day => &["1d", "1 day", "24h"],
+            Self::Month => &["1 month"],
+        }
+    }
+}
+
 impl FromStr for Chunk {
     type Err = FormatError;
 
     fn from_str(s: &str) -> Result<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "hour" | "1h" | "1 hour" => Ok(Self::Hour),
-            "day" | "1d" | "1 day" | "24h" => Ok(Self::Day),
-            "month" | "1 month" => Ok(Self::Month),
-            other => Err(FormatError::new(format!("chunk interval must be hour, day or month, got {other:?}"))),
-        }
+        crate::value::find(s).ok_or_else(|| {
+            let names = crate::value::describe::<Self>();
+            FormatError::new(format!("chunk interval must be {names}, got {:?}", s.trim().to_ascii_lowercase()))
+        })
     }
 }
 
@@ -178,20 +196,20 @@ pub struct Contract {
     pub compact_cold_after: Option<Duration>,
     /// The Timelake reader removes copies of a `(series…, time)` when reading.
     pub read_dedup: bool,
-    /// How the Timelake reader removes copies: `merge` or `keys-first`.
-    pub read_dedup_strategy: String,
-    /// Whether the Timelake reader filters rows while decoding Parquet: `auto`, `true` or `false`.
-    pub filter_pushdown: String,
+    /// How the Timelake reader removes copies.
+    pub read_dedup_strategy: ReadDedupStrategy,
+    /// Whether the Timelake reader filters rows while decoding Parquet.
+    pub filter_pushdown: AutoBool,
     /// The Timelake reader prunes row groups and pages with `IN` lists of more than 20 values.
     pub in_list_pruning: bool,
     /// `ORDER BY time DESC LIMIT k` reads time partitions newest first and stops early.
     pub newest_first: bool,
-    /// How the signal aggregates get readings in time order: `auto`, `segments` or `merge`.
-    pub series_order: String,
-    /// Whether windows over each series in time order read it merged in order: `auto`, `true` or `false`.
-    pub window_series_order: String,
-    /// Format of the head object, or `none` to not write one.
-    pub head_format: String,
+    /// How the signal aggregates get readings in time order.
+    pub series_order: SeriesOrder,
+    /// Whether windows over each series in time order read it merged in order.
+    pub window_series_order: AutoBool,
+    /// The codec of the head object, lowercase; `None` (`none`) to not write one.
+    pub head_format: Option<String>,
     /// Bytes the head may spend on optional sections (the last-value index).
     pub head_inline_bytes: u64,
     /// The table format version (see [`crate::FORMAT_VERSION`]).
@@ -210,13 +228,11 @@ pub struct Contract {
     pub version_check_interval: Duration,
     /// Rows per Parquet data page in the files written (`None`: the writer's default).
     pub data_page_rows: Option<usize>,
-    /// How data files encode float columns: `dictionary` or `byte-stream-split`.
-    pub float_encoding: String,
-    /// Iceberg's `write.parquet.compression-codec` (`zstd` when unset), lowercase.
-    pub compression_codec: String,
-    /// Iceberg's `write.parquet.compression-level`, for codecs with levels, as set: checked against
-    /// the codec when a file is written.
-    pub compression_level: Option<String>,
+    /// How data files encode float columns.
+    pub float_encoding: FloatEncoding,
+    /// Iceberg's `write.parquet.compression-codec` and `-level` (ZSTD 3 when unset). Iceberg's own
+    /// properties, which other engines set too: an invalid one fails writes, never reads.
+    pub compression: std::result::Result<Compression, CompressionError>,
 }
 
 impl Contract {
@@ -250,19 +266,18 @@ impl Contract {
             min_snapshots: p.number(property::MIN_SNAPSHOTS, Self::DEFAULT_MIN_SNAPSHOTS)?,
             max_snapshots: p.number(property::MAX_SNAPSHOTS, Self::DEFAULT_MAX_SNAPSHOTS)?,
             compact_min_files: p.number(property::COMPACT_MIN_FILES, Self::DEFAULT_COMPACT_MIN_FILES)?,
-            compact_cold_after: match p.get(property::COMPACT_COLD_AFTER) {
-                Some(s) if s.eq_ignore_ascii_case("off") => None,
-                Some(s) => Some(parse_duration(s)?),
-                None => Some(Self::DEFAULT_COMPACT_COLD_AFTER),
-            },
+            compact_cold_after: p.duration_or_off(property::COMPACT_COLD_AFTER, Self::DEFAULT_COMPACT_COLD_AFTER)?,
             read_dedup: p.flag(property::READ_DEDUP, p.flag(property::DEDUP, false)?)?,
-            read_dedup_strategy: p.get(property::READ_DEDUP_STRATEGY).unwrap_or("merge").to_ascii_lowercase(),
-            filter_pushdown: p.get(property::FILTER_PUSHDOWN).unwrap_or("auto").to_ascii_lowercase(),
+            read_dedup_strategy: p.choice(property::READ_DEDUP_STRATEGY, ReadDedupStrategy::Merge)?,
+            filter_pushdown: p.choice(property::FILTER_PUSHDOWN, AutoBool::Auto)?,
             in_list_pruning: p.flag(property::IN_LIST_PRUNING, true)?,
             newest_first: p.flag(property::NEWEST_FIRST, true)?,
-            series_order: p.get(property::SERIES_ORDER).unwrap_or("auto").to_ascii_lowercase(),
-            window_series_order: p.get(property::WINDOW_SERIES_ORDER).unwrap_or("auto").to_ascii_lowercase(),
-            head_format: p.get(property::HEAD_FORMAT).unwrap_or(Self::DEFAULT_HEAD_FORMAT).to_ascii_lowercase(),
+            series_order: p.choice(property::SERIES_ORDER, SeriesOrder::Auto)?,
+            window_series_order: p.choice(property::WINDOW_SERIES_ORDER, AutoBool::Auto)?,
+            head_format: match p.get(property::HEAD_FORMAT).unwrap_or(Self::DEFAULT_HEAD_FORMAT) {
+                s if s.eq_ignore_ascii_case(NO_HEAD) => None,
+                s => Some(s.to_ascii_lowercase()),
+            },
             head_inline_bytes: p.number(property::HEAD_INLINE_BYTES, Self::DEFAULT_HEAD_INLINE_BYTES)?,
             format_version: p.get(property::FORMAT_VERSION).map_or(Ok(FormatVersion::UNVERSIONED), str::parse)?,
             keep_snapshots_until: p
@@ -271,11 +286,8 @@ impl Contract {
                 .transpose()?,
             rollups: p.list(property::ROLLUPS),
             rollup_routing: p.flag(property::ROLLUP_ROUTING, true)?,
-            rollup_refresh_interval: match p.get(property::ROLLUP_REFRESH_INTERVAL) {
-                Some(s) if s.eq_ignore_ascii_case("off") => None,
-                Some(s) => Some(parse_duration(s)?),
-                None => Some(Self::DEFAULT_ROLLUP_REFRESH_INTERVAL),
-            },
+            rollup_refresh_interval: p
+                .duration_or_off(property::ROLLUP_REFRESH_INTERVAL, Self::DEFAULT_ROLLUP_REFRESH_INTERVAL)?,
             version_check_interval: p
                 .duration(property::VERSION_CHECK_INTERVAL)?
                 .unwrap_or(Self::DEFAULT_VERSION_CHECK_INTERVAL),
@@ -283,10 +295,8 @@ impl Contract {
                 .get(property::DATA_PAGE_ROWS)
                 .map(|_| p.positive(property::DATA_PAGE_ROWS, 1))
                 .transpose()?,
-            float_encoding: p.get(property::FLOAT_ENCODING).unwrap_or("dictionary").to_ascii_lowercase(),
-            // Iceberg's own properties: checked when a file is written, so a bad value never blocks reads.
-            compression_codec: p.get(property::COMPRESSION_CODEC).unwrap_or("zstd").to_ascii_lowercase(),
-            compression_level: p.get(property::COMPRESSION_LEVEL).map(str::to_string),
+            float_encoding: p.choice(property::FLOAT_ENCODING, FloatEncoding::Dictionary)?,
+            compression: Compression::parse(p.get(property::COMPRESSION_CODEC), p.get(property::COMPRESSION_LEVEL)),
         })
     }
 
@@ -382,6 +392,16 @@ impl Properties<'_> {
         self.get(key).map(parse_duration).transpose()
     }
 
+    /// A duration, or `None` for `off`.
+    fn duration_or_off(&self, key: &str, default: Duration) -> Result<Option<Duration>> {
+        self.get(key).map_or(Ok(Some(default)), parse_duration_or_off)
+    }
+
+    /// One of a fixed set of names.
+    fn choice<T: FromStr<Err = FormatError>>(&self, key: &str, default: T) -> Result<T> {
+        self.get(key).map_or(Ok(default), |s| s.parse().map_err(|e| FormatError::new(format!("{key} {e}"))))
+    }
+
     /// A comma-separated list (empty items dropped).
     fn list(&self, key: &str) -> Vec<String> {
         self.get(key)
@@ -407,6 +427,11 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     };
     let secs = n.checked_mul(unit_secs).ok_or_else(|| FormatError::new(format!("duration {s:?} is too long")))?;
     Ok(Duration::from_secs(secs))
+}
+
+/// Parses a duration as [`parse_duration`] does, or `off` (in any case) as `None`.
+pub fn parse_duration_or_off(s: &str) -> Result<Option<Duration>> {
+    if s.trim().eq_ignore_ascii_case("off") { Ok(None) } else { parse_duration(s).map(Some) }
 }
 
 /// Whole microseconds of `d`, at most `i64::MAX` (settings can name durations of centuries).
@@ -545,8 +570,8 @@ mod tests {
         assert_eq!(c.snapshot_retention, Duration::from_secs(3600));
         assert_eq!((c.min_snapshots, c.max_snapshots, c.compact_min_files), (5, 100, 8));
         assert_eq!(
-            (c.head_format.as_str(), c.head_inline_bytes, c.format_version),
-            ("arrow", 1 << 20, FormatVersion::UNVERSIONED)
+            (c.head_format.as_deref(), c.head_inline_bytes, c.format_version),
+            (Some("arrow"), 1 << 20, FormatVersion::UNVERSIONED)
         );
         assert_eq!((c.compact_cold_after, c.read_dedup), (Some(Duration::from_hours(1)), false));
         let dedup = Contract::from_properties(&props(&[(property::DEDUP, "true")])).unwrap();
@@ -575,7 +600,7 @@ mod tests {
             (HEAD_INLINE_BYTES, "0"),
         ]))
         .unwrap();
-        assert_eq!((c.head_format.as_str(), c.head_inline_bytes), ("json", 0));
+        assert_eq!((c.head_format.as_deref(), c.head_inline_bytes), (Some("json"), 0));
         assert_eq!(c.sort_columns(), ["site", "device", "time"]);
         assert_eq!(c.chunk, Some(Chunk::Hour));
         assert!(c.dedup && !c.auto_maintain);
@@ -594,8 +619,44 @@ mod tests {
             (ROW_GROUP_ROWS, "0"),
             (TARGET_FILE_SIZE, "0"),
             (DATA_PAGE_ROWS, "0"),
+            (READ_DEDUP_STRATEGY, "hash"),
+            (FILTER_PUSHDOWN, "sometimes"),
+            (SERIES_ORDER, "sorted"),
+            (WINDOW_SERIES_ORDER, "yes"),
+            (FLOAT_ENCODING, "plain"),
+            (COMPACT_COLD_AFTER, "never"),
         ] {
             assert!(Contract::from_properties(&props(&[kv])).is_err(), "{kv:?}");
         }
+        let err = Contract::from_properties(&props(&[(SERIES_ORDER, "sorted")])).unwrap_err().to_string();
+        assert_eq!(err, "timelake.series-order must be auto, segments, or merge, got \"sorted\"");
+    }
+
+    #[test]
+    fn contract_parses_choices_in_any_case() {
+        let c = Contract::from_properties(&props(&[
+            (READ_DEDUP_STRATEGY, "Keys_First"),
+            (FILTER_PUSHDOWN, "TRUE"),
+            (SERIES_ORDER, " segments "),
+            (WINDOW_SERIES_ORDER, "false"),
+            (FLOAT_ENCODING, "Byte-Stream-Split"),
+            (HEAD_FORMAT, "None"),
+            (ROLLUP_REFRESH_INTERVAL, "OFF"),
+        ]))
+        .unwrap();
+        assert_eq!(c.read_dedup_strategy, ReadDedupStrategy::KeysFirst);
+        assert_eq!((c.filter_pushdown, c.window_series_order), (AutoBool::True, AutoBool::False));
+        assert_eq!((c.series_order, c.float_encoding), (SeriesOrder::Segments, FloatEncoding::ByteStreamSplit));
+        assert_eq!((c.head_format, c.rollup_refresh_interval), (None, None));
+    }
+
+    /// Iceberg's compression properties are checked when a file is written, so a codec Timelake
+    /// lacks doesn't stop reads.
+    #[test]
+    fn bad_compression_opens_and_fails_only_writes() {
+        let c = Contract::from_properties(&props(&[(COMPRESSION_CODEC, "lzo")])).unwrap();
+        assert!(c.compression.is_err());
+        let c = Contract::from_properties(&props(&[(COMPRESSION_CODEC, "GZIP"), (COMPRESSION_LEVEL, "9")])).unwrap();
+        assert_eq!(c.compression.map(|c| (c.codec(), c.level())), Ok((crate::value::CompressionCodec::Gzip, Some(9))));
     }
 }

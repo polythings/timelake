@@ -38,6 +38,7 @@ use super::rollup::unalias;
 use super::runs::over_readings;
 use super::settings::SessionSettings;
 use crate::property;
+use timelake_format::{AutoBool, SeriesOrder as Setting};
 
 /// How a scan under a signal aggregate reads each series in time order (setting `series-order`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,12 +54,12 @@ pub(crate) enum Order {
     MergeOnePartition,
 }
 
-impl Order {
-    fn parse(s: &str) -> Self {
-        match s.to_ascii_lowercase().as_str() {
-            "segments" => Self::Segments,
-            "merge" => Self::Merge,
-            _ => Self::Auto,
+impl From<Setting> for Order {
+    fn from(setting: Setting) -> Self {
+        match setting {
+            Setting::Auto => Self::Auto,
+            Setting::Segments => Self::Segments,
+            Setting::Merge => Self::Merge,
         }
     }
 }
@@ -75,14 +76,13 @@ impl OptimizerRule for SeriesOrder {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        let session = options.extensions.get::<SessionSettings>().and_then(|s| s.get(property::SERIES_ORDER));
-        let session = session.map(Order::parse);
         let settings = options.extensions.get::<SessionSettings>();
-        let windows_session = settings.and_then(|s| s.get(property::WINDOW_SERIES_ORDER)).map(str::to_ascii_lowercase);
+        let session = settings.and_then(|s| s.value::<Setting>(property::SERIES_ORDER));
+        let windows_session = settings.and_then(|s| s.value::<AutoBool>(property::WINDOW_SERIES_ORDER));
         plan.transform_down(|node| {
             let wants: Box<Wants> = match &node {
                 LogicalPlan::Aggregate(a) if a.aggr_expr.iter().any(|e| over_readings(e, a.input.schema())) => {
-                    Box::new(move |p| Some(session.unwrap_or_else(|| Order::parse(&p.table().contract().series_order))))
+                    Box::new(move |p| Some(session.unwrap_or(p.table().contract().series_order).into()))
                 }
                 LogicalPlan::Window(w) => {
                     let windows: Vec<(HashSet<String>, String)> =
@@ -90,17 +90,17 @@ impl OptimizerRule for SeriesOrder {
                     if windows.is_empty() {
                         return Ok(Transformed::no(node));
                     }
-                    let session = windows_session.clone();
+                    let session = windows_session;
                     Box::new(move |p| {
                         let contract = p.table().contract();
                         let keys: HashSet<String> = contract.series_key.iter().cloned().collect();
                         let fits = windows
                             .iter()
                             .any(|(by, order)| *by == keys && contract.time_column.as_ref() == Some(order));
-                        match session.as_deref().unwrap_or(&contract.window_series_order) {
-                            "false" => None,
-                            "true" => fits.then_some(Order::Merge),
-                            _ => fits.then_some(Order::MergeOnePartition),
+                        match session.unwrap_or(contract.window_series_order) {
+                            AutoBool::False => None,
+                            AutoBool::True => fits.then_some(Order::Merge),
+                            AutoBool::Auto => fits.then_some(Order::MergeOnePartition),
                         }
                     })
                 }

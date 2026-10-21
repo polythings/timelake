@@ -32,8 +32,7 @@ pub mod content;
 /// `Result` of head encoding and decoding.
 pub type Result<T, E = FormatError> = std::result::Result<T, E>;
 
-/// `timelake.head-format` value that turns the head off.
-pub const NO_HEAD: &str = "none";
+pub use crate::contract::NO_HEAD;
 const MAGIC: &[u8; 4] = b"TLHD";
 const HEADER_VERSION: u8 = 1;
 /// The longest header: magic, header version, table version, codec name length, codec name.

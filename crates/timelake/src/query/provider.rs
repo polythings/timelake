@@ -35,8 +35,8 @@ use datafusion::physical_plan::union::UnionExec;
 use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{Datum, PrimitiveLiteral};
 use parquet::file::metadata::PageIndexPolicy;
-use timelake_format::footer;
 use timelake_format::rows::ASCENDING;
+use timelake_format::{AutoBool, ReadDedupStrategy, footer};
 
 use super::dedup::{DedupExec, Keep, RANK, overlapping_groups, series_values};
 use super::in_list::{InList, SplitInLists, access_plan, long_in_lists};
@@ -202,10 +202,10 @@ async fn scan_data(
     }
     if !merged.is_empty() {
         // Keys-first doesn't read each series in order.
-        let strategy = if series_order.is_some() { Strategy::Merge } else { strategy(table, state)? };
+        let strategy = if series_order.is_some() { ReadDedupStrategy::Merge } else { strategy(table, state) };
         plans.push(match strategy {
-            Strategy::Merge => scan_deduplicated(table, state, &url, merged, projection, &key_filters).await?,
-            Strategy::KeysFirst => {
+            ReadDedupStrategy::Merge => scan_deduplicated(table, state, &url, merged, projection, &key_filters).await?,
+            ReadDedupStrategy::KeysFirst => {
                 scan_keys_first(table, state, &url, merged, projection, filters, &key_filters).await?
             }
         });
@@ -455,7 +455,7 @@ async fn scan_files(
         builder = builder.with_output_ordering(vec![ordering]);
     }
     let mut options = state.table_options().parquet.clone();
-    let pushdown = filter_pushdown(table, state)?;
+    let pushdown = filter_pushdown(table, state);
     if !pushdown {
         builder = builder.with_expr_adapter(split_adapter(table, state));
     }
@@ -506,15 +506,10 @@ fn with_access_plan(
 
 /// The session's `timelake.filter_pushdown`, else the table's `timelake.filter-pushdown`; `auto`
 /// is on for local files and off on object storage.
-fn filter_pushdown(table: &Table, state: &dyn DfSession) -> DfResult<bool> {
+fn filter_pushdown(table: &Table, state: &dyn DfSession) -> bool {
     let settings = state.config().options().extensions.get::<SessionSettings>();
-    let session = settings.and_then(|s| s.get(property::FILTER_PUSHDOWN));
-    match session.unwrap_or(&table.contract().filter_pushdown).to_ascii_lowercase().as_str() {
-        "auto" => Ok(!table.lake().storage().is_remote()),
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => Err(DataFusionError::Plan(format!("unknown filter pushdown {other:?}: auto, true or false"))),
-    }
+    let session = settings.and_then(|s| s.value::<AutoBool>(property::FILTER_PUSHDOWN));
+    session.unwrap_or(table.contract().filter_pushdown).is_on(|| !table.lake().storage().is_remote())
 }
 
 /// Scans files that may share keys, strategy merge: each file's rows with its commit rank, split
@@ -712,22 +707,12 @@ impl Ranked {
     }
 }
 
-/// How copies are removed on read (spec 12): `merge` or `keys-first`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Strategy {
-    Merge,
-    KeysFirst,
-}
-
-/// The session's `timelake.read_dedup_strategy`, else the table's `timelake.read-dedup-strategy`.
-fn strategy(table: &Table, state: &dyn DfSession) -> DfResult<Strategy> {
+/// How copies are removed on read (spec 12): the session's `timelake.read_dedup_strategy`, else
+/// the table's `timelake.read-dedup-strategy`.
+fn strategy(table: &Table, state: &dyn DfSession) -> ReadDedupStrategy {
     let settings = state.config().options().extensions.get::<SessionSettings>();
-    let session = settings.and_then(|s| s.get(property::READ_DEDUP_STRATEGY));
-    match session.unwrap_or(&table.contract().read_dedup_strategy).to_ascii_lowercase().as_str() {
-        "merge" => Ok(Strategy::Merge),
-        "keys-first" | "keys_first" => Ok(Strategy::KeysFirst),
-        other => Err(DataFusionError::Plan(format!("unknown read dedup strategy {other:?}: merge or keys-first"))),
-    }
+    let session = settings.and_then(|s| s.value(property::READ_DEDUP_STRATEGY));
+    session.unwrap_or(table.contract().read_dedup_strategy)
 }
 
 /// The table's sort order id, as data files written by Timelake carry it.

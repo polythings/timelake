@@ -36,6 +36,12 @@ impl SessionSettings {
         self.get(name).map(|v| v.eq_ignore_ascii_case("true"))
     }
 
+    /// The session's value of a setting with a typed value ([`timelake_format::value`]); values
+    /// are checked when set, so they parse.
+    pub fn value<T: std::str::FromStr>(&self, name: &str) -> Option<T> {
+        self.get(name).and_then(|v| v.parse().ok())
+    }
+
     /// The session's value of a duration setting.
     pub fn duration(&self, name: &str) -> Option<std::time::Duration> {
         self.get(name).and_then(|v| timelake_format::parse_duration(v).ok())

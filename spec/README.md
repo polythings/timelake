@@ -64,7 +64,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | 6 | [Last-value index](0006-last-value-index.md) | In progress | 0.1.0, 0.5.0, unreleased | 2026-10-19 |
 | 7 | [One-request table state and version checks](0007-table-head.md) | Done | 0.3.0, 0.6.0, 0.7.0 | 2026-10-17 |
 | 8 | [Table format versions and upgrades](0008-format-versions.md) | Done | 0.3.0, 0.4.0, 0.5.0 | 2026-10-14 |
-| 9 | [Settings](0009-settings.md) | Done | 0.5.0 | 2026-10-19 |
+| 9 | [Settings](0009-settings.md) | Done | 0.5.0, unreleased | 2026-10-20 |
 | 10 | [Supplemental timestamps](0010-supplemental-timestamps.md) | Planned | – | 2026-10-16 |
 
 ### Writing

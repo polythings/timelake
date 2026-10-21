@@ -25,7 +25,7 @@ table, session or call. Releases follow [releases](../releases.md).
 | # | Spec | Status | Versions |
 |---:|---|---|---|
 | 8 | [Table format versions and upgrades](../0008-format-versions.md) | Done | 0.3.0, 0.4.0, 0.5.0 |
-| 9 | [Settings](../0009-settings.md) | Done | 0.5.0 |
+| 9 | [Settings](../0009-settings.md) | Done | 0.5.0, unreleased |
 
 <!-- specs:end -->
 

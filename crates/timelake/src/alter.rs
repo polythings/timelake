@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 
-use timelake_format::Contract;
 use timelake_format::settings::{self, Level};
+use timelake_format::{Contract, FormatError};
 
 use crate::commit::publish_retrying;
 use crate::error::Result;
+use crate::property;
 use crate::table::Table;
 
 impl Table {
@@ -47,7 +48,11 @@ impl Table {
         }
         merged.extend(set.clone());
         let contract = Contract::from_properties(&merged)?;
-        self.lake().check_head_format(&contract.head_format)?;
+        self.lake().check_head_format(contract.head_format.as_deref())?;
+        let compression = [property::COMPRESSION_CODEC, property::COMPRESSION_LEVEL];
+        if set.iter().map(|(k, _)| k).chain(&remove).any(|k| compression.contains(&k.as_str())) {
+            contract.compression.map_err(FormatError::from)?;
+        }
         write_properties(self, &set, &remove).await
     }
 }
@@ -116,6 +121,9 @@ mod tests {
             (("min-snapshots", Some("many")), "non-negative integer"),
             (("head-format", Some("avro")), "unknown head format"),
             (("no-such-setting", Some("1")), "unknown setting"),
+            (("series-order", Some("sorted")), "must be auto, segments, or merge"),
+            (("write.parquet.compression-codec", Some("lzo")), "use zstd, lz4"),
+            (("write.parquet.compression-level", Some("30")), "out of range for zstd (1 to 22)"),
         ] {
             let err = t.set_properties(&[change]).await.unwrap_err().to_string();
             assert!(err.contains(msg), "{change:?}: {err}");
@@ -156,6 +164,26 @@ mod tests {
         ] {
             assert!(matches!(result, Ok(Err(Error::Conflict(_)))), "{what}: {result:?}");
         }
+    }
+
+    /// A value outside a setting's set, as another engine could write it, is an error naming the
+    /// setting when the table is opened, as a bad boolean is.
+    #[tokio::test]
+    async fn a_table_with_a_value_outside_a_settings_set_is_refused() {
+        use crate::testing::reopen;
+
+        use timelake_format::layout::{head_uri, metadata_uri};
+
+        let (lake, store) = faulty_lake();
+        let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
+        let uri = metadata_uri(t.location(), t.version());
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&lake.storage().read(&uri).await.unwrap()).unwrap();
+        metadata["properties"][property::SERIES_ORDER] = "sorted".into();
+        lake.storage().write(&uri, serde_json::to_vec(&metadata).unwrap().into()).await.unwrap();
+        lake.storage().delete(&head_uri(t.location())).await.unwrap();
+        let err = reopen(&store).table("iot.r").await.unwrap_err().to_string();
+        assert!(err.contains("timelake.series-order must be auto, segments, or merge"), "{err}");
     }
 
     #[tokio::test]

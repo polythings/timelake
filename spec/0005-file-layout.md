@@ -39,7 +39,8 @@ path.
   group's columns on threads of their own (0.6.0: the same files byte for byte, compaction of TSBS IoT 2.37 → 1.17 s).
 - **Codec:** the codec in Iceberg's `write.parquet.compression-codec` and `write.parquet.compression-level` (ZSTD 3 by
   default; `lz4`, `snappy`, `gzip`, `brotli`, `uncompressed`). Built 0.7.0. A level the codec doesn't have fails the
-  write rather than falling back to the default (unreleased).
+  write rather than falling back to the default, and creation and `alter` reject an unknown codec or such a level
+  (unreleased).
 - **Encodings:** Parquet `DELTA_BINARY_PACKED` for the time column, dictionaries for the other columns (floats
   falling back to `BYTE_STREAM_SPLIT` once the dictionary outgrows its page; setting `float-encoding`), and ZSTD.
   Measured 2026-10-19 against `BYTE_STREAM_SPLIT` for floats: IIoT readings a third of the size (366 → 119 MB for 5
@@ -78,4 +79,4 @@ D16.
 - 2026-10-18: codec from Iceberg's write properties
 - 2026-10-19: dictionary-encoded floats (`float-encoding`); moved from SPEC.md into spec 6 and spec 20, then into this
   spec when the specs were regrouped one per feature.
-- 2026-10-20: a compression level the codec doesn't have is an error
+- 2026-10-20: a compression level the codec doesn't have is an error, at creation and `alter` too

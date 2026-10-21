@@ -56,9 +56,14 @@ pub mod rows;
 pub mod settings;
 #[cfg(feature = "write")]
 pub mod table;
+pub mod value;
 pub mod version;
 
-pub use contract::{Chunk, Contract, TableOptions, duration_micros, duration_millis, format_duration, parse_duration};
+pub use contract::{
+    Chunk, Contract, NO_HEAD, TableOptions, duration_micros, duration_millis, format_duration, parse_duration,
+    parse_duration_or_off,
+};
+pub use value::{AutoBool, Compression, CompressionCodec, FloatEncoding, ReadDedupStrategy, SeriesOrder};
 pub use version::FormatVersion;
 
 /// Table property keys holding the [`Contract`].
@@ -212,6 +217,9 @@ pub enum FormatError {
     #[cfg(feature = "head")]
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Iceberg compression properties a file can't be written with.
+    #[error(transparent)]
+    Compression(#[from] value::CompressionError),
 }
 
 impl FormatError {

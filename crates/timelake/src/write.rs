@@ -327,7 +327,8 @@ mod codec_tests {
     use crate::append::AppendOptions;
     use crate::testing::{T0, batch, faulty_lake, opts, schema};
 
-    /// Iceberg's `write.parquet.compression-codec` picks the codec; an unknown one fails the write.
+    /// Iceberg's `write.parquet.compression-codec` picks the codec. An unknown one is refused at
+    /// creation; set by another engine, it fails writes, not reads.
     #[tokio::test]
     async fn the_iceberg_codec_property_picks_the_codec() {
         let (lake, _store) = faulty_lake();
@@ -341,8 +342,13 @@ mod codec_tests {
         assert_eq!(reader.metadata().row_group(0).column(0).compression(), Compression::LZ4_RAW);
 
         let mut o = opts();
-        o.properties.insert(timelake_format::property::COMPRESSION_CODEC.into(), "zip".into());
-        let t = lake.create_table("iot.zip", &schema(), o).await.unwrap();
+        let zip = (timelake_format::property::COMPRESSION_CODEC.to_string(), "zip".to_string());
+        o.properties.extend([zip.clone()]);
+        let err = lake.create_table("iot.zip", &schema(), o).await.unwrap_err();
+        assert!(err.to_string().contains("compression-codec \"zip\""), "{err}");
+        let t = lake.create_table("iot.zip", &schema(), opts()).await.unwrap();
+        let t = crate::alter::write_properties(&t, &[zip], &[]).await.unwrap();
+        assert!(t.contract().compression.is_err());
         let err = t.append(&[batch(&[(T0, 1, 1.0)])], AppendOptions::default()).await.unwrap_err();
         assert!(err.to_string().contains("compression-codec \"zip\""), "{err}");
     }
