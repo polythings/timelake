@@ -201,6 +201,49 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - `--chunk` and `--retention` of `timelake create` and `import` are checked when the arguments are parsed, with the
   usage message, before any file is read.
 - Python: `repr(Lake(...))` quotes the location as Python's `repr` does (`Lake('…')`), not with Rust's double quotes.
+- TypeScript client: a table handle many commits behind reads the newest version. It moved forward at most two
+  versions per query and took that for current; it now probes forward (doubling, then halving the step) until a
+  version is missing.
+- TypeScript client: a handle behind the metadata files maintenance deleted reads the newest version. It kept
+  answering from its old version.
+- TypeScript client: public S3 and CloudFront buckets that answer `403` for a missing key work. Every query after
+  `cacheMs` failed on the check for a newer version.
+- TypeScript client: a query whose request fails frees the Parquet files it already opened.
+- TypeScript client: `lake.tables()` checks that `timelake-tables.json` is a list of names.
+- TypeScript client: `zodSource` names a table such as `status` `Status`, not `Statu`.
+- `scripts/serve-range.mjs` answers a malformed path with 400 instead of crashing, ends a response whose file can't
+  be read, serves the whole file for a suffix range longer than it (`bytes=-500` of 100 bytes), and ignores
+  `bytes=-`. The website's lab route reads suffix ranges too.
+- The website's benchmark pages show sizes in decimal units throughout: a megabyte is 1,000,000 bytes, as the labels
+  say. The per-system storage column divided by 1,024, so it showed the same bytes as about 5% fewer MB than elsewhere.
+- The website shows a time just under a second as "1.00 s" instead of "1000 ms", and likewise at the other unit
+  boundaries.
+- The website draws a system it has no color for in gray, listed after the known ones, instead of in S3 Tables' color
+  and first.
+- On the website's benchmark pages, closing a query's results on a narrow screen and then widening the window no longer
+  leaves the results pane empty, and a ranking whose values are all zero draws its bars instead of failing.
+- After a benchmark race finishes, resizing the website's window redraws its dots instead of stretching them.
+- Benchmarks: maintenance request counts and costs cover only the maintenance itself; they included reading the
+  tables' state and sizes afterwards (all metadata for Iceberg, a listing for Timelake, manifests for S3 Tables).
+  Saving the state for the live probes is no longer counted as ingest either.
+- Benchmarks: ingest seconds leave out reading the workload's data from its files (the initial rows and each
+  arrival). With `--pace`, the next arrival is read while waiting for its time, and there is no wait after the last
+  one.
+- Benchmarks: a `--reuse` run starts each database server and records its versions, and skips a query at later
+  checkpoints once it timed out, as a full run does.
+- Benchmarks: `timebench report` shows only the costs the run priced; it showed S3 Standard storage prices for
+  database servers, S3 Tables and the reference.
+- Benchmarks: each TSBS IoT arrival holds the same time window of readings and diagnostics; they were paired by
+  position, so a window missing from one table shifted the rest.
+- Benchmarks: concurrent dashboards' queries per second count the queries that finished within the measured seconds,
+  not the last one each client started before the end.
+- Benchmarks: answer checks sum `Date64` columns as the Timelake CLI does, plain Parquet files are split into days
+  correctly for any timestamp unit, and QuestDB maintenance closes the connection ingest left open.
+- Benchmarks: the S3 proxy in front of a local object store counts a PUT with `Expect: 100-continue` once and adds
+  its latency once; the interim `100 Continue` response made it count the request twice.
+- Benchmarks: a system missing a setting (such as `BENCH_TIMESCALEDB_DSN` or S3 Tables' `BENCH_TABLE_BUCKET_ARN`)
+  fails its own ingest and the run goes on; it stopped the whole profile and left the run file without its end. A
+  database server is stopped even when reading its version fails.
 
 ### Changed
 
@@ -238,6 +281,17 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Planning a newest-first query (`ORDER BY time DESC LIMIT k`) reads the file footers of all time partitions at once
   instead of one partition after another: one round trip instead of one per partition, when the footers aren't in the
   table's head.
+- TypeScript client: durations use the engine's syntax, a whole number and `s`, `m`, `h`, `d`, `w` or `y`, or spelled
+  out (`90 minutes`, `1 day`). `500ms` and fractions such as `1.5h` are now errors; pass a number of milliseconds
+  instead (`500`).
+- TypeScript client: time strings must be ISO 8601, and one without an offset (`2026-01-03T12:00:00`) is UTC, as in
+  the engine's SQL. It was local time, so the same query returned different rows in a browser and on a server.
+  Strings keep microseconds.
+- TypeScript client: `table.lastStats` counts the requests that loaded or checked the table version for the query
+  (the head, the version hint, metadata and manifests), and `bytes` is what was received, whole files included when a
+  server ignores `Range`.
+- TypeScript client: `TableWriter` takes a table name without a namespace (`readings` is `default.readings`), like the
+  reader and the engine, and both check names with the engine's rules, so `iot/readings` or `a.b.c` is an error.
 
 ### Removed
 
