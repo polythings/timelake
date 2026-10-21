@@ -13,8 +13,8 @@
  */
 
 import { ensureWasm } from "./init.ts"
-import { parseTableName, trimTrailingSlashes } from "./util.ts"
-import { Writer as WasmWriter } from "./wasm/timelake_wasm.js"
+import { trimTrailingSlashes } from "./util.ts"
+import { Writer as WasmWriter, tableLocation } from "./wasm/timelake_wasm.js"
 
 /** An object in a store, as {@link Store.list} returns it. */
 export interface StoredObject {
@@ -255,9 +255,8 @@ export class TableWriter {
    */
   constructor(store: Store, warehouse: string, table: string) {
     ensureWasm()
-    const { namespace, name } = parseTableName(table)
     const base = trimTrailingSlashes(warehouse)
-    this.location = `${base}/${namespace}/${name}`
+    this.location = tableLocation(base, table)
     const root = rootOf(base)
     const key = (uri: string): string => {
       if (!uri.startsWith(root + "/")) throw new Error(`${uri} is outside ${root}`)

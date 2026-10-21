@@ -1,7 +1,10 @@
 // Names, times and durations parse as the engine parses them.
 import { afterEach, expect, test } from "bun:test"
 
-import { durationMicros, parseTableName, timeMicros } from "../src/util"
+import "../src/index" // registers the embedded WebAssembly module
+import { ensureWasm } from "../src/init"
+import { durationMicros, parseTableName, tablesIndex, timeMicros } from "../src/util"
+import { parseTableName as wasmParseTableName, tablesIndexUri } from "../src/wasm/timelake_wasm.js"
 
 const zone = process.env.TZ
 afterEach(() => {
@@ -9,12 +12,30 @@ afterEach(() => {
   else process.env.TZ = zone
 })
 
+const BAD_NAMES = ["", ".", "iot.", ".readings", "a.b.c", "iot/readings", "../x", "a b", "naïve", 'iot.read"ings']
+
 test("table names follow the engine's TableName", () => {
   expect(parseTableName("iot.readings")).toEqual({ namespace: "iot", name: "readings" })
   expect(parseTableName("my-table_2")).toEqual({ namespace: "default", name: "my-table_2" })
-  for (const bad of ["", ".", "iot.", ".readings", "a.b.c", "iot/readings", "../x", "a b", "naïve", 'iot.read"ings']) {
+  for (const bad of BAD_NAMES) {
     expect(() => parseTableName(bad)).toThrow("must be [namespace.]table")
   }
+})
+
+// A table handle parses its name before the WebAssembly module is loaded, so the client keeps a copy of the rules.
+test("the client's table names and index are timelake-format's", () => {
+  ensureWasm()
+  for (const name of ["iot.readings", "my-table_2", "A-Z_0.9", ...BAD_NAMES]) {
+    let wasm: unknown
+    try {
+      wasm = wasmParseTableName(name)
+    } catch {
+      expect(() => parseTableName(name)).toThrow("must be [namespace.]table")
+      continue
+    }
+    expect(parseTableName(name)).toEqual(wasm as { namespace: string; name: string })
+  }
+  expect(tablesIndex("s3://b/lake")).toBe(tablesIndexUri("s3://b/lake"))
 })
 
 test("times without an offset are UTC in any time zone", () => {
@@ -50,4 +71,6 @@ test("durations follow the engine's parse_duration", () => {
     expect(() => durationMicros(bad as "1h")).toThrow("invalid duration")
   }
   expect(() => durationMicros("999999999999y")).toThrow("too long")
+  // Past 2^53 microseconds, which a JavaScript number can't hold exactly.
+  expect(() => durationMicros("300y")).toThrow("too long")
 })

@@ -1,4 +1,11 @@
-/** Helpers the reader and the writer share: table names, times, durations and URLs, as the engine parses them. */
+/**
+ * Helpers the reader and the writer share: table names, times, durations and URLs, as the engine parses them. Durations
+ * are parsed by the WebAssembly module (`timelake-format`'s rules); table names are checked here too, where a handle is
+ * made before the module is loaded, and a test keeps both in step.
+ */
+
+import { ensureWasm } from "./init.ts"
+import { parseDuration } from "./wasm/timelake_wasm.js"
 
 /** Namespace of table names given without one. */
 export const DEFAULT_NAMESPACE = "default"
@@ -6,21 +13,32 @@ export const DEFAULT_NAMESPACE = "default"
 /** A point in time: Date, epoch milliseconds, or an ISO 8601 string (UTC unless it has an offset). */
 export type TimeInput = Date | string | number
 
-/** Seconds of each duration unit, as the engine's `parse_duration` names them. */
-const UNIT_SECONDS = {
-  ...units(1, "s", "sec", "secs", "second", "seconds"),
-  ...units(60, "m", "min", "mins", "minute", "minutes"),
-  ...units(3600, "h", "hr", "hrs", "hour", "hours"),
-  ...units(86_400, "d", "day", "days"),
-  ...units(7 * 86_400, "w", "week", "weeks"),
-  ...units(365 * 86_400, "y", "year", "years"),
-}
-
-function units<const N extends string>(seconds: number, ...names: N[]): Record<N, number> {
-  return Object.fromEntries(names.map((n) => [n, seconds])) as Record<N, number>
-}
-
-type DurationUnit = keyof typeof UNIT_SECONDS
+/** Duration units as the engine's `parse_duration` names them. */
+type DurationUnit =
+  | "s"
+  | "sec"
+  | "secs"
+  | "second"
+  | "seconds"
+  | "m"
+  | "min"
+  | "mins"
+  | "minute"
+  | "minutes"
+  | "h"
+  | "hr"
+  | "hrs"
+  | "hour"
+  | "hours"
+  | "d"
+  | "day"
+  | "days"
+  | "w"
+  | "week"
+  | "weeks"
+  | "y"
+  | "year"
+  | "years"
 /** A duration: `"30s"`, `"10m"`, `"1h"`, `"1d"`, `"1w"`, `"1y"`, spelled out (`"3 hours"`), or milliseconds. */
 export type DurationInput = `${number}${DurationUnit}` | `${number} ${DurationUnit}` | number
 
@@ -37,6 +55,11 @@ export function parseTableName(table: string): { namespace: string; name: string
     throw new Error(`table name ${JSON.stringify(table)} must be [namespace.]table using [A-Za-z0-9_-]`)
   }
   return { namespace, name }
+}
+
+/** The warehouse's table index, for stores that can't list (`timelake-format`'s `tables_index_uri`). */
+export function tablesIndex(warehouse: string): string {
+  return `${warehouse}/timelake-tables.json`
 }
 
 /** `s` without trailing slashes. Not `/\/+$/`: on a string with many slashes that regex backtracks in quadratic time. */
@@ -81,15 +104,11 @@ export function durationMicros(d: DurationInput): number {
     if (!Number.isFinite(d)) throw new Error(`invalid duration: ${d}`)
     return Math.round(d * 1000)
   }
-  const s = d.trim()
-  const m = /^(\d+)(.*)$/.exec(s)
-  const unit = m?.[2]?.trim().toLowerCase()
-  const seconds =
-    unit !== undefined && Object.hasOwn(UNIT_SECONDS, unit) ? UNIT_SECONDS[unit as DurationUnit] : undefined
-  if (!m?.[1] || seconds === undefined) {
-    throw new Error(`invalid duration: ${JSON.stringify(d)} (use a whole number and s, m, h, d, w or y, e.g. 10m)`)
+  ensureWasm()
+  try {
+    return parseDuration(d)
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    throw new Error(`invalid duration: ${JSON.stringify(d)}: ${why}`, { cause: e })
   }
-  const micros = Number(m[1]) * seconds * 1e6
-  if (!Number.isSafeInteger(micros)) throw new Error(`duration ${JSON.stringify(d)} is too long`)
-  return micros
 }

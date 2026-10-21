@@ -19,14 +19,18 @@
 import { z } from "zod"
 
 import { ensureWasm } from "./init.ts"
-import { durationMicros, parseTableName, timeMicros, trimTrailingSlashes } from "./util.ts"
+import { durationMicros, parseTableName, tablesIndex, timeMicros, trimTrailingSlashes } from "./util.ts"
 import type { DurationInput, TimeInput } from "./util.ts"
 import {
   ParquetFile,
   Query,
   Table as WasmTable,
+  footerPrefetchBytes,
+  headUri,
   heapPeakBytes,
+  hintUri,
   memoryBytes,
+  metadataUri,
   version as wasmVersion,
 } from "./wasm/timelake_wasm.js"
 
@@ -160,8 +164,6 @@ export interface QueryStats {
 
 const DEFAULT_CONCURRENCY = 16
 const DEFAULT_CACHE_MS = 5000
-/** Bytes read from the end of a data file first: holds the whole footer of typical files. */
-const FOOTER_PREFETCH = 64 * 1024
 
 const optionalMicros = (t: TimeInput | undefined) => (t === undefined ? undefined : timeMicros(t))
 
@@ -274,7 +276,7 @@ export class Lake {
 
   /** Table names (`namespace.table`) from the warehouse's `timelake-tables.json`. */
   async tables(): Promise<string[]> {
-    const url = `${this.url}/timelake-tables.json`
+    const url = tablesIndex(this.url)
     const parsed = TableNames.safeParse(await (await this.get(url)).json())
     if (!parsed.success) throw new Error(`${url}: not a list of table names (${parsed.error.message})`)
     return parsed.data
@@ -336,7 +338,8 @@ export class TableHandle<T = Row> {
   }
 
   private metadataUrl(version: number): string {
-    return `${this.location}/metadata/v${version}.metadata.json`
+    ensureWasm()
+    return metadataUri(this.location, version)
   }
 
   /**
@@ -388,10 +391,9 @@ export class TableHandle<T = Row> {
    */
   private async fetchVersion(requests: Requests): Promise<Loaded> {
     ensureWasm()
-    const metadata = `${this.location}/metadata`
     const [head, hintResponse] = await Promise.all([
-      requests.open(`${metadata}/timelake-head`),
-      requests.open(`${metadata}/version-hint.text`),
+      requests.open(headUri(this.location)),
+      requests.open(hintUri(this.location)),
     ])
     const hint = hintResponse ? new TextDecoder().decode(await requests.read(hintResponse)).trim() : undefined
     const hinted = hint === undefined ? undefined : Number(hint)
@@ -554,6 +556,7 @@ export class TableHandle<T = Row> {
   /** Runs a query spec over the files that may match it. */
   private async scan(wasm: WasmTable, spec: object, requests: Requests): Promise<unknown[]> {
     const files = wasm.planFiles(spec) as TableInfo["files"]
+    const prefetch = footerPrefetchBytes()
     const query = new Query(spec)
     // Every file opened so far, until it is pushed to the query; freed whatever fails.
     const opened: (ParquetFile | undefined)[] = []
@@ -564,7 +567,7 @@ export class TableHandle<T = Row> {
         files.map(async ({ path, size }, i) => {
           let file = wasm.openFile(path, size)
           if (!file) {
-            let tail = await requests.bytes(path, [Math.max(0, size - FOOTER_PREFETCH), size])
+            let tail = await requests.bytes(path, [Math.max(0, size - prefetch), size])
             const footer = ParquetFile.footerLength(tail)
             if (footer > tail.length) tail = await requests.bytes(path, [size - footer, size])
             file = new ParquetFile(size, tail)
