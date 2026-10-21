@@ -172,7 +172,8 @@ pub(crate) async fn refresh_session(
     let mut config = Session::config();
     config.options_mut().set("timelake.read_dedup", "true")?;
     let session = Session::with_config(lake.clone(), config);
-    super::route::prepare(lake, raw, None, &session.routes, Some(rollup)).await;
+    let options = session.context().state().config().options().clone();
+    super::route::prepare(lake, raw, &options, &session.routes, Some(rollup)).await;
     Ok(session.context().clone())
 }
 

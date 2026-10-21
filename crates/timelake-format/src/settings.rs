@@ -549,7 +549,9 @@ pub static SETTINGS: &[Setting] = &[
         since: "0.5.0",
         description: "The Timelake reader answers a `GROUP BY time_bucket(…)` query on this table from a rollup \
                       that matches it. Buckets changed since the rollup's last refresh, and partial buckets at the \
-                      edges of the time range, still come from this table, so the answer is the same either way.",
+                      edges of the time range, still come from this table, so the answer is the same either way. \
+                      A table read without dedup (`read-dedup` off) isn't routed, since a rollup counts each reading \
+                      once.",
     },
     Setting {
         name: "rollup-refresh-interval",

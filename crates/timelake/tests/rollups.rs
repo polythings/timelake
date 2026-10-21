@@ -462,3 +462,49 @@ async fn signal_states_need_enough_readings_per_row() {
     let hourly = reads("SELECT device, time_weighted_mean(time, value) FROM iot.r GROUP BY 1");
     assert!(hourly.await.contains("r_1h"));
 }
+
+/// Rollups count each reading once: a read without dedup, set by the table's property or the session (which
+/// overrides it), isn't routed, so routed and raw answers match in every combination.
+#[tokio::test(flavor = "multi_thread")]
+async fn reads_without_dedup_are_not_routed() {
+    let (_dir, lake) = lake_with_rollup().await;
+    // A second write of an hour's readings: dedup keeps the newer one, a read without dedup both.
+    let t = lake.table("iot.r").await.unwrap();
+    let again = batch(T0 + 3 * HOUR, 60, MINUTE, 4, |_, _| -1.0);
+    t.append(&[again], AppendOptions { maintain: Some(false), ..Default::default() }).await.unwrap();
+    rows(&Session::new(lake.clone()), "REFRESH MATERIALIZED ROLLUP iot.r_1h").await;
+    let sql = QUERIES[0].0;
+    for (table, session) in [
+        (None, None),
+        (Some("false"), None),
+        (Some("false"), Some("true")),
+        (Some("true"), Some("false")),
+        (None, Some("false")),
+    ] {
+        lake.table("iot.r").await.unwrap().set_properties(&[("read-dedup", table)]).await.unwrap();
+        let (routed, unrouted) = (Session::new(lake.clone()), Session::new(lake.clone()));
+        unrouted.sql("SET timelake.rollup_routing = false").await.unwrap();
+        if let Some(value) = session {
+            for s in [&routed, &unrouted] {
+                s.sql(&format!("SET timelake.read_dedup = {value}")).await.unwrap();
+            }
+        }
+        let dedup = session.or(table) != Some("false");
+        assert_eq!(reads_rollup(&routed, sql).await, dedup, "table {table:?}, session {session:?}");
+        assert_eq!(answer(&routed, sql).await, answer(&unrouted, sql).await, "table {table:?}, session {session:?}");
+    }
+}
+
+/// `rollup-routing` resolves as every setting does: the session's value, else the table's.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_overrides_the_tables_rollup_routing() {
+    let (_dir, lake) = lake_with_rollup().await;
+    lake.table("iot.r").await.unwrap().set_properties(&[("rollup-routing", Some("false"))]).await.unwrap();
+    let sql = QUERIES[0].0;
+    let s = Session::new(lake.clone());
+    assert!(!reads_rollup(&s, sql).await);
+    s.sql("SET timelake.rollup_routing = true").await.unwrap();
+    assert!(reads_rollup(&s, sql).await);
+    let unrouted = Session::new(lake.clone());
+    assert_eq!(answer(&s, sql).await, answer(&unrouted, sql).await);
+}

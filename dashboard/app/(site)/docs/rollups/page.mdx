@@ -103,7 +103,7 @@ but daily time-weighted means slower (3.6 s against 2.0 s), and an hourly rollup
 
 Buckets older than the raw table's retention are never read from the rollup: the raw table has no rows there, so neither does the answer. Query the rollup table to see that history.
 
-`SET timelake.rollup_routing = false` turns this off for a session, and the table setting `rollup-routing` for one raw table. A session that reads without dedup (`timelake.read_dedup = false`) isn't routed either, since a rollup counts each reading once.
+The setting `rollup-routing` turns this off for one raw table, and `SET timelake.rollup_routing = false` for a session. As with every [setting](/docs/settings), the session's value overrides the table's: `SET timelake.rollup_routing = true` routes a table that has it off. A table read without dedup (`read-dedup` off, by its property or the session's `SET timelake.read_dedup = false`) isn't routed either, since a rollup counts each reading once.
 
 ## Refresh
 

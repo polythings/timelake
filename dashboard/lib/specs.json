@@ -343,7 +343,7 @@
     "title": "Materialized rollups",
     "area": "Reading",
     "status": "done",
-    "updated": "2026-10-20",
+    "updated": "2026-10-21",
     "versions": ["0.5.0", "0.7.0", "unreleased"],
     "summary": "A rollup is a Timelake table of aggregates per time bucket, defined in SQL, refreshed incrementally from the raw table's changed buckets, and used automatically by the reader with exact answers. Coarser queries and fewer keys are answered by re-aggregating a rollup, and wider rollups are computed from narrower ones.",
     "related": [12, 28, 30, 31],

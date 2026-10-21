@@ -17,7 +17,7 @@ use super::provider::TimelakeProvider;
 use super::rewrite::LatestRewrite;
 use super::rollup::{definition_of, refresh_session, rollup_frame};
 use super::route::{RollupRewrite, RouteMap, prepare};
-use super::settings::{ROLLUP_ROUTING, SessionSettings, VERSION_CHECK_INTERVAL};
+use super::settings::{SessionSettings, VERSION_CHECK_INTERVAL};
 use super::statement::{self, RollupStatement, Statement};
 use crate::error::{Error, Result};
 use crate::lake::Lake;
@@ -198,10 +198,8 @@ impl Session {
             let interval = self.version_check_interval();
             self.catalog.set_interval(interval);
             futures::future::join_all(names.iter().map(|n| self.prefetch(n, interval))).await;
-            if self.rollup_routing() {
-                futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, interval, &self.routes, None)))
-                    .await;
-            }
+            let options = state.config().options();
+            futures::future::join_all(names.iter().map(|n| prepare(&self.lake, n, options, &self.routes, None))).await;
         }
         let plan = state.statement_to_plan(statement).await?;
         Ok(self.ctx.execute_logical_plan(plan).await?)
@@ -274,12 +272,6 @@ impl Session {
             Some((namespace, table)) => Ok(TableName::new(namespace, table)?),
             None => Ok(TableName::new(&self.ctx.state().config().options().catalog.default_schema, name)?),
         }
-    }
-
-    /// Whether the session lets queries be routed to rollups (`timelake.rollup_routing`, on unless
-    /// set off).
-    fn rollup_routing(&self) -> bool {
-        ROLLUP_ROUTING.session(self.ctx.state().config().options()) != Some(false)
     }
 
     /// The session's `version-check-interval`, if it sets one.

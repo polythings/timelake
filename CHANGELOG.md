@@ -67,6 +67,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 ### Fixed
 
+- A table with the property `read-dedup = false` was still answered from its rollups, which count each reading once,
+  so its `GROUP BY time_bucket(…)` queries could differ from reading the table. Only a session's
+  `SET timelake.read_dedup = false` stopped routing; the table's property now does too.
+- `SET timelake.rollup_routing = true` didn't route a table whose `rollup-routing` property is off. The session's value
+  now overrides the table's, as for every other setting.
 - Snapshot expiry from the TypeScript writer retried at once and without end while other writers kept committing first.
   It waits between attempts and gives up after 10, as commits do.
 - Snapshot expiry in the engine stopped with an error when a manifest only expired snapshots used was already gone (an

@@ -97,7 +97,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | 24 | [Pruning with long IN lists](0024-in-list-pruning.md) | Done | 0.7.0 | 2026-10-18 |
 | 25 | [Newest-first scans](0025-newest-first.md) | Done | 0.7.0, unreleased | 2026-10-19 |
 | 26 | [Scans in series order](0026-series-order.md) | Done | 0.7.0, unreleased | 2026-10-19 |
-| 27 | [Materialized rollups](0027-rollups.md) | Done | 0.5.0, 0.7.0, unreleased | 2026-10-20 |
+| 27 | [Materialized rollups](0027-rollups.md) | Done | 0.5.0, 0.7.0, unreleased | 2026-10-21 |
 
 ### SQL functions
 

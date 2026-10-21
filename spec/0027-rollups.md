@@ -3,7 +3,7 @@ number: 27
 title: Materialized rollups
 area: Reading
 status: done
-updated: 2026-10-20
+updated: 2026-10-21
 versions: [0.5.0, 0.7.0, unreleased]
 related: [12, 28, 30, 31]
 issues: [15, 108, 136]
@@ -11,7 +11,7 @@ issues: [15, 108, 136]
 
 # 27. Materialized rollups
 
-**Done** · updated 2026-10-20 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
+**Done** · updated 2026-10-21 · versions 0.5.0, 0.7.0, unreleased · milestones: [Time-series SQL](milestones/time-series-sql.md), [Millions of series](milestones/millions-of-series.md)
 · related: [spec 12](0012-late-data-and-dedup.md), [spec 28](0028-function-library.md), [spec 30](0030-signal-aggregates.md), [spec 31](0031-m4.md)
 
 ## Summary
@@ -104,8 +104,9 @@ The answer is exact, not a stale rollup:
   from the rollup.
 - Every other row (the changed buckets, the partial buckets at the edges of the time range) is aggregated from the raw
   table as usual. The two parts share no bucket, so they are combined with `UNION ALL`.
-- `timelake.rollup-routing` (table and session; default on) turns it off. A session that reads without dedup
-  (`timelake.read_dedup = false`) is not routed, since rollups count each reading once.
+- `timelake.rollup-routing` (table and session; default on) turns it off; the session's value overrides the table's.
+  A table read without dedup (`read-dedup` off, the table's or the session's) is not routed, since rollups count each
+  reading once.
 
 **Not in the first version:** rollups of rollups, aggregates that need stored state (percentiles, time-weighted
 averages), answering a coarser query (hourly from minutes) or fewer keys from a rollup, calendar buckets (months),
@@ -163,3 +164,4 @@ against 1.9 s, gaps over 30 days 0.24 s against 1.2 s. The counts come from both
 - 2026-10-19: was spec 21; specs regrouped one per feature, with milestones on the roadmap.
 - 2026-10-19: time ranges without a bucket, the widest rollup first, readings per row for states, gap states.
 - 2026-10-20: grouping columns filtered by another table (`IN (SELECT …)`) route too.
+- 2026-10-21: `rollup-routing` and `read-dedup` resolve as other settings do (the session's value, else the table's).

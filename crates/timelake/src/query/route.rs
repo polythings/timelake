@@ -11,9 +11,9 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
-use std::time::Duration;
 
 use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::datasource::{provider_as_source, source_as_provider};
@@ -32,7 +32,7 @@ use super::PLANNING_REUSE;
 use super::gaps;
 use super::provider::{Kind, TimelakeProvider};
 use super::rollup::{aggregate_of, bucket_width, is_time, unalias};
-use super::settings::{READ_DEDUP, ROLLUP_ROUTING};
+use super::settings::{READ_DEDUP, ROLLUP_ROUTING, VERSION_CHECK_INTERVAL};
 use super::signal::{Method, Output, state_type, udaf};
 use crate::TableName;
 use crate::lake::Lake;
@@ -74,18 +74,18 @@ const STATE_ROWS: u64 = 4;
 /// Routes by raw table, shared by a session and its optimizer rule.
 pub(super) type RouteMap = Arc<RwLock<HashMap<TableName, Arc<Routes>>>>;
 
-/// Works out the routes of raw table `name` for the next query, or forgets them when it has no
-/// rollups to route to. The table version is confirmed current first, so the rule only routes a
-/// version that won't be replaced while it is scanned. `interval` is the session's
-/// `version-check-interval`, if it sets one; rollup `except` is left out (the one being refreshed).
+/// Works out the routes of raw table `name` for the next query with session `options`, or forgets
+/// them when it has no rollups to route to. The table version is confirmed current first, so the
+/// rule only routes a version that won't be replaced while it is scanned. Rollup `except` is left
+/// out (the one being refreshed).
 pub(super) async fn prepare(
     lake: &Lake,
     name: &TableName,
-    interval: Option<Duration>,
+    options: &ConfigOptions,
     routes: &RouteMap,
     except: Option<&TableName>,
 ) {
-    let prepared = routes_for(lake, name, interval, except).await;
+    let prepared = routes_for(lake, name, options, except).await;
     let mut map = routes.write().unwrap_or_else(PoisonError::into_inner);
     match prepared {
         Some(r) => map.insert(name.clone(), Arc::new(r)),
@@ -96,11 +96,12 @@ pub(super) async fn prepare(
 async fn routes_for(
     lake: &Lake,
     name: &TableName,
-    interval: Option<Duration>,
+    options: &ConfigOptions,
     except: Option<&TableName>,
 ) -> Option<Routes> {
+    let interval = VERSION_CHECK_INTERVAL.session(options);
     let mut raw = lake.table_recent(name, interval, PLANNING_REUSE).await.ok()?;
-    if raw.contract().rollups.is_empty() || !raw.contract().rollup_routing {
+    if raw.contract().rollups.is_empty() || !routable(&raw, options) {
         return None;
     }
     if raw.is_stale().await.ok()? {
@@ -136,6 +137,13 @@ async fn routes_for(
     // The widest first: fewer rows to read and merge for the queries it answers.
     rollups.sort_by_key(|c| std::cmp::Reverse(c.def.width));
     (!rollups.is_empty()).then_some(Routes { version: raw.version(), rollups })
+}
+
+/// Whether queries on `table` may be routed with session `options`: routing is on for it, and it
+/// is read with dedup where it has dedup on, since a rollup counts each reading once.
+fn routable(table: &Table, options: &ConfigOptions) -> bool {
+    let contract = table.contract();
+    ROLLUP_ROUTING.of(options, contract) && (!contract.dedup || READ_DEDUP.of(options, contract))
 }
 
 /// The start of the first bucket at or after `t`.
@@ -174,14 +182,9 @@ impl OptimizerRule for RollupRewrite {
 
     fn rewrite(&self, plan: LogicalPlan, config: &dyn OptimizerConfig) -> DfResult<Transformed<LogicalPlan>> {
         let options = config.options();
-        // The session can turn routing off; a table turns it off for itself in `prepare`.
-        if ROLLUP_ROUTING.session(&options) == Some(false) {
-            return Ok(Transformed::no(plan));
-        }
-        let read_dedup = READ_DEDUP.session(&options);
         plan.transform_down(|node| {
             let LogicalPlan::Aggregate(a) = &node else { return Ok(Transformed::no(node)) };
-            match self.route(a, read_dedup)? {
+            match self.route(a, &options)? {
                 Some(routed) => Ok(Transformed::yes(routed)),
                 None => Ok(Transformed::no(node)),
             }
@@ -209,13 +212,12 @@ struct Query<'a> {
 }
 
 impl RollupRewrite {
-    fn route(&self, a: &Aggregate, read_dedup: Option<bool>) -> DfResult<Option<LogicalPlan>> {
+    fn route(&self, a: &Aggregate, options: &ConfigOptions) -> DfResult<Option<LogicalPlan>> {
         let Some(q) = read_query(a) else { return Ok(None) };
-        let Some(width) = q.width else { return self.route_range(a, &q, read_dedup) };
-        let contract = q.table.contract();
-        if contract.dedup && read_dedup == Some(false) {
+        if !routable(&q.table, options) {
             return Ok(None);
         }
+        let Some(width) = q.width else { return self.route_range(a, &q, options) };
         let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner).get(q.table.name()).cloned();
         let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
         for candidate in &routes.rollups {
@@ -241,7 +243,7 @@ impl RollupRewrite {
     /// A query over a time range without a bucket: its aggregates in mergeable form (states,
     /// sums and counts) per bucket of a rollup's width, routed as a bucketed query, then merged by
     /// the query's keys. The widest rollup that answers goes first.
-    fn route_range(&self, a: &Aggregate, q: &Query<'_>, read_dedup: Option<bool>) -> DfResult<Option<LogicalPlan>> {
+    fn route_range(&self, a: &Aggregate, q: &Query<'_>, options: &ConfigOptions) -> DfResult<Option<LogicalPlan>> {
         let Some(parts) = a.aggr_expr.iter().map(|e| partial(e, &q.time)).collect::<Option<Vec<_>>>() else {
             return Ok(None);
         };
@@ -264,7 +266,7 @@ impl RollupRewrite {
             let bucket = date_bin().call(vec![stride, time.clone()]).alias("__bucket");
             let groups = a.group_expr.iter().cloned().chain([bucket]).collect();
             let inner = Aggregate::try_new(input.clone(), groups, inputs.clone())?;
-            let Some(routed) = self.route(&inner, read_dedup)? else { continue };
+            let Some(routed) = self.route(&inner, options)? else { continue };
             // Merged by the query's keys: the inner query's grouping columns, then the merges.
             let schema = routed.schema().clone();
             let keys = (0..a.group_expr.len()).map(|i| Expr::Column(Column::from(schema.qualified_field(i))));
