@@ -28,6 +28,7 @@ mod filter;
 mod head;
 mod keys;
 mod latest;
+mod layout;
 mod meta;
 mod output;
 mod prune;
@@ -47,6 +48,10 @@ pub use aggregate::bucket_start;
 pub use error::{Error, Result};
 pub use file::{COALESCE_GAP, FileReader, coalesce, footer_len};
 pub use head::Head;
+pub use layout::{
+    footer_prefetch_bytes, head_uri, hint_uri, metadata_uri, metadata_version, parse_duration_micros, parse_table_name,
+    table_location, tables_index_uri,
+};
 pub use meta::{DataFile, Field, MAX_SNAPSHOTS, SnapshotInfo, TableMeta, data_manifests, parse_manifest};
 pub use prune::plan_files;
 pub use query::Collector;
@@ -69,9 +74,14 @@ fn to_js<T: Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {
 
 /// A byte offset or size passed as a JavaScript number.
 fn byte_offset(x: f64) -> Result<u64> {
+    safe_u64(x, "byte offset")
+}
+
+/// A whole number passed as a JavaScript number; `what` names it in the error.
+fn safe_u64(x: f64, what: &str) -> Result<u64> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !(0.0..=MAX_SAFE_INTEGER).contains(&x) || x.fract() != 0.0 {
-        return Err(Error::invalid(format!("not a byte offset: {x}")));
+        return Err(Error::invalid(format!("not a {what}: {x}")));
     }
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a safe integer, checked above")]
     Ok(x as u64)
