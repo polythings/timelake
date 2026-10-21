@@ -76,6 +76,8 @@ const WRITE_THROUGH_SHARE: u64 = 8;
 const KNOWN_OBJECTS: usize = 1 << 16;
 /// Disk blocks used again get a new modification time (their age for eviction) at most this often.
 const TOUCH_AFTER: Duration = Duration::from_secs(60);
+/// Blocks read from the disk cache at once.
+const DISK_READS: usize = 16;
 /// The disk cache is swept for its budget after about this share of it has been written.
 const SWEEP_SHARE: u64 = 10;
 
@@ -166,7 +168,7 @@ impl CachedStore {
                 continue;
             }
             let data = bytes.slice_ref(chunk);
-            self.memory().insert((location.clone(), index), data.clone());
+            self.memory().insert(location, index, data.clone());
             if let Some(disk) = &self.disk {
                 disk.write(info.clone(), index, data);
             }
@@ -177,17 +179,47 @@ impl CachedStore {
         self.memory.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A cached block: from memory, or from disk (then also kept in memory).
-    async fn cached(&self, location: &Path, index: u64, info: Option<&ObjectInfo>) -> Option<Bytes> {
-        if let Some(b) = self.memory().get(&(location.clone(), index)) {
-            self.counters.memory_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(b);
+    /// The blocks `indices` of an object kept in memory, into `blocks`; returns the others.
+    fn read_memory(&self, location: &Path, indices: &[u64], blocks: &mut BTreeMap<u64, Bytes>) -> Vec<u64> {
+        let mut memory = self.memory();
+        let mut missing = vec![];
+        for &b in indices {
+            match memory.get(location, b) {
+                Some(bytes) => {
+                    blocks.insert(b, bytes);
+                }
+                None => missing.push(b),
+            }
         }
-        let (disk, info) = (self.disk.as_ref()?, info?);
-        let b = disk.read(&info.key, index, self.block_len(index, info.size)).await?;
-        self.counters.disk_hits.fetch_add(1, Ordering::Relaxed);
-        self.memory().insert((location.clone(), index), b.clone());
-        Some(b)
+        self.counters.memory_hits.fetch_add((indices.len() - missing.len()) as u64, Ordering::Relaxed);
+        missing
+    }
+
+    /// The blocks `indices` of an object on disk, read a few at a time into `blocks` and kept in
+    /// memory too; returns the others.
+    async fn read_disk(
+        &self,
+        location: &Path,
+        info: Option<&ObjectInfo>,
+        indices: Vec<u64>,
+        blocks: &mut BTreeMap<u64, Bytes>,
+    ) -> Vec<u64> {
+        let (Some(disk), Some(info)) = (&self.disk, info) else { return indices };
+        let reads = futures::stream::iter(indices)
+            .map(|b| async move { (b, disk.read(&info.key, b, self.block_len(b, info.size)).await) })
+            .buffered(DISK_READS);
+        let mut missing = vec![];
+        for (b, read) in reads.collect::<Vec<_>>().await {
+            match read {
+                Some(bytes) => {
+                    self.counters.disk_hits.fetch_add(1, Ordering::Relaxed);
+                    self.memory().insert(location, b, bytes.clone());
+                    blocks.insert(b, bytes);
+                }
+                None => missing.push(b),
+            }
+        }
+        missing
     }
 
     /// The bytes of `ranges` of an immutable object, from cached blocks and one ranged GET per run
@@ -210,49 +242,9 @@ impl CachedStore {
             indices.retain(|&b| b < last);
         }
         let mut blocks: BTreeMap<u64, Bytes> = BTreeMap::new();
-        let mut missing = vec![];
-        for &b in &indices {
-            match self.cached(location, b, info.as_ref()).await {
-                Some(bytes) => {
-                    blocks.insert(b, bytes);
-                }
-                None => missing.push(b),
-            }
-        }
-        // Blocks another read is already fetching are awaited, not fetched again.
-        let mut waits: Vec<(u64, Fetch)> = vec![];
-        {
-            let mut inflight = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
-            missing.retain(|&b| match inflight.get(&(location.clone(), b)) {
-                Some(f) => {
-                    waits.push((b, f.clone()));
-                    false
-                }
-                None => true,
-            });
-            let max_blocks = if self.config.request == 0 { u64::MAX } else { (self.config.request / block).max(1) };
-            for run in runs(&missing, max_blocks) {
-                // A task of its own, so the GET runs to its end and its blocks are stored even if
-                // every read waiting for it is dropped (a LIMIT, a timeout).
-                let task = tokio::spawn(self.clone().fetch_run(location.clone(), run.clone()));
-                let fetch = async move {
-                    task.await.unwrap_or_else(|e| {
-                        Err(Arc::new(object_store::Error::Generic { store: "cache", source: Box::new(e) }))
-                    })
-                }
-                .boxed()
-                .shared();
-                for (i, b) in run.clone().enumerate() {
-                    let one: Fetch = fetch
-                        .clone()
-                        .map(move |r| r.map(|v: Arc<Vec<Bytes>>| v.get(i).cloned().unwrap_or_default()))
-                        .boxed()
-                        .shared();
-                    inflight.insert((location.clone(), b), one.clone());
-                    waits.push((b, one));
-                }
-            }
-        }
+        let on_disk = self.read_memory(location, &indices, &mut blocks);
+        let missing = self.read_disk(location, info.as_ref(), on_disk, &mut blocks).await;
+        let waits = self.fetches(location, missing);
         // The runs are fetched at the same time, not one after another.
         let fetched = futures::future::try_join_all(waits.into_iter().map(|(b, f)| f.map(move |r| r.map(|v| (b, v)))))
             .await
@@ -264,6 +256,44 @@ impl CachedStore {
         let end = |r: &Range<u64>| info.as_ref().map_or(r.end, |i| r.end.min(i.size));
         let out = ranges.iter().map(|r| slice(&blocks, block, r.start..end(r))).collect();
         Ok((info, out))
+    }
+
+    /// The fetches that bring blocks `missing` of an object: those another read already started,
+    /// so a block isn't fetched twice, and a GET of each run of the others.
+    fn fetches(self: &Arc<Self>, location: &Path, mut missing: Vec<u64>) -> Vec<(u64, Fetch)> {
+        let mut waits: Vec<(u64, Fetch)> = vec![];
+        let mut inflight = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
+        missing.retain(|&b| match inflight.get(&(location.clone(), b)) {
+            Some(f) => {
+                waits.push((b, f.clone()));
+                false
+            }
+            None => true,
+        });
+        let block = self.config.block;
+        let max_blocks = if self.config.request == 0 { u64::MAX } else { (self.config.request / block).max(1) };
+        for run in runs(&missing, max_blocks) {
+            // A task of its own, so the GET runs to its end and its blocks are stored even if
+            // every read waiting for it is dropped (a LIMIT, a timeout).
+            let task = tokio::spawn(self.clone().fetch_run(location.clone(), run.clone()));
+            let fetch = async move {
+                task.await.unwrap_or_else(|e| {
+                    Err(Arc::new(object_store::Error::Generic { store: "cache", source: Box::new(e) }))
+                })
+            }
+            .boxed()
+            .shared();
+            for (i, b) in run.clone().enumerate() {
+                let one: Fetch = fetch
+                    .clone()
+                    .map(move |r| r.map(|v: Arc<Vec<Bytes>>| v.get(i).cloned().unwrap_or_default()))
+                    .boxed()
+                    .shared();
+                inflight.insert((location.clone(), b), one.clone());
+                waits.push((b, one));
+            }
+        }
+        waits
     }
 
     /// Fetches blocks `run` in one ranged GET and caches them; one result per block (empty past the
@@ -560,54 +590,73 @@ struct MemoryBlocks {
     budget: u64,
     used: u64,
     tick: u64,
-    blocks: HashMap<(Path, u64), (Bytes, u64)>,
-    order: BTreeMap<u64, (Path, u64)>,
+    /// Each object's blocks by index: the bytes, and when they were last used. By object, so an
+    /// object's blocks are forgotten without a pass over every block.
+    objects: HashMap<Arc<Path>, HashMap<u64, (Bytes, u64)>>,
+    /// The blocks by when they were last used, the oldest first.
+    order: BTreeMap<u64, (Arc<Path>, u64)>,
 }
 
 impl MemoryBlocks {
     fn new(budget: u64) -> Self {
-        Self { budget, used: 0, tick: 0, blocks: HashMap::new(), order: BTreeMap::new() }
+        Self { budget, used: 0, tick: 0, objects: HashMap::new(), order: BTreeMap::new() }
     }
 
-    fn get(&mut self, key: &(Path, u64)) -> Option<Bytes> {
-        let (bytes, tick) = self.blocks.get_mut(key)?;
-        self.order.remove(tick);
+    fn get(&mut self, location: &Path, index: u64) -> Option<Bytes> {
+        let (path, blocks) = self.objects.get_key_value(location)?;
+        let path = Arc::clone(path);
+        let (bytes, tick) = blocks.get(&index)?.clone();
+        self.order.remove(&tick);
         self.tick += 1;
-        *tick = self.tick;
-        self.order.insert(self.tick, key.clone());
-        Some(bytes.clone())
+        self.order.insert(self.tick, (path, index));
+        if let Some(block) = self.objects.get_mut(location).and_then(|b| b.get_mut(&index)) {
+            block.1 = self.tick;
+        }
+        Some(bytes)
     }
 
-    fn insert(&mut self, key: (Path, u64), bytes: Bytes) {
+    fn insert(&mut self, location: &Path, index: u64, bytes: Bytes) {
         let len = bytes.len() as u64;
         if len > self.budget {
             return;
         }
-        self.remove(&key);
+        self.remove(location, index);
         while self.used + len > self.budget
-            && let Some((_, oldest)) = self.order.pop_first()
+            && let Some((_, (oldest, i))) = self.order.pop_first()
         {
-            if let Some((b, _)) = self.blocks.remove(&oldest) {
-                self.used -= b.len() as u64;
-            }
+            self.take(&oldest, i);
         }
+        let path = match self.objects.get_key_value(location) {
+            Some((path, _)) => Arc::clone(path),
+            None => Arc::new(location.clone()),
+        };
         self.tick += 1;
-        self.order.insert(self.tick, key.clone());
-        self.blocks.insert(key, (bytes, self.tick));
+        self.order.insert(self.tick, (Arc::clone(&path), index));
+        self.objects.entry(path).or_default().insert(index, (bytes, self.tick));
         self.used += len;
     }
 
-    fn remove(&mut self, key: &(Path, u64)) {
-        if let Some((b, tick)) = self.blocks.remove(key) {
+    fn remove(&mut self, location: &Path, index: u64) {
+        if let Some(tick) = self.take(location, index) {
             self.order.remove(&tick);
-            self.used -= b.len() as u64;
         }
     }
 
+    /// Takes a block out of `objects` (not `order`), and returns when it was last used.
+    fn take(&mut self, location: &Path, index: u64) -> Option<u64> {
+        let blocks = self.objects.get_mut(location)?;
+        let (bytes, tick) = blocks.remove(&index)?;
+        if blocks.is_empty() {
+            self.objects.remove(location);
+        }
+        self.used -= bytes.len() as u64;
+        Some(tick)
+    }
+
     fn remove_object(&mut self, location: &Path) {
-        let keys: Vec<(Path, u64)> = self.blocks.keys().filter(|(p, _)| p == location).cloned().collect();
-        for key in keys {
-            self.remove(&key);
+        for (bytes, tick) in self.objects.remove(location).into_iter().flat_map(HashMap::into_values) {
+            self.order.remove(&tick);
+            self.used -= bytes.len() as u64;
         }
     }
 }
@@ -1000,15 +1049,20 @@ mod tests {
     #[test]
     fn memory_evicts_the_least_recently_used() {
         let mut m = MemoryBlocks::new(10);
-        let key = |i| (Path::from("a.parquet"), i);
-        m.insert(key(0), Bytes::from_static(b"aaaa"));
-        m.insert(key(1), Bytes::from_static(b"bbbb"));
-        assert!(m.get(&key(0)).is_some());
-        m.insert(key(2), Bytes::from_static(b"cccc"));
-        assert!(m.get(&key(1)).is_none() && m.get(&key(0)).is_some() && m.get(&key(2)).is_some());
+        let (a, b) = (Path::from("a.parquet"), Path::from("b.parquet"));
+        m.insert(&a, 0, Bytes::from_static(b"aaaa"));
+        m.insert(&a, 1, Bytes::from_static(b"bbbb"));
+        assert!(m.get(&a, 0).is_some());
+        m.insert(&a, 2, Bytes::from_static(b"cccc"));
+        assert!(m.get(&a, 1).is_none() && m.get(&a, 0).is_some() && m.get(&a, 2).is_some());
         assert_eq!(m.used, 8);
-        m.remove_object(&Path::from("a.parquet"));
-        assert_eq!(m.used, 0);
+        // A block replaced, then an object forgotten with its blocks only.
+        m.insert(&b, 0, Bytes::from_static(b"dd"));
+        m.insert(&b, 0, Bytes::from_static(b"d"));
+        assert_eq!((m.used, m.get(&b, 0)), (9, Some(Bytes::from_static(b"d"))));
+        m.remove_object(&a);
+        assert_eq!((m.used, m.order.len(), m.objects.len()), (1, 1, 1));
+        assert!(m.get(&a, 0).is_none() && m.get(&b, 0).is_some());
     }
 
     #[test]
