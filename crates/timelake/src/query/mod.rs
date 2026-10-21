@@ -23,6 +23,7 @@ mod flatline;
 mod functions;
 mod gapfill;
 mod gaps;
+mod groups;
 mod histogram;
 mod in_list;
 mod lists;

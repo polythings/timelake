@@ -37,8 +37,9 @@ use datafusion::logical_expr::{
 use timelake_format::rollup::FunctionFamily;
 
 use super::functions::literal_arg;
+use super::groups::{AllGroups, OneGroup};
 use super::lists::{list_items, list_of_structs, list_type};
-use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
+use super::runs::{Input, Run, RunAggregate, Runs};
 
 /// What an aggregate returns from a group's joined segment, and how the signal moves between
 /// readings: timelake-format's, as rollups name them.

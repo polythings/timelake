@@ -12,14 +12,14 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType};
-use datafusion::common::{ScalarValue, exec_err, plan_err};
+use datafusion::common::{ScalarValue, exec_err, plan_datafusion_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, Signature, Volatility};
 
-use super::functions::literal_arg;
-use super::m4::{points, points_list};
+use super::functions::{arg_types, literal_arg};
+use super::m4::{points, points_list, time_zone_of};
 
 /// The `lttb` aggregate function.
 pub(super) fn udaf() -> AggregateUDF {
@@ -31,9 +31,9 @@ struct Lttb {
     signature: Signature,
 }
 
+/// The time zone of a call's time argument.
 fn time_zone(arg_types: &[DataType]) -> DfResult<Option<Arc<str>>> {
-    let Some(DataType::Timestamp(_, tz)) = arg_types.first() else { return plan_err!("lttb takes (time, value, n)") };
-    Ok(tz.clone())
+    arg_types.first().and_then(time_zone_of).cloned().ok_or_else(|| plan_datafusion_err!("lttb takes (time, value, n)"))
 }
 
 impl AggregateUDFImpl for Lttb {
@@ -67,8 +67,7 @@ impl AggregateUDFImpl for Lttb {
             return plan_err!("lttb(time, value, n) takes n as a whole number");
         };
         let Ok(n @ 2..) = usize::try_from(n) else { return plan_err!("lttb needs n of 2 or more") };
-        let types: Vec<DataType> = args.expr_fields.iter().map(|f| f.data_type().clone()).collect();
-        Ok(Box::new(LttbAccumulator { n, tz: time_zone(&types)?, points: vec![] }))
+        Ok(Box::new(LttbAccumulator { n, tz: time_zone(&arg_types(&args))?, points: vec![] }))
     }
 }
 

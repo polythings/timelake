@@ -14,16 +14,16 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array, ListArray, TimestampMicrosecondArray};
+use arrow::array::{Array, ArrayRef, AsArray, Float64Array, ListArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Float64Type, TimeUnit, TimestampMicrosecondType};
-use datafusion::common::{ScalarValue, exec_err, plan_err};
+use datafusion::common::{exec_err, plan_datafusion_err, plan_err};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
-use datafusion::logical_expr::{
-    Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
-};
+use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 
+use super::functions::arg_types;
+use super::groups::{AllGroups, Fold, GroupState, OneGroup};
 use super::lists::{list_items, list_of_structs, list_type};
 
 /// The `m4` aggregate function.
@@ -61,29 +61,28 @@ pub(super) fn points_list(
     list_of_structs(point_fields(tz), columns, lengths)
 }
 
-/// The time zone of the points a call works on: its time argument's, or its points'.
-fn time_zone(arg_types: &[DataType]) -> DfResult<Option<Arc<str>>> {
-    let time = match arg_types {
-        [time, _] => Some(time),
-        [DataType::List(item)] => {
-            if let DataType::Struct(fields) = item.data_type() {
-                fields.find("time").map(|(_, f)| f.data_type())
-            } else {
-                None
-            }
-        }
+/// The time zone of a timestamp type, or of the times in a list of points; `None` for another
+/// type.
+pub(super) fn time_zone_of(t: &DataType) -> Option<&Option<Arc<str>>> {
+    match t {
+        DataType::Timestamp(_, tz) => Some(tz),
+        DataType::List(item) => match item.data_type() {
+            DataType::Struct(fields) => time_zone_of(fields.find("time")?.1.data_type()),
+            _ => None,
+        },
         _ => None,
-    };
-    if let Some(DataType::Timestamp(_, tz)) = time {
-        Ok(tz.clone())
-    } else {
-        plan_err!("m4 takes (time, value), or the lists of {{time, value}} other m4 calls return")
     }
 }
 
-fn args_time_zone(args: &AccumulatorArgs<'_>) -> DfResult<Option<Arc<str>>> {
-    let types: Vec<DataType> = args.expr_fields.iter().map(|f| f.data_type().clone()).collect();
-    time_zone(&types)
+/// The time zone of the points a call works on: its time argument's, or its points'.
+fn time_zone(arg_types: &[DataType]) -> DfResult<Option<Arc<str>>> {
+    let tz = match arg_types {
+        [time @ DataType::Timestamp(..), _] | [time @ DataType::List(_)] => time_zone_of(time),
+        _ => None,
+    };
+    tz.cloned().ok_or_else(|| {
+        plan_datafusion_err!("m4 takes (time, value), or the lists of {{time, value}} other m4 calls return")
+    })
 }
 
 impl AggregateUDFImpl for M4 {
@@ -115,7 +114,7 @@ impl AggregateUDFImpl for M4 {
     }
 
     fn accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn Accumulator>> {
-        Ok(Box::new(M4Accumulator { tz: args_time_zone(&args)?, extremes: Extremes::default() }))
+        Ok(Box::new(OneGroup::new(M4Points { tz: time_zone(&arg_types(&args))? })))
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs<'_>) -> bool {
@@ -123,7 +122,7 @@ impl AggregateUDFImpl for M4 {
     }
 
     fn create_groups_accumulator(&self, args: AccumulatorArgs<'_>) -> DfResult<Box<dyn GroupsAccumulator>> {
-        Ok(Box::new(M4Groups { tz: args_time_zone(&args)?, groups: vec![] }))
+        Ok(Box::new(AllGroups::new(M4Points { tz: time_zone(&arg_types(&args))? })))
     }
 }
 
@@ -211,100 +210,49 @@ fn lists<'a>(groups: impl Iterator<Item = &'a Extremes>, tz: Option<Arc<str>>) -
     points_list(times, values, lengths, tz)
 }
 
-/// One group at a time (DataFusion's fallback, e.g. without `GROUP BY`).
+impl GroupState for Extremes {}
+
+/// `m4` as a fold: points, from readings or other calls' points, into each group's extremes.
 #[derive(Debug, Default)]
-struct M4Accumulator {
+struct M4Points {
     tz: Option<Arc<str>>,
-    extremes: Extremes,
 }
 
-impl M4Accumulator {
-    fn points(&self) -> ScalarValue {
-        ScalarValue::List(Arc::new(lists(std::iter::once(&self.extremes), self.tz.clone())))
-    }
-}
+impl Fold for M4Points {
+    type Group = Extremes;
+    type Item = Point;
 
-impl Accumulator for M4Accumulator {
-    fn update_batch(&mut self, values: &[ArrayRef]) -> DfResult<()> {
-        for_each_point(values, |_, p| self.extremes.add(p))
+    fn items(&self, columns: &[ArrayRef], add: impl FnMut(usize, Point)) -> DfResult<()> {
+        for_each_point(columns, add)
     }
 
-    fn merge_batch(&mut self, states: &[ArrayRef]) -> DfResult<()> {
-        for_each_point(states, |_, p| self.extremes.add(p))
+    fn fold(&self, group: &mut Extremes, point: Point) {
+        group.add(point);
     }
 
-    fn state(&mut self) -> DfResult<Vec<ScalarValue>> {
-        Ok(vec![self.points()])
+    /// The state is the result: the points.
+    fn states<'a>(&self, groups: impl Iterator<Item = &'a Extremes>) -> ArrayRef {
+        Arc::new(lists(groups, self.tz.clone()))
     }
 
-    fn evaluate(&mut self) -> DfResult<ScalarValue> {
-        Ok(self.points())
-    }
-
-    fn size(&self) -> usize {
-        size_of_val(self)
-    }
-}
-
-/// All groups at once, as DataFusion's grouped aggregation uses.
-#[derive(Debug)]
-struct M4Groups {
-    tz: Option<Arc<str>>,
-    groups: Vec<Extremes>,
-}
-
-impl M4Groups {
-    fn add(&mut self, columns: &[ArrayRef], groups: &[usize], filter: Option<&BooleanArray>, n: usize) -> DfResult<()> {
-        self.groups.resize(n, Extremes::default());
-        let all = &mut self.groups;
-        for_each_point(columns, |row, p| {
-            if filter.is_none_or(|f| f.is_valid(row) && f.value(row)) {
-                all[groups[row]].add(p);
-            }
-        })
-    }
-}
-
-impl GroupsAccumulator for M4Groups {
-    fn update_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
-    }
-
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
-    }
-
-    fn evaluate(&mut self, emit_to: EmitTo) -> DfResult<ArrayRef> {
-        let taken = emit_to.take_needed(&mut self.groups);
-        Ok(Arc::new(lists(taken.iter(), self.tz.clone())))
-    }
-
-    fn state(&mut self, emit_to: EmitTo) -> DfResult<Vec<ArrayRef>> {
-        Ok(vec![self.evaluate(emit_to)?])
-    }
-
-    fn size(&self) -> usize {
-        self.groups.capacity() * size_of::<Extremes>()
+    fn results<'a>(&self, groups: impl Iterator<Item = &'a Extremes>) -> DfResult<ArrayRef> {
+        Ok(self.states(groups))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use arrow::array::BooleanArray;
+    use datafusion::common::ScalarValue;
+    use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
+
     use super::*;
 
-    fn points_of(acc: &mut M4Accumulator) -> Vec<Point> {
+    fn group() -> OneGroup<M4Points> {
+        OneGroup::new(M4Points::default())
+    }
+
+    fn points_of(acc: &mut OneGroup<M4Points>) -> Vec<Point> {
         let ScalarValue::List(list) = acc.evaluate().unwrap() else { panic!("a list") };
         let points = list.value(0);
         let points = points.as_struct();
@@ -313,7 +261,7 @@ mod tests {
         (0..points.len()).map(|i| (times.value(i), values.value(i))).collect()
     }
 
-    fn update(acc: &mut M4Accumulator, rows: &[(Option<i64>, Option<f64>)]) {
+    fn update(acc: &mut OneGroup<M4Points>, rows: &[(Option<i64>, Option<f64>)]) {
         let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(rows.iter().map(|r| r.0).collect::<Vec<_>>()));
         let values: ArrayRef = Arc::new(Float64Array::from(rows.iter().map(|r| r.1).collect::<Vec<_>>()));
         acc.update_batch(&[times, values]).unwrap();
@@ -321,11 +269,11 @@ mod tests {
 
     #[test]
     fn first_min_max_last_in_time_order() {
-        let mut acc = M4Accumulator::default();
+        let mut acc = group();
         update(&mut acc, &[(Some(3), Some(5.0)), (Some(1), Some(2.0)), (Some(2), Some(9.0)), (Some(4), Some(1.0))]);
         assert_eq!(points_of(&mut acc), [(1, 2.0), (2, 9.0), (4, 1.0)], "the last point is also the smallest");
         // One row is all four points, listed once; nulls are skipped.
-        let mut one = M4Accumulator::default();
+        let mut one = group();
         update(&mut one, &[(Some(7), Some(1.5)), (None, Some(0.0)), (Some(8), None)]);
         assert_eq!(points_of(&mut one), [(7, 1.5)]);
     }
@@ -339,9 +287,9 @@ mod tests {
             (Some(9), Some(3.0)),
             (Some(9), Some(4.0)),
         ];
-        let mut forward = M4Accumulator::default();
+        let mut forward = group();
         update(&mut forward, &rows);
-        let mut backward = M4Accumulator::default();
+        let mut backward = group();
         update(&mut backward, &rows.iter().rev().copied().collect::<Vec<_>>());
         // First: earliest, smaller value; smallest: earliest; largest: earliest; last: latest, larger.
         assert_eq!(points_of(&mut forward), [(1, 1.0), (9, 4.0)]);
@@ -351,11 +299,11 @@ mod tests {
     #[test]
     fn merged_points_are_the_points_of_all_rows() {
         let rows: Vec<(Option<i64>, Option<f64>)> = (0..100).map(|i| (Some(i), Some(((i * 37) % 23) as f64))).collect();
-        let mut all = M4Accumulator::default();
+        let mut all = group();
         update(&mut all, &rows);
-        let mut merged = M4Accumulator::default();
+        let mut merged = group();
         for part in rows.chunks(7) {
-            let mut acc = M4Accumulator::default();
+            let mut acc = group();
             update(&mut acc, part);
             let ScalarValue::List(list) = acc.state().unwrap().remove(0) else { panic!("a list") };
             merged.merge_batch(&[list]).unwrap();
@@ -371,13 +319,13 @@ mod tests {
         let filter = BooleanArray::from((0..60).map(|i| i % 5 != 0).collect::<Vec<_>>());
         let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(rows.iter().map(|r| r.0).collect::<Vec<_>>()));
         let values: ArrayRef = Arc::new(Float64Array::from(rows.iter().map(|r| r.1).collect::<Vec<_>>()));
-        let mut all = M4Groups { tz: None, groups: vec![] };
+        let mut all = AllGroups::new(M4Points::default());
         all.update_batch(&[times.clone(), values.clone()], &groups, Some(&filter), 3).unwrap();
-        let mut merged = M4Groups { tz: None, groups: vec![] };
+        let mut merged = AllGroups::new(M4Points::default());
         merged.merge_batch(&all.state(EmitTo::All).unwrap(), &[0, 1, 2], None, 3).unwrap();
         let lists = merged.evaluate(EmitTo::All).unwrap();
         for g in 0..3 {
-            let mut one = M4Accumulator::default();
+            let mut one = group();
             let kept: Vec<_> = (0..60).filter(|&i| groups[i] == g && i % 5 != 0).map(|i| rows[i]).collect();
             update(&mut one, &kept);
             let ScalarValue::List(expected) = one.evaluate().unwrap() else { panic!("a list") };

@@ -6,19 +6,21 @@
 //! order to avoid it ([`super::series_order`]).
 //!
 //! The signal aggregates ([`super::signal`]), the gap aggregates ([`super::gaps`]) and the
-//! flatline aggregates ([`super::flatline`]) are run aggregates; each gives its run, how it reads its input, and how it writes its state and result.
+//! flatline aggregates ([`super::flatline`]) are run aggregates; each gives its run, how it reads
+//! its input, and how it writes its state and result.
 
 use std::fmt::Debug;
 
-use arrow::array::{Array, ArrayRef, BooleanArray};
+use arrow::array::ArrayRef;
 use arrow::datatypes::DataType;
-use datafusion::common::{DFSchema, ScalarValue, exec_err};
+use datafusion::common::{DFSchema, exec_err};
 use datafusion::error::Result as DfResult;
+use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::expr::AggregateFunction;
-use datafusion::logical_expr::{Accumulator, EmitTo, ExprSchemable, GroupsAccumulator};
 use datafusion::prelude::Expr;
 use timelake_format::rollup::FunctionFamily;
 
+use super::groups::{Fold, GroupState};
 use super::rollup::unalias;
 
 /// A summary of readings in time order, from its first reading's time to its last's.
@@ -104,99 +106,31 @@ pub(super) trait RunAggregate: Debug + Send + Sync + 'static {
     fn results<'a>(&self, groups: impl Iterator<Item = &'a Runs<Self::Run>>) -> DfResult<ArrayRef>;
 }
 
-/// One group (DataFusion's fallback, e.g. without `GROUP BY`).
-#[derive(Debug)]
-pub(super) struct OneGroup<A: RunAggregate> {
-    pub(super) runs: Runs<A::Run>,
-    pub(super) aggregate: A,
-}
-
-impl<A: RunAggregate> OneGroup<A> {
-    pub(super) fn new(aggregate: A) -> Self {
-        Self { runs: Runs::default(), aggregate }
+impl<R: Run> GroupState for Runs<R> {
+    fn heap_size(&self) -> usize {
+        self.0.capacity() * size_of::<R>()
     }
 }
 
-impl<A: RunAggregate> Accumulator for OneGroup<A> {
-    fn update_batch(&mut self, values: &[ArrayRef]) -> DfResult<()> {
-        let (runs, how) = (&mut self.runs, self.aggregate.how());
-        self.aggregate.inputs(values, |_, input| runs.take(input, how))
+/// A run aggregate folds each group's readings and states into its runs.
+impl<A: RunAggregate> Fold for A {
+    type Group = Runs<A::Run>;
+    type Item = Input<A::Run>;
+
+    fn items(&self, columns: &[ArrayRef], add: impl FnMut(usize, Input<A::Run>)) -> DfResult<()> {
+        self.inputs(columns, add)
     }
 
-    fn merge_batch(&mut self, states: &[ArrayRef]) -> DfResult<()> {
-        self.update_batch(states)
+    fn fold(&self, runs: &mut Runs<A::Run>, input: Input<A::Run>) {
+        runs.take(input, self.how());
     }
 
-    fn state(&mut self) -> DfResult<Vec<ScalarValue>> {
-        Ok(vec![ScalarValue::try_from_array(&self.aggregate.states(std::iter::once(&self.runs)), 0)?])
+    fn states<'a>(&self, groups: impl Iterator<Item = &'a Runs<A::Run>>) -> ArrayRef {
+        RunAggregate::states(self, groups)
     }
 
-    fn evaluate(&mut self) -> DfResult<ScalarValue> {
-        ScalarValue::try_from_array(&self.aggregate.results(std::iter::once(&self.runs))?, 0)
-    }
-
-    fn size(&self) -> usize {
-        size_of_val(self) + self.runs.0.capacity() * size_of::<A::Run>()
-    }
-}
-
-/// All groups at once, as DataFusion's grouped aggregation uses.
-#[derive(Debug)]
-pub(super) struct AllGroups<A: RunAggregate> {
-    groups: Vec<Runs<A::Run>>,
-    aggregate: A,
-}
-
-impl<A: RunAggregate> AllGroups<A> {
-    pub(super) fn new(aggregate: A) -> Self {
-        Self { groups: vec![], aggregate }
-    }
-
-    fn add(&mut self, columns: &[ArrayRef], groups: &[usize], filter: Option<&BooleanArray>, n: usize) -> DfResult<()> {
-        self.groups.resize_with(n, Runs::default);
-        let (all, how) = (&mut self.groups, self.aggregate.how());
-        self.aggregate.inputs(columns, |row, input| {
-            if filter.is_none_or(|f| f.is_valid(row) && f.value(row)) {
-                all[groups[row]].take(input, how);
-            }
-        })
-    }
-}
-
-impl<A: RunAggregate> GroupsAccumulator for AllGroups<A> {
-    fn update_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
-    }
-
-    fn merge_batch(
-        &mut self,
-        values: &[ArrayRef],
-        group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
-        total_num_groups: usize,
-    ) -> DfResult<()> {
-        self.add(values, group_indices, opt_filter, total_num_groups)
-    }
-
-    fn evaluate(&mut self, emit_to: EmitTo) -> DfResult<ArrayRef> {
-        let taken = emit_to.take_needed(&mut self.groups);
-        self.aggregate.results(taken.iter())
-    }
-
-    fn state(&mut self, emit_to: EmitTo) -> DfResult<Vec<ArrayRef>> {
-        let taken = emit_to.take_needed(&mut self.groups);
-        Ok(vec![self.aggregate.states(taken.iter())])
-    }
-
-    fn size(&self) -> usize {
-        self.groups.iter().map(|r| r.0.capacity() * size_of::<A::Run>()).sum::<usize>()
-            + self.groups.capacity() * size_of::<Runs<A::Run>>()
+    fn results<'a>(&self, groups: impl Iterator<Item = &'a Runs<A::Run>>) -> DfResult<ArrayRef> {
+        RunAggregate::results(self, groups)
     }
 }
 
