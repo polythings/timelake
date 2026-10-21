@@ -7,7 +7,7 @@ use futures::future::{BoxFuture, Shared};
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::{
     DataContentType, DataFile, DataFileBuilder, DataFileFormat, Datum, ManifestContentType, ManifestFile,
-    ManifestStatus, SnapshotRef, TableMetadata, TableMetadataBuilder,
+    ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata, TableMetadataBuilder,
 };
 use timelake_format::iceberg as shared;
 
@@ -57,6 +57,16 @@ pub struct LiveEntry {
 }
 
 impl LiveEntry {
+    /// The file's lowest and highest value of the time column, field `time_id`, as its manifest
+    /// entry records them; `None` where it doesn't.
+    pub(crate) fn time_bounds(&self, time_id: i32) -> (Option<i64>, Option<i64>) {
+        let bound = |bounds: &HashMap<i32, Datum>| match bounds.get(&time_id).map(Datum::literal) {
+            Some(PrimitiveLiteral::Long(t)) => Some(*t),
+            _ => None,
+        };
+        (bound(self.data_file.lower_bounds()), bound(self.data_file.upper_bounds()))
+    }
+
     /// The entry as `timelake_format` records it (bounds in Iceberg's single-value encoding), for
     /// the head.
     pub(crate) fn to_shared(&self) -> Result<shared::Entry> {
@@ -232,6 +242,12 @@ impl Table {
     /// The Timelake contract (time column, series key, layout and maintenance policy).
     pub fn contract(&self) -> &Contract {
         &self.contract
+    }
+
+    /// The field id of the time column, if the table has one.
+    pub(crate) fn time_field_id(&self) -> Option<i32> {
+        let time = self.contract.time_column.as_ref()?;
+        Some(self.metadata.current_schema().field_by_name(time)?.id)
     }
 
     /// Arrow schema of the table (fields carry Iceberg field ids as `PARQUET:field_id` metadata).

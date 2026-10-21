@@ -35,7 +35,6 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::union::UnionExec;
 use futures::{StreamExt, TryStreamExt};
-use iceberg::spec::{Datum, PrimitiveLiteral};
 use parquet::file::metadata::PageIndexPolicy;
 use timelake_format::rows::ASCENDING;
 use timelake_format::{ReadDedupStrategy, footer};
@@ -633,17 +632,10 @@ fn around(
     (merged, before, after)
 }
 
-/// The bounds of `f`'s time column (the widest if its metadata lacks them).
+/// The bounds of `f`'s time column (the widest where its manifest entry lacks them).
 fn time_bounds(table: &Table, f: &LiveEntry) -> (i64, i64) {
-    let time = table.contract().time_column.as_ref().and_then(|t| table.metadata().current_schema().field_by_name(t));
-    let bound = |bounds: &std::collections::HashMap<i32, Datum>, default| match time
-        .and_then(|t| bounds.get(&t.id))
-        .map(Datum::literal)
-    {
-        Some(PrimitiveLiteral::Long(t)) => *t,
-        _ => default,
-    };
-    (bound(f.data_file.lower_bounds(), i64::MIN), bound(f.data_file.upper_bounds(), i64::MAX))
+    let (lo, hi) = table.time_field_id().map_or((None, None), |id| f.time_bounds(id));
+    (lo.unwrap_or(i64::MIN), hi.unwrap_or(i64::MAX))
 }
 
 /// What [`select_files`] picks: the files to scan as they are, the groups of files to

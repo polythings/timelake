@@ -33,7 +33,6 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream,
 };
 use futures::StreamExt;
-use iceberg::spec::{Datum, PrimitiveLiteral};
 
 use super::stats::field_id;
 use crate::table::LiveEntry;
@@ -78,15 +77,10 @@ pub(super) fn overlapping_groups(schema: &SchemaRef, keys: &[usize], files: &[Li
     groups.into_values().filter(|g| g.len() > 1).collect()
 }
 
-/// The file's time bounds in the column's unit (unbounded where the manifest has none).
+/// The file's time bounds (unbounded where the manifest has none).
 fn time_span(f: &LiveEntry, id: Option<i32>) -> (i64, i64) {
-    let bound = |b: Option<&Datum>| match b.map(Datum::literal) {
-        Some(PrimitiveLiteral::Long(v)) => Some(*v),
-        _ => None,
-    };
-    let Some(id) = id else { return (i64::MIN, i64::MAX) };
-    let df = &f.data_file;
-    (bound(df.lower_bounds().get(&id)).unwrap_or(i64::MIN), bound(df.upper_bounds().get(&id)).unwrap_or(i64::MAX))
+    let (lo, hi) = id.map_or((None, None), |id| f.time_bounds(id));
+    (lo.unwrap_or(i64::MIN), hi.unwrap_or(i64::MAX))
 }
 
 /// Whether two files' bounds on a column overlap (or can't be compared).

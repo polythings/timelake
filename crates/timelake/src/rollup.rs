@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::DataType;
-use iceberg::spec::{Datum, PrimitiveLiteral};
 use timelake_format::duration_micros;
 
 use crate::TableName;
@@ -152,15 +151,10 @@ pub(crate) fn floor(t: i64, width: i64) -> i64 {
 /// `after` (all files for `None`), as merged bucket-aligned ranges. `None` if such a file has no
 /// time bounds, so any bucket may have changed.
 pub(crate) fn changed(raw: &Table, files: &[LiveEntry], after: Option<i64>, width: i64) -> Option<Ranges> {
-    let time = raw.contract().time_column.as_ref()?;
-    let id = raw.metadata().current_schema().field_by_name(time)?.id;
-    let bound = |b: Option<&Datum>| match b.map(Datum::literal) {
-        Some(PrimitiveLiteral::Long(t)) => Some(*t),
-        _ => None,
-    };
+    let id = raw.time_field_id()?;
     let mut ranges = vec![];
     for f in files.iter().filter(|f| after.is_none_or(|s| f.sequence_number > s)) {
-        let (lo, hi) = (bound(f.data_file.lower_bounds().get(&id))?, bound(f.data_file.upper_bounds().get(&id))?);
+        let (Some(lo), Some(hi)) = f.time_bounds(id) else { return None };
         ranges.push(floor(lo, width)..floor(hi, width).saturating_add(width));
     }
     Some(merge(ranges))

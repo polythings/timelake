@@ -9,7 +9,7 @@ use std::time::Instant;
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use futures::{StreamExt, TryStreamExt};
-use iceberg::spec::{DataFile, Datum, ManifestStatus, PrimitiveLiteral, SnapshotRef, TableMetadata};
+use iceberg::spec::{DataFile, ManifestStatus, SnapshotRef, TableMetadata};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 use timelake_format::layout::metadata_prefix;
@@ -185,9 +185,7 @@ pub(crate) struct Compaction {
 /// Which files of which partitions to rewrite.
 pub(crate) async fn compaction_plan(table: &Table, opts: &MaintainOptions) -> Result<Compaction> {
     let files = table.files().await?;
-    let time_id =
-        table.contract().time_column.as_ref().and_then(|t| table.metadata().current_schema().field_by_name(t));
-    let time_id = time_id.map(|f| f.id);
+    let time_id = table.time_field_id();
     let planned: Vec<PlanFile<'_>> = files.iter().map(|e| plan_file(e, time_id)).collect();
     let sort_order_id = i32::try_from(table.metadata().default_sort_order_id()).ok();
     let CompactionPlan { groups, more_to_compact } = plan(table.contract(), sort_order_id, &planned, opts);
@@ -198,10 +196,7 @@ pub(crate) async fn compaction_plan(table: &Table, opts: &MaintainOptions) -> Re
 /// A live file as compaction planning sees it; `time_id` is the time column's field id.
 fn plan_file(e: &LiveEntry, time_id: Option<i32>) -> PlanFile<'_> {
     let f = &e.data_file;
-    let newest_time = time_id.and_then(|id| match f.upper_bounds().get(&id).map(Datum::literal) {
-        Some(PrimitiveLiteral::Long(t)) => Some(*t),
-        _ => None,
-    });
+    let newest_time = time_id.and_then(|id| e.time_bounds(id).1);
     PlanFile {
         path: f.file_path(),
         partition: file_partition(f),
