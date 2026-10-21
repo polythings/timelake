@@ -26,7 +26,7 @@ other queries, and plain DuckDB still reads every table. The history of each ste
 | # | Spec | Status | Versions |
 |---:|---|---|---|
 | 2 | [Commits](../0002-commits.md) | Done | 0.1.0, 0.2.0, unreleased |
-| 7 | [One-request table state and version checks](../0007-table-head.md) | Done | 0.3.0, 0.6.0, 0.7.0 |
+| 7 | [One-request table state and version checks](../0007-table-head.md) | Done | 0.3.0, 0.6.0, 0.7.0, unreleased |
 | 22 | [Block cache](../0022-block-cache.md) | Done | 0.5.0, 0.7.0 |
 | 23 | [Filter pushdown](../0023-filter-pushdown.md) | Done | 0.7.0 |
 | 24 | [Pruning with long IN lists](../0024-in-list-pruning.md) | Done | 0.7.0 |

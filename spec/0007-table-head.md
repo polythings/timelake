@@ -3,15 +3,15 @@ number: 7
 title: One-request table state and version checks
 area: Tables and storage
 status: done
-updated: 2026-10-17
-versions: [0.3.0, 0.6.0, 0.7.0]
+updated: 2026-10-21
+versions: [0.3.0, 0.6.0, 0.7.0, unreleased]
 related: [2, 21, 22]
 issues: [133]
 ---
 
 # 7. One-request table state and version checks
 
-**Done** · updated 2026-10-17 · versions 0.3.0, 0.6.0, 0.7.0 · milestone: [Fast first queries on object storage](milestones/fast-first-queries.md)
+**Done** · updated 2026-10-21 · versions 0.3.0, 0.6.0, 0.7.0, unreleased · milestone: [Fast first queries on object storage](milestones/fast-first-queries.md)
 · related: [spec 2](0002-commits.md), [spec 21](0021-reader.md), [spec 22](0022-block-cache.md)
 
 ## Summary
@@ -60,8 +60,9 @@ Each commit also writes a head object with the table's metadata, live files, the
 Setting `version-check-interval` (table, session; default 1 s, the planning cache's old lifetime): a reader uses a
 version it loaded or checked that long without the per-query check; writers always check, and a process sees its own
 commits at once. `0s` checks on every query (one query's lookups share one check). Unit test: a warm `latest` takes 1 → 0
-round trips. Not measured on S3 yet. Not built: a head pointer on S3 Express One Zone, for single-digit-millisecond
-checks.
+round trips. Not measured on S3 yet. The TypeScript client follows the table's setting too unless it is given
+`cacheMs` (2026-10-21; it reused a version for 5 s before). Not built: a head pointer on S3 Express One Zone, for
+single-digit-millisecond checks.
 
 ## Open questions and issues
 
@@ -73,3 +74,4 @@ checks.
 - 2026-10-17: P6 staleness bound built
 - 2026-10-19: moved from SPEC.md into its own spec.
 - 2026-10-19: was spec 18; specs regrouped one per feature, with milestones on the roadmap.
+- 2026-10-21: the TypeScript client reuses a version for the table's `version-check-interval` unless given `cacheMs`.
