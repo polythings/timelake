@@ -6,8 +6,9 @@
  */
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const src = path.resolve(root, "../bench/results/runs")
 const dst = path.resolve(root, "data/runs")
 

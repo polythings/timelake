@@ -1,11 +1,11 @@
-import { ArrowUpRight, ChevronLeft } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 
+import { BackLink } from "@/components/back-link"
+import { SpecMeta } from "@/components/spec/spec-page"
 import { StatusBadge } from "@/components/spec/status-badge"
-import { REPO_URL } from "@/lib/site"
 import { MILESTONE_PAGES } from "@/lib/spec-pages"
 import { milestoneBySlug, specByNumber, versionsText } from "@/lib/specs"
 
@@ -42,24 +42,15 @@ async function MilestoneBody({ params }: Props) {
   return (
     <div className="min-w-0 space-y-8">
       <header className="space-y-3">
-        <Link href="/roadmap" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ChevronLeft className="size-4" />
-          Roadmap
-        </Link>
+        <BackLink href="/roadmap">Roadmap</BackLink>
         <p className="text-sm text-muted-foreground">Milestone</p>
         <h1 className="text-3xl font-light tracking-tight">{m.title}</h1>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
-          <StatusBadge status={m.status} />
-          {m.versions && <span className="tabular-nums">{versionsText(m.versions)}</span>}
-          <span className="tabular-nums">Updated {m.updated}</span>
-          <a
-            className="inline-flex items-center gap-0.5 hover:text-foreground"
-            href={`${REPO_URL}/blob/main/spec/milestones/${m.slug}.md`}
-          >
-            View on GitHub
-            <ArrowUpRight className="size-3.5" />
-          </a>
-        </div>
+        <SpecMeta
+          status={m.status}
+          versions={m.versions ? versionsText(m.versions) : undefined}
+          updated={m.updated}
+          path={`spec/milestones/${m.slug}.md`}
+        />
         <p className="text-muted-foreground">{m.description}</p>
       </header>
       <section className="space-y-3">

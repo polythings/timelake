@@ -4,8 +4,13 @@ import { useEffect, useState } from "react"
 
 import { StripChart } from "@/components/lab/strip-chart"
 
-/** The demo table, written with the CLI into dashboard/lab-lake and served by app/lab-lake in local development only; its metadata holds the file:// paths it was written to. */
+/**
+ * The demo table, written with the CLI into dashboard/lab-lake and served by app/lab-lake in local development only.
+ * Its metadata holds the absolute file:// paths it was written to (another checkout's), so reads rewrite everything up
+ * to the `lab-lake` folder to this server.
+ */
 const TABLE = "demo.readings"
+const WRITTEN_AT = /^file:\/\/.*?\/lab-lake(?=\/|$)/
 
 type Readout = { loadMs: number; queryMs: number; requests: number; points: number }
 
@@ -32,7 +37,7 @@ export function LiveStripChart({ children }: { children?: React.ReactNode }) {
           requests++
           return fetch(input, init)
         },
-        rewriteUrl: (url) => url.replace(/^file:\/\/.*\/public\/lab-lake/, base),
+        rewriteUrl: (url) => url.replace(WRITTEN_AT, base),
       })
       const rows = await lake.table(TABLE).bucket({ series: "pump-1", every: "10m", agg: { temp: ["avg"] } })
       const t2 = performance.now()

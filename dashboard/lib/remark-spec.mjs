@@ -5,11 +5,10 @@ import { posix } from "node:path"
 
 import { visit } from "unist-util-visit"
 
-const REPO_BLOB = "https://github.com/polythings/timelake/blob/main/"
 const BACKGROUND = /^spec\/([a-z][\w-]*)\.md$/
 
-/** Where a link from `file` (a path in the repository) to `url` goes on the site. */
-function siteUrl(file, url) {
+/** Where a link from `file` (a path in the repository) to `url` goes on the site; `blob` is the repository's files. */
+function siteUrl(file, url, blob) {
   const [path, anchor = ""] = url.split(/(?=#)/)
   const target = posix.normalize(posix.join(posix.dirname(file), path))
   const spec = target.match(/^spec\/(\d{4}-[\w-]+)\.md$/)
@@ -19,10 +18,12 @@ function siteUrl(file, url) {
   if (target === "spec/README.md") return `/spec${anchor}`
   const page = target.match(BACKGROUND)
   if (page && page[1] !== "TEMPLATE") return `/spec/${page[1]}${anchor}`
-  return REPO_BLOB + target + anchor
+  return blob + target + anchor
 }
 
-export default function remarkSpec() {
+/** `repo` is the repository's URL on GitHub (REPO_URL in lib/site.ts, passed in by next.config.ts). */
+export default function remarkSpec({ repo }) {
+  const blob = `${repo}/blob/main/`
   return (tree, file) => {
     const path = (file.path ?? "").replaceAll("\\", "/")
     const match = path.match(/\/(spec\/(?:milestones\/)?[^/]+\.md)$/)
@@ -40,7 +41,7 @@ export default function remarkSpec() {
     if (start >= 0 && end > start) tree.children.splice(start, end - start + 1)
     visit(tree, "link", (node) => {
       if (/^(https?:|mailto:|#|\/)/.test(node.url)) return
-      node.url = siteUrl(match[1], node.url)
+      node.url = siteUrl(match[1], node.url, blob)
     })
   }
 }

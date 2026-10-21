@@ -5,6 +5,8 @@ import createMDX from "@next/mdx"
 import type { NextConfig } from "next"
 import { createCssVariablesTheme } from "shiki"
 
+import { REPO_URL } from "./lib/site"
+
 const nextConfig: NextConfig = {
   cacheComponents: true,
   // Docs pages are MDX (app/(site)/docs/**/page.mdx).
@@ -40,7 +42,11 @@ const SPEC_LINKS = new URL("./lib/remark-spec.mjs", import.meta.url)
 const withMDX = createMDX({
   extension: /\.mdx?$/,
   options: {
-    remarkPlugins: [plugin("remark-gfm"), [plugin("remark-frontmatter"), ["yaml"]], fileURLToPath(SPEC_LINKS)],
+    remarkPlugins: [
+      plugin("remark-gfm"),
+      [plugin("remark-frontmatter"), ["yaml"]],
+      [fileURLToPath(SPEC_LINKS), { repo: REPO_URL }],
+    ],
     rehypePlugins: [
       plugin("rehype-slug"),
       [plugin("rehype-autolink-headings"), { behavior: "wrap" }],

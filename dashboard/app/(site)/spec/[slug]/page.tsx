@@ -1,12 +1,10 @@
-import { ArrowUpRight } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 
+import { SpecAside, SpecMeta } from "@/components/spec/spec-page"
 import { SpecSidebar } from "@/components/spec/spec-sidebar"
-import { StatusBadge } from "@/components/spec/status-badge"
-import { REPO_URL } from "@/lib/site"
 import { SPEC_PAGES } from "@/lib/spec-pages"
 import { BACKGROUND, milestoneBySlug, SPECS, specByNumber, versionsText } from "@/lib/specs"
 
@@ -29,9 +27,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default function SpecPage({ params }: Props) {
   return (
     <div className="mx-auto flex max-w-6xl gap-10 px-4 py-10">
-      <aside className="sticky top-20 hidden h-[calc(100svh-6rem)] w-60 shrink-0 overflow-y-auto md:block">
+      <SpecAside>
         <SpecSidebar />
-      </aside>
+      </SpecAside>
       <Suspense fallback={<div className="h-96 flex-1 animate-pulse rounded-xl bg-muted" />}>
         <SpecBody params={params} />
       </Suspense>
@@ -47,6 +45,9 @@ async function SpecBody({ params }: Props) {
   const { default: Content } = await load()
   const spec = SPECS.find((s) => s.slug === slug)
   const page = BACKGROUND.find((b) => b.slug === slug)
+  // Only the milestones and specs that exist, so the lists' commas fall between entries.
+  const milestones = (spec?.milestones ?? []).map(milestoneBySlug).filter((m) => m !== undefined)
+  const related = (spec?.related ?? []).map(specByNumber).filter((r) => r !== undefined)
   return (
     <div className="min-w-0 flex-1 space-y-8">
       <header className="space-y-3">
@@ -56,17 +57,7 @@ async function SpecBody({ params }: Props) {
               Spec {spec.number} · {spec.area}
             </p>
             <h1 className="text-3xl font-light tracking-tight">{spec.title}</h1>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
-              <StatusBadge status={spec.status} />
-              <span className="tabular-nums">Updated {spec.updated}</span>
-              <a
-                className="inline-flex items-center gap-0.5 hover:text-foreground"
-                href={`${REPO_URL}/blob/main/spec/${spec.slug}.md`}
-              >
-                View on GitHub
-                <ArrowUpRight className="size-3.5" />
-              </a>
-            </div>
+            <SpecMeta status={spec.status} updated={spec.updated} path={`spec/${spec.slug}.md`} />
             <dl className="grid gap-x-4 gap-y-1 text-sm text-muted-foreground sm:grid-cols-[6rem_1fr]">
               <dt className="font-medium text-foreground">Versions</dt>
               <dd className="tabular-nums">
@@ -78,39 +69,33 @@ async function SpecBody({ params }: Props) {
                   "Not released yet"
                 )}
               </dd>
-              <dt className="font-medium text-foreground">Roadmap</dt>
-              <dd>
-                {spec.milestones.map((name, i) => {
-                  const m = milestoneBySlug(name)
-                  return (
-                    m && (
-                      <span key={name}>
+              {milestones.length > 0 && (
+                <>
+                  <dt className="font-medium text-foreground">Roadmap</dt>
+                  <dd>
+                    {milestones.map((m, i) => (
+                      <span key={m.slug}>
                         {i > 0 && ", "}
                         <Link className={LINK} href={`/roadmap/${m.slug}`}>
                           {m.title}
                         </Link>
                       </span>
-                    )
-                  )
-                })}
-              </dd>
-              {spec.related.length > 0 && (
+                    ))}
+                  </dd>
+                </>
+              )}
+              {related.length > 0 && (
                 <>
                   <dt className="font-medium text-foreground">Related</dt>
                   <dd>
-                    {spec.related.map((n, i) => {
-                      const r = specByNumber(n)
-                      return (
-                        r && (
-                          <span key={n}>
-                            {i > 0 && ", "}
-                            <Link className={LINK} href={`/spec/${r.slug}`}>
-                              {r.number}. {r.title}
-                            </Link>
-                          </span>
-                        )
-                      )
-                    })}
+                    {related.map((r, i) => (
+                      <span key={r.slug}>
+                        {i > 0 && ", "}
+                        <Link className={LINK} href={`/spec/${r.slug}`}>
+                          {r.number}. {r.title}
+                        </Link>
+                      </span>
+                    ))}
                   </dd>
                 </>
               )}
