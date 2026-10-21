@@ -50,7 +50,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 
 <!-- index:start -->
 
-46 specs: 19 done, 9 in progress, 18 planned. Milestones group them on the [roadmap](milestones/README.md).
+47 specs: 19 done, 9 in progress, 19 planned. Milestones group them on the [roadmap](milestones/README.md).
 
 ### Tables and storage
 
@@ -66,6 +66,7 @@ Milestones are done, in progress, planned, or exploring (an idea being looked in
 | 8 | [Table format versions and upgrades](0008-format-versions.md) | Done | 0.3.0, 0.4.0, 0.5.0 | 2026-10-14 |
 | 9 | [Settings](0009-settings.md) | Done | 0.5.0, unreleased | 2026-10-20 |
 | 10 | [Supplemental timestamps](0010-supplemental-timestamps.md) | Planned | – | 2026-10-16 |
+| 47 | [Table and file formats behind boundaries](0047-format-boundaries.md) | Planned | – | 2026-10-21 |
 
 ### Writing
 
@@ -180,6 +181,9 @@ Every decision has an ID and lives in the spec or page it shapes.
 | D22 | Descriptive function names with pandas aliases; continuous aggregates are materialized rollups | [28. Function library](0028-function-library.md) |
 | D23 | Every benchmarked system runs default (as installed) and tuned (its docs' recommendations, precomputation and tuned queries included) | [44. Benchmark harness: timebench](0044-timebench.md) |
 | D24 | The reader has its own DataFusion table provider, not `iceberg-datafusion` | [Embedded engine](engine.md) |
+| D26 | Tables and data files are reached only through lakekit's common table view and `FileFormat`; iceberg-rust only in interop tests | [47. Table and file formats behind boundaries](0047-format-boundaries.md) |
+| D27 | Iceberg and Parquet stay the defaults, and the last-value index stays Parquet | [47. Table and file formats behind boundaries](0047-format-boundaries.md) |
+| D28 | A table's data format is a setting for new files; a table may hold files of several formats | [47. Table and file formats behind boundaries](0047-format-boundaries.md) |
 
 Until 2026-10-19 all of this was one file, `SPEC.md`, with the original plan's phases; on 2026-10-19 the specs were
 regrouped one per feature, with milestones in place of the hand-written roadmap. Both are in git history.

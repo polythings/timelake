@@ -49,6 +49,7 @@ export const SPEC_PAGES: Record<string, () => Promise<{ default: MDXContent }>> 
   "0044-timebench": () => import("@spec/0044-timebench.md"),
   "0045-iiot-benchmark": () => import("@spec/0045-iiot-benchmark.md"),
   "0046-agent-benchmark": () => import("@spec/0046-agent-benchmark.md"),
+  "0047-format-boundaries": () => import("@spec/0047-format-boundaries.md"),
   architecture: () => import("@spec/architecture.md"),
   "deployment-and-cost": () => import("@spec/deployment-and-cost.md"),
   engine: () => import("@spec/engine.md"),
@@ -77,4 +78,5 @@ export const MILESTONE_PAGES: Record<string, () => Promise<{ default: MDXContent
   apps: () => import("@spec/milestones/apps.md"),
   edge: () => import("@spec/milestones/edge.md"),
   "server-mode": () => import("@spec/milestones/server-mode.md"),
+  formats: () => import("@spec/milestones/formats.md"),
 }

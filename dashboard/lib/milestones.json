@@ -202,5 +202,17 @@
     "summary": "An experiment first: the same engine as one long-lived server on local NVMe, with the bucket as the durable copy and Postgres wire and Flight SQL protocols, measured against TimescaleDB before anything is built. It also lets TSBS run with its own loader and query runner, for numbers next to published results.",
     "specs": [43],
     "issues": []
+  },
+  {
+    "number": 18,
+    "slug": "formats",
+    "title": "Any table format, any file format",
+    "status": "planned",
+    "versions": "",
+    "updated": "2026-10-21",
+    "description": "The engine reaches tables and data files through lakekit's boundaries, Iceberg and Parquet by default, Vortex once Iceberg lists it.",
+    "summary": "The engine stops assuming Iceberg and Parquet: tables go through lakekit's common table view, and data files through its `FileFormat` trait, shared with lakeglass. Iceberg and Parquet stay the defaults, so every engine that reads Timelake tables today still does. Vortex data files come once Iceberg's spec lists the format.",
+    "specs": [47],
+    "issues": []
   }
 ]

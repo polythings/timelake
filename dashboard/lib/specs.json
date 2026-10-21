@@ -596,5 +596,18 @@
     "related": [40, 45],
     "issues": [],
     "milestones": ["agents"]
+  },
+  {
+    "number": 47,
+    "slug": "0047-format-boundaries",
+    "title": "Table and file formats behind boundaries",
+    "area": "Tables and storage",
+    "status": "planned",
+    "updated": "2026-10-21",
+    "versions": [],
+    "summary": "The engine, the WASM reader and writer, and maintenance reach tables and data files through two boundaries from [lakekit](https://github.com/polythings/lakekit): a common table view (Iceberg today) and a data file format (Parquet today). What makes Timelake a time-series engine stays here: the head, the last-value index, dedup on read, newest-first scans, rollups, and the SQL functions. Iceberg and Parquet stay the defaults; another format is a choice a table makes, Vortex first once Iceberg lists it.",
+    "related": [1, 2, 7, 9, 12, 13, 21, 24],
+    "issues": [189, 190, 191],
+    "milestones": ["formats"]
   }
 ]
