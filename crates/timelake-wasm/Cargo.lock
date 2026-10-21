@@ -520,11 +520,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -654,8 +652,11 @@ dependencies = [
 [[package]]
 name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
+source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
 dependencies = [
+ "loko-clock",
+ "loko-random",
+ "loko-store",
  "thiserror",
  "uuid",
 ]
@@ -663,7 +664,7 @@ dependencies = [
 [[package]]
 name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
+source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
 dependencies = [
  "apache-avro",
  "arrow-schema",
@@ -747,6 +748,32 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "loko-clock"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "loko-random"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+dependencies = [
+ "getrandom 0.4.3",
+ "js-sys",
+ "rand_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "loko-store"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
 
 [[package]]
 name = "memchr"
@@ -1216,9 +1243,11 @@ dependencies = [
  "bytes",
  "chrono",
  "getrandom 0.2.17",
- "getrandom 0.3.4",
  "js-sys",
  "lakekit-iceberg",
+ "loko-clock",
+ "loko-random",
+ "loko-store",
  "parquet",
  "serde",
  "serde-wasm-bindgen",

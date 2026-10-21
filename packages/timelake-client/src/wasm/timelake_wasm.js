@@ -554,9 +554,6 @@ function __wbg_get_imports() {
             const ret = Object.entries(arg0);
             return ret;
         },
-        __wbg_getRandomValues_a608c4436c19407a: function() { return handleError(function (arg0, arg1) {
-            globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
-        }, arguments); },
         __wbg_get_31af05bd4842a84f: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -701,6 +698,10 @@ function __wbg_get_imports() {
                 state0.a = 0;
             }
         },
+        __wbg_new_with_length_3da0ad195f6f63ba: function(arg0) {
+            const ret = new Uint8Array(arg0 >>> 0);
+            return ret;
+        },
         __wbg_next_33784799010f1bbe: function(arg0) {
             const ret = arg0.next;
             return ret;
@@ -726,10 +727,6 @@ function __wbg_get_imports() {
         },
         __wbg_queueMicrotask_a72f977e97f23c5f: function(arg0) {
             queueMicrotask(arg0);
-        },
-        __wbg_random_5a4cafd2f02395ff: function() {
-            const ret = Math.random();
-            return ret;
         },
         __wbg_resolve_0076e10020304ede: function(arg0) {
             const ret = Promise.resolve(arg0);
@@ -774,7 +771,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 291, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1244, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_bedb11be96d84d49___convert__closures_____invoke___wasm_bindgen_bedb11be96d84d49___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_bedb11be96d84d49___JsError___true_);
             return ret;
         },

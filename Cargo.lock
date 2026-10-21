@@ -2731,8 +2731,11 @@ dependencies = [
 [[package]]
 name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
+source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
 dependencies = [
+ "loko-clock",
+ "loko-random",
+ "loko-store",
  "thiserror",
  "uuid",
 ]
@@ -2740,7 +2743,7 @@ dependencies = [
 [[package]]
 name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=6e863d8b3ecc7bc0255dd97928bb0b442a421478#6e863d8b3ecc7bc0255dd97928bb0b442a421478"
+source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
 dependencies = [
  "apache-avro 0.22.0",
  "arrow-schema",
@@ -2871,6 +2874,24 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "loko-clock"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+
+[[package]]
+name = "loko-random"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+dependencies = [
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "loko-store"
+version = "0.2.0"
+source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
 
 [[package]]
 name = "lru-slab"

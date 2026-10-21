@@ -3,7 +3,7 @@ number: 13
 title: Writes from WebAssembly
 area: Writing
 status: done
-updated: 2026-10-20
+updated: 2026-10-21
 versions: [0.6.0, unreleased]
 related: [2, 7, 19]
 issues: [37]
@@ -11,7 +11,7 @@ issues: [37]
 
 # 13. Writes from WebAssembly
 
-**Done** · updated 2026-10-20 · versions 0.6.0, unreleased · milestone: [Writes from JavaScript](milestones/javascript-writes.md)
+**Done** · updated 2026-10-21 · versions 0.6.0, unreleased · milestone: [Writes from JavaScript](milestones/javascript-writes.md)
 · related: [spec 2](0002-commits.md), [spec 7](0007-table-head.md), [spec 19](0019-compaction.md)
 
 ## Summary
@@ -20,7 +20,7 @@ Append to and maintain tables from Cloudflare Workers and other JavaScript runti
 
 ## Design
 
-**Status:** built and measured in workerd ([`bench/results/WORKERS.md`](../bench/results/WORKERS.md)). `TableWriter` in `@timelake/client` (`/workers` entry with `initWasm` for Workers, which can't compile WebAssembly from bytes) appends and maintains through a `Store` (`r2Store`, `memoryStore`, or the application's). The shared write path lives in `timelake-format` (`write` feature): rows, file writer, commits, maintenance, over lakekit's `Store`, `Clock`, and `Random`; the Iceberg layer under it (manifests, manifest lists, table metadata, the commit protocol, file statistics) is [lakekit](https://github.com/polythings/lakekit)'s `lakekit-iceberg` (D24), with Timelake's last-value index, batch ids and head added through its commit hooks. Measured in workerd: appends of 100,000 rows 0.7 s and 37 MiB; compaction of a day of 24 files (1.2M rows) 2.7 s and 95 MiB. Interop tests: the engine and the shared writer append to and maintain one table in turn (`crates/timelake/tests/shared_writer.rs`). Changes from the design below: the read side of compaction reads a window of pages at a time and merges at most 24 files at once; files written from JavaScript have 8,192-row data pages (setting `data-page-rows`); the WASM host caps row groups being written at 16 MiB. Not yet: creating tables from JavaScript, rollup refresh, signing S3 requests.
+**Status:** built and measured in workerd ([`bench/results/WORKERS.md`](../bench/results/WORKERS.md)). `TableWriter` in `@timelake/client` (`/workers` entry with `initWasm` for Workers, which can't compile WebAssembly from bytes) appends and maintains through a `Store` (`r2Store`, `memoryStore`, or the application's). The shared write path lives in `timelake-format` (`write` feature): rows, file writer, commits, maintenance, over loko's `Store`, `Clock`, and `Random` (through lakekit), with the time and random numbers from loko's JavaScript implementations in the WASM writer; the Iceberg layer under it (manifests, manifest lists, table metadata, the commit protocol, file statistics) is [lakekit](https://github.com/polythings/lakekit)'s `lakekit-iceberg` (D24), with Timelake's last-value index, batch ids and head added through its commit hooks. Measured in workerd: appends of 100,000 rows 0.7 s and 37 MiB; compaction of a day of 24 files (1.2M rows) 2.7 s and 95 MiB. Interop tests: the engine and the shared writer append to and maintain one table in turn (`crates/timelake/tests/shared_writer.rs`). Changes from the design below: the read side of compaction reads a window of pages at a time and merges at most 24 files at once; files written from JavaScript have 8,192-row data pages (setting `data-page-rows`); the WASM host caps row groups being written at 16 MiB. Not yet: creating tables from JavaScript, rollup refresh, signing S3 requests.
 
 **Goal.** Append to Timelake tables, and keep them maintained, from JavaScript runtimes where the Rust engine can't run: Cloudflare Workers first, then browsers, Deno, Bun, and Node. Workers run JavaScript and WebAssembly; Python Workers can't load the native Python package.
 
@@ -56,3 +56,5 @@ Append to and maintain tables from Cloudflare Workers and other JavaScript runti
 - 2026-10-19: was spec 16; specs regrouped one per feature, with milestones on the roadmap.
 - 2026-10-20: the Iceberg layer moved to lakekit (D24). A writer whose clock is behind the table's last update now
   dates its commit at that update, so the snapshot log stays in order.
+- 2026-10-21: the WASM writer takes the time and random numbers from loko's `JsClock` and `JsRandom`; a host without
+  `crypto.getRandomValues` is an error instead of falling back to `Math.random`.

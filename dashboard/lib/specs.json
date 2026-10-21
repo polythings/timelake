@@ -161,7 +161,7 @@
     "title": "Writes from WebAssembly",
     "area": "Writing",
     "status": "done",
-    "updated": "2026-10-20",
+    "updated": "2026-10-21",
     "versions": ["0.6.0", "unreleased"],
     "summary": "Append to and maintain tables from Cloudflare Workers and other JavaScript runtimes: the shared write path (rows, file writer, Iceberg manifests, commits, maintenance) in `timelake-format`, driven by `@timelake/client` through a store. Built and measured in workerd.",
     "related": [2, 7, 19],

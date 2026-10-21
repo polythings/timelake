@@ -19,7 +19,7 @@ use crate::error::{WriteError, WriteResult};
 use crate::iceberg::{DataFile, Entry};
 use crate::metadata::TimelakeMetadata;
 use crate::rows::merge_latest;
-use crate::store::{Clock, Random, Store, uuid_v4};
+use crate::store::{Clock, Random, Services, Store, uuid_v4};
 use crate::summary;
 use crate::table::{TableState, encode_index};
 
@@ -93,11 +93,11 @@ struct TimelakeHooks<'a, S> {
     index: Option<RecordBatch>,
 }
 
-impl<H: Store + Clock + Random, S: BuildHasher> CommitHooks<H> for TimelakeHooks<'_, S> {
+impl<St: Store, C: Clock, R: Random, S: BuildHasher> CommitHooks<St, C, R> for TimelakeHooks<'_, S> {
     type Error = WriteError;
 
-    async fn reload(&mut self, store: &H, location: &str) -> WriteResult<Table> {
-        self.state = TableState::load(store, location).await?;
+    async fn reload(&mut self, services: Services<'_, St, C, R>, location: &str) -> WriteResult<Table> {
+        self.state = TableState::load(services.store, location).await?;
         Ok(self.state.table())
     }
 
@@ -106,7 +106,7 @@ impl<H: Store + Clock + Random, S: BuildHasher> CommitHooks<H> for TimelakeHooks
             && self.props.get(summary::BATCH_ID).is_some_and(|id| base.metadata.history_has_batch(id))
     }
 
-    async fn extra(&mut self, store: &H, _: &Table, snapshot_id: i64) -> WriteResult<Extra> {
+    async fn extra(&mut self, services: Services<'_, St, C, R>, _: &Table, snapshot_id: i64) -> WriteResult<Extra> {
         let mut extra = Extra::default();
         // What a rollup reflects stays recorded until a refresh records something newer.
         let base_summary = self.state.metadata.summary();
@@ -115,9 +115,10 @@ impl<H: Store + Clock + Random, S: BuildHasher> CommitHooks<H> for TimelakeHooks
                 extra.summary.insert(key.into(), v.clone());
             }
         }
-        self.index = new_index(store, &mut self.state, self.change).await?;
+        self.index = new_index(services.store, &mut self.state, self.change).await?;
         if let Some(index) = &self.index {
-            let uri = format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", self.state.location, uuid_v4(store));
+            let uri =
+                format!("{}/metadata/lvi-{snapshot_id}-{}.parquet", self.state.location, uuid_v4(services.random));
             extra.files.push((uri.clone(), encode_index(index)?));
             extra.summary.insert(summary::LAST_VALUE_INDEX.into(), uri);
         }
@@ -136,8 +137,15 @@ pub async fn commit<H: Store + Clock + Random, S: BuildHasher>(
     let table = base.table();
     let mut hooks = TimelakeHooks { state: base, change, props, index: None };
     let props: HashMap<String, String> = props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let (table, info) =
-        lakekit_iceberg::commit(store, table, &change.iceberg(), &props, &CommitOptions::default(), &mut hooks).await?;
+    let (table, info) = lakekit_iceberg::commit(
+        Services::new(store, store, store),
+        table,
+        &change.iceberg(),
+        &props,
+        &CommitOptions::default(),
+        &mut hooks,
+    )
+    .await?;
     let info = CommitInfo {
         snapshot_id: info.snapshot_id,
         version: info.version,

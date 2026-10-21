@@ -223,7 +223,7 @@ impl<'a, H: Store + Clock + Random + WriteLimits> PartitionFiles<'a, H> {
             let page_rows = self.store.data_page_rows();
             let props = writer_properties(&self.table.schema, &self.table.contract, &created_by(), page_rows)?;
             OpenFile {
-                uri: format!("{}/{}.parquet", self.dir(), uuid_v7(self.store)),
+                uri: format!("{}/{}.parquet", self.dir(), uuid_v7(self.store, self.store)),
                 writer: FileWriter::new(self.table.schema.clone(), props)?
                     .with_max_row_group_bytes(self.store.max_row_group_bytes()),
                 pending: Pending::default(),

@@ -80,6 +80,13 @@ impl From<lakekit_core::Error> for WriteError {
     }
 }
 
+/// A store's errors, as lakekit's.
+impl From<lakekit_core::StoreError> for WriteError {
+    fn from(e: lakekit_core::StoreError) -> Self {
+        lakekit_core::Error::from(e).into()
+    }
+}
+
 impl From<ArrowError> for WriteError {
     fn from(e: ArrowError) -> Self {
         Self::Arrow(e)

@@ -13,17 +13,19 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
-use lakekit_iceberg::{Error as StoreError, Result as StoreResult};
+use loko_clock::HasClock;
+use loko_random::HasRandom;
+use loko_store::{Error as StoreError, HasStore, Result as StoreResult};
 use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
 use timelake_format::maintain::{MaintainOptions, MaintainReport, maintain};
-use timelake_format::store::{Clock, Listed, Random, Store, Upload, WriteLimits};
+use timelake_format::store::{Listed, Store, Upload, WriteLimits};
 use timelake_format::table::TableState;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
 
-/// A [`Store`], [`Clock`], and [`Random`] over a JavaScript store object (see the TypeScript `Store` interface).
+/// A [`Store`] over a JavaScript store object (see the TypeScript `Store` interface).
 #[derive(Clone, Debug)]
 struct JsStore {
     store: JsValue,
@@ -148,40 +150,57 @@ impl Store for JsStore {
     }
 }
 
-impl Clock for JsStore {
-    fn now_ms(&self) -> i64 {
-        #[expect(clippy::cast_possible_truncation, reason = "milliseconds since the epoch")]
-        let now = js_sys::Date::now() as i64;
-        now
-    }
+// loko's clock and random numbers for JavaScript hosts exist on wasm32; native builds (the unit
+// tests) use the system's.
+#[cfg(target_arch = "wasm32")]
+type HostClock = loko_clock::JsClock;
+#[cfg(not(target_arch = "wasm32"))]
+type HostClock = loko_clock::StdClock;
+#[cfg(target_arch = "wasm32")]
+type HostRandom = loko_random::JsRandom;
+#[cfg(not(target_arch = "wasm32"))]
+type HostRandom = loko_random::OsRandom;
 
-    async fn sleep(&self, ms: u64) {
-        let promise = Promise::new(&mut |resolve, _| {
-            let global = js_sys::global();
-            if let Ok(set_timeout) = Reflect::get(&global, &"setTimeout".into()).and_then(JsCast::dyn_into::<Function>)
-            {
-                let _ = set_timeout.call2(&global, &resolve, &number(ms));
-            } else {
-                let _ = resolve.call0(&JsValue::NULL);
-            }
-        });
-        let _ = JsFuture::from(promise).await;
+/// What the shared write path runs on in JavaScript: the JavaScript store, and loko's clock
+/// (`Date.now`, `setTimeout`) and random numbers (`crypto.getRandomValues`) for JavaScript hosts.
+#[derive(Clone, Debug)]
+struct JsServices {
+    store: JsStore,
+    clock: HostClock,
+    random: HostRandom,
+}
+
+impl JsServices {
+    fn new(store: JsStore) -> Self {
+        Self { store, clock: HostClock::default(), random: HostRandom::default() }
     }
 }
 
-impl Random for JsStore {
-    fn next_u64(&self) -> u64 {
-        let mut b = [0u8; 8];
-        // getrandom draws from crypto.getRandomValues on wasm32.
-        if getrandom::fill(&mut b).is_err() {
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "random bits")]
-            return (js_sys::Math::random() * 9_007_199_254_740_992.0) as u64;
-        }
-        u64::from_le_bytes(b)
+impl HasStore for JsServices {
+    type Store = JsStore;
+
+    fn store(&self) -> &JsStore {
+        &self.store
     }
 }
 
-impl WriteLimits for JsStore {
+impl HasClock for JsServices {
+    type Clock = HostClock;
+
+    fn clock(&self) -> &HostClock {
+        &self.clock
+    }
+}
+
+impl HasRandom for JsServices {
+    type Random = HostRandom;
+
+    fn random(&self) -> &HostRandom {
+        &self.random
+    }
+}
+
+impl WriteLimits for JsServices {
     fn max_row_group_bytes(&self) -> Option<usize> {
         Some(MAX_ROW_GROUP_BYTES)
     }
@@ -291,7 +310,7 @@ struct JsAppendReport {
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct Writer {
-    host: JsStore,
+    host: JsServices,
     location: String,
     state: Rc<RefCell<Option<TableState>>>,
 }
@@ -305,7 +324,11 @@ impl Writer {
     /// A writer of the table at `location` (its root URI) through `store`.
     #[wasm_bindgen(constructor)]
     pub fn new(store: JsValue, location: &str) -> Writer {
-        Writer { host: JsStore { store }, location: location.trim_end_matches('/').to_string(), state: Rc::default() }
+        Writer {
+            host: JsServices::new(JsStore { store }),
+            location: location.trim_end_matches('/').to_string(),
+            state: Rc::default(),
+        }
     }
 
     /// Appends rows given as newline-delimited JSON objects. Timestamps are epoch milliseconds or
@@ -419,7 +442,11 @@ impl Writer {
 }
 
 /// The table version to write on: the one this writer has, or the current one.
-async fn current(host: &JsStore, location: &str, state: &Rc<RefCell<Option<TableState>>>) -> WriteResult<TableState> {
+async fn current(
+    host: &JsServices,
+    location: &str,
+    state: &Rc<RefCell<Option<TableState>>>,
+) -> WriteResult<TableState> {
     let cached = state.borrow().clone();
     match cached {
         Some(t) => Ok(t),

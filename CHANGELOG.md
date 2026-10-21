@@ -114,7 +114,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 
 - The WASM reader and the writer for JavaScript runtimes read and write Iceberg manifests, manifest lists and table
   metadata through [lakekit](https://github.com/polythings/lakekit), a separate project for table formats without
-  I/O of their own. The files they write are the same as before.
+  I/O of their own. The files they write are the same as before. The writer takes the time and random numbers from
+  [loko](https://github.com/polythings/loko)'s JavaScript implementations; a host without `crypto.getRandomValues` is
+  now an error instead of falling back to `Math.random`.
 - Appends convert a column to the table's type only where no value is lost. A value that doesn't fit (an integer out
   of range, text that doesn't parse, a fraction for an integer column, an integer above 2^53 for a double) is an error
   naming the column; it used to be written as NULL or truncated without a word. Conversions that are never exact, such

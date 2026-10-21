@@ -1,7 +1,7 @@
-//! What the shared write path needs from where it runs: lakekit's [`Store`] for objects, [`Clock`]
-//! for the time, and [`Random`] for random numbers, and the limits of the place it runs
-//! ([`WriteLimits`]). The WASM writer implements them over JavaScript (an R2 binding, `fetch`),
-//! tests over memory.
+//! What the shared write path needs from where it runs: a [`Store`] for objects, a [`Clock`] for the
+//! time, and a [`Random`] for random numbers (loko's services, through lakekit), and the limits of
+//! the place it runs ([`WriteLimits`]). The WASM writer has a store over JavaScript (an R2 binding,
+//! `fetch`) and loko's clock and random numbers for JavaScript hosts; tests use memory.
 
 pub use lakekit_core::{Clock, Listed, MemoryStore, MemoryUpload, Random, Services, Store, Upload, uuid_v4, uuid_v7};
 

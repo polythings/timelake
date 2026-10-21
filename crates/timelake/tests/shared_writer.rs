@@ -13,13 +13,15 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use common::{DAY, T0, batch, opts, rows, scalar_i64, schema, temp_lake};
-use lakekit_core::{Error as StoreError, Result as StoreResult};
+use lakekit_core::{SeededRng, StoreError};
 use timelake::storage::Storage;
 use timelake::{AppendOptions, Lake, MaintainOptions, Session};
 use timelake_format::append::{AppendOptions as SharedAppend, append};
 use timelake_format::error::WriteError;
 use timelake_format::store::{Clock, Listed, Random, Store, Upload, WriteLimits};
 use timelake_format::table::TableState;
+
+type StoreResult<T> = Result<T, StoreError>;
 
 /// The shared writer's host over the engine's storage.
 struct EngineStore {
@@ -150,19 +152,21 @@ impl Store for &EngineStore {
 }
 
 impl Clock for &EngineStore {
-    fn now_ms(&self) -> i64 {
-        chrono::Utc::now().timestamp_millis()
+    fn now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
     }
 
-    async fn sleep(&self, ms: u64) {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    async fn sleep(&self, duration: std::time::Duration) {
+        tokio::time::sleep(duration).await;
     }
 }
 
 impl Random for &EngineStore {
-    fn next_u64(&self) -> u64 {
+    type Rng = SeededRng;
+
+    fn rng(&self) -> SeededRng {
         let s = self.seed.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
-        s ^ (s >> 31) ^ chrono::Utc::now().timestamp_nanos_opt().unwrap().unsigned_abs()
+        SeededRng::new(s ^ (s >> 31) ^ chrono::Utc::now().timestamp_nanos_opt().unwrap().unsigned_abs())
     }
 }
 

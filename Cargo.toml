@@ -47,8 +47,8 @@ tempfile = "3"
 
 # Until lakekit 0.1.0 is on crates.io (polythings/lakekit#7). To work on both, point these at a local checkout.
 [patch.crates-io]
-lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "6e863d8b3ecc7bc0255dd97928bb0b442a421478" }
-lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "6e863d8b3ecc7bc0255dd97928bb0b442a421478" }
+lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "ee74e3c01a552c22a1c0b93267d03d28706dec85" }
+lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "ee74e3c01a552c22a1c0b93267d03d28706dec85" }
 
 [profile.release]
 debug = "line-tables-only"
