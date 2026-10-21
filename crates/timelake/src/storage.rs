@@ -49,8 +49,8 @@ pub struct Storage {
     check: FreshnessCheck,
     /// Connections opened ahead of a cold table load (P3); 0 for local stores.
     warm_connections: usize,
-    /// A cold table load lists the metadata files to find the newest version (else reads the hint).
-    list_on_load: bool,
+    /// How a cold table load finds the newest version.
+    version_lookup: VersionLookup,
     /// The block cache under `store`, if on.
     cache: Option<Arc<CachedStore>>,
     /// Bytes a file's upload buffers before it becomes a multipart upload.
@@ -118,6 +118,66 @@ enum FreshnessCheck {
     List,
 }
 
+impl FromStr for FreshnessCheck {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "head" => Ok(Self::Head),
+            "list" => Ok(Self::List),
+            _ => Err(Error::config(format!("{FRESHNESS_CHECK_OPTION} must be head or list, got {s:?}"))),
+        }
+    }
+}
+
+/// How a table's first load in a process finds the newest version (see [`VERSION_LOOKUP_OPTION`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VersionLookup {
+    /// LIST the metadata files, together with the head GET.
+    List,
+    /// GET the version hint with the head, then check for the next version.
+    Hint,
+}
+
+impl FromStr for VersionLookup {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "list" => Ok(Self::List),
+            "hint" => Ok(Self::Hint),
+            _ => Err(Error::config(format!("{VERSION_LOOKUP_OPTION} must be list or hint, got {s:?}"))),
+        }
+    }
+}
+
+/// The block cache (see [`CACHE_OPTION`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheMode {
+    Off,
+    Memory,
+    /// Memory and a directory shared by every process on the machine.
+    Disk,
+}
+
+impl FromStr for CacheMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "memory" => Ok(Self::Memory),
+            "disk" => Ok(Self::Disk),
+            _ => Err(Error::config(format!("{CACHE_OPTION} must be off, memory or disk, got {s:?}"))),
+        }
+    }
+}
+
+/// Removes option `key` from `options` and parses it.
+fn take_option<T: FromStr<Err = Error>>(options: &mut HashMap<String, String>, key: &str) -> Result<Option<T>> {
+    options.remove(key).map(|v| v.parse()).transpose()
+}
+
 /// What [`Storage::write_versioned`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VersionedWrite {
@@ -141,7 +201,7 @@ impl Storage {
     /// of a missing key is slow). `list` needs S3, GCS or Azure.
     pub fn open(url: &Url, mut options: HashMap<String, String>) -> Result<Self> {
         let local_root = options.remove(LOCAL_ROOT_OPTION);
-        let (check, list_on_load, warm_connections) = read_options(&mut options)?;
+        let read = ReadOptions::take(&mut options)?;
         let cache = cache_config(&mut options, url.scheme())?;
         let scheme = url.scheme();
         let authority = url.host_str().unwrap_or_default();
@@ -222,17 +282,18 @@ impl Storage {
         let (store, cached) = with_cache(store, &base, endpoint.as_deref(), cache);
         let mut storage = Self::new(store, base, listable)?;
         storage.cache = cached;
-        storage.check = match (&lister, check) {
-            (Some(_), Some(true)) | (Some((_, true)), None) => FreshnessCheck::List,
-            (None, Some(true)) => {
+        // Unset, the check is the faster one for the store.
+        storage.check = match (&lister, read.freshness_check) {
+            (Some(_), Some(FreshnessCheck::List)) | (Some((_, true)), None) => FreshnessCheck::List,
+            (None, Some(FreshnessCheck::List)) => {
                 return Err(Error::config(format!("{FRESHNESS_CHECK_OPTION}=list needs S3, GCS or Azure")));
             }
             _ => FreshnessCheck::Head,
         };
         storage.lister = lister.map(|(l, _)| Lister(l));
-        storage.list_on_load = list_on_load;
+        storage.version_lookup = read.version_lookup;
         if scheme != "file" && scheme != "memory" {
-            storage.warm_connections = warm_connections;
+            storage.warm_connections = read.warm_connections;
         }
         Ok(storage)
     }
@@ -247,7 +308,7 @@ impl Storage {
             lister: None,
             check: FreshnessCheck::Head,
             warm_connections: 0,
-            list_on_load: true,
+            version_lookup: VersionLookup::List,
             cache: None,
             upload_buffer: UPLOAD_BUFFER,
         })
@@ -279,13 +340,13 @@ impl Storage {
     /// This store as `timelake_version_lookup=hint` would open it.
     #[cfg(test)]
     pub(crate) fn hint_lookup(mut self) -> Self {
-        self.list_on_load = false;
+        self.version_lookup = VersionLookup::Hint;
         self
     }
 
     /// Whether a cold table load lists the metadata files (see [`VERSION_LOOKUP_OPTION`]).
     pub(crate) fn list_on_load(&self) -> bool {
-        self.list_on_load
+        self.version_lookup == VersionLookup::List
     }
 
     /// Whether the store is object storage, not local files or memory: each request is a round trip.
@@ -809,31 +870,30 @@ impl DeferredWriter {
     }
 }
 
-/// The read options from the storage options (removed from `options`): the freshness check
-/// (`None`: the store's default), whether a cold load lists, and connections to warm up.
-fn read_options(options: &mut HashMap<String, String>) -> Result<(Option<bool>, bool, usize)> {
-    let check = match options.remove(FRESHNESS_CHECK_OPTION).as_deref().map(str::to_ascii_lowercase).as_deref() {
-        None => None,
-        Some("head") => Some(false),
-        Some("list") => Some(true),
-        Some(other) => {
-            return Err(Error::config(format!("{FRESHNESS_CHECK_OPTION} must be head or list, got {other:?}")));
-        }
-    };
-    let list_on_load = match options.remove(VERSION_LOOKUP_OPTION).as_deref().map(str::to_ascii_lowercase).as_deref() {
-        None | Some("list") => true,
-        Some("hint") => false,
-        Some(other) => {
-            return Err(Error::config(format!("{VERSION_LOOKUP_OPTION} must be list or hint, got {other:?}")));
-        }
-    };
-    let warm_connections = match options.remove(WARM_CONNECTIONS_OPTION) {
-        Some(n) => n.trim().parse().map_err(|_| {
-            Error::config(format!("{WARM_CONNECTIONS_OPTION} must be a non-negative integer, got {n:?}"))
-        })?,
-        None => 0,
-    };
-    Ok((check, list_on_load, warm_connections))
+/// The reader's storage options.
+struct ReadOptions {
+    /// `None`: the store's faster check.
+    freshness_check: Option<FreshnessCheck>,
+    version_lookup: VersionLookup,
+    /// Connections to open ahead of a cold load.
+    warm_connections: usize,
+}
+
+impl ReadOptions {
+    /// The reader's options among `options`, which loses them.
+    fn take(options: &mut HashMap<String, String>) -> Result<Self> {
+        let warm_connections = match options.remove(WARM_CONNECTIONS_OPTION) {
+            Some(n) => n.trim().parse().map_err(|_| {
+                Error::config(format!("{WARM_CONNECTIONS_OPTION} must be a non-negative integer, got {n:?}"))
+            })?,
+            None => 0,
+        };
+        Ok(Self {
+            freshness_check: take_option(options, FRESHNESS_CHECK_OPTION)?,
+            version_lookup: take_option(options, VERSION_LOOKUP_OPTION)?.unwrap_or(VersionLookup::List),
+            warm_connections,
+        })
+    }
 }
 
 /// `store` under the block cache, if on (and the cache, for its statistics).
@@ -865,14 +925,13 @@ fn cache_config(options: &mut HashMap<String, String>, scheme: &str) -> Result<O
     }
     let request = bytes(options, CACHE_REQUEST_BYTES_OPTION, DEFAULT_CACHE_REQUEST_BYTES)?;
     let dir = options.remove(CACHE_DIR_OPTION).map(PathBuf::from);
+    // On by default where each request is a round trip.
     let remote = !matches!(scheme, "file" | "memory");
-    let mode = options.remove(CACHE_OPTION).map(|m| m.trim().to_ascii_lowercase());
-    let disk = match mode.as_deref() {
-        None if remote => false,
-        None | Some("off") => return Ok(None),
-        Some("memory") => false,
-        Some("disk") => true,
-        Some(other) => return Err(Error::config(format!("{CACHE_OPTION} must be off, memory or disk, got {other:?}"))),
+    let default = if remote { CacheMode::Memory } else { CacheMode::Off };
+    let disk = match take_option(options, CACHE_OPTION)?.unwrap_or(default) {
+        CacheMode::Off => return Ok(None),
+        CacheMode::Memory => false,
+        CacheMode::Disk => true,
     };
     let disk = if disk {
         let dir = dir.or_else(default_cache_dir).ok_or_else(|| {
@@ -977,10 +1036,19 @@ mod tests {
             (VERSION_LOOKUP_OPTION.to_string(), "hint".to_string()),
         ]);
         let s = Storage::open(&Url::parse("s3://b").unwrap(), tigris_hint).unwrap();
-        assert_eq!((s.check, s.list_on_load), (FreshnessCheck::List, false));
+        assert_eq!((s.check, s.version_lookup), (FreshnessCheck::List, VersionLookup::Hint));
         let fast = Storage::open(&Url::parse("s3://b").unwrap(), HashMap::from([("aws_region".into(), "x".into())]));
         let fast = fast.unwrap();
-        assert_eq!((fast.warm_connections, fast.list_on_load), (0, true));
+        assert_eq!((fast.warm_connections, fast.version_lookup), (0, VersionLookup::List));
+        let lookup = HashMap::from([(VERSION_LOOKUP_OPTION.to_string(), "sometimes".to_string())]);
+        let err = Storage::open(&Url::parse("memory://").unwrap(), lookup).unwrap_err().to_string();
+        assert_eq!(err, "timelake_version_lookup must be list or hint, got \"sometimes\"");
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().to_string_lossy().to_string();
+        let cache = HashMap::from([(CACHE_OPTION.to_string(), "Disk".to_string()), (CACHE_DIR_OPTION.into(), dir)]);
+        assert!(Storage::open(&Url::parse("memory://").unwrap(), cache).unwrap().cache.is_some());
+        let cache = HashMap::from([(CACHE_OPTION.to_string(), "ssd".to_string())]);
+        assert!(Storage::open(&Url::parse("memory://").unwrap(), cache).is_err());
     }
 
     /// The disk cache's keys name the endpoint requests go to, however it was given (here as
