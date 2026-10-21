@@ -16,6 +16,7 @@ use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
+use timelake_format::file::WASM_DATA_PAGE_ROWS;
 use timelake_format::host::{Host, Listed, Upload};
 use timelake_format::maintain::{MaintainOptions, MaintainReport, maintain};
 use timelake_format::table::TableState;
@@ -167,7 +168,7 @@ impl Host for JsHost {
     }
 
     fn data_page_rows(&self) -> usize {
-        DATA_PAGE_ROWS
+        WASM_DATA_PAGE_ROWS
     }
 
     async fn sleep(&self, ms: u64) {
@@ -186,10 +187,6 @@ impl Host for JsHost {
 
 /// The most a row group being written holds in memory before it goes out: Workers have 128 MB.
 const MAX_ROW_GROUP_BYTES: usize = 16 << 20;
-
-/// Rows per data page in files written from JavaScript, unless the table sets `data-page-rows`:
-/// compaction in a Worker holds a page per column of each file it merges.
-const DATA_PAGE_ROWS: usize = 8 * 1024;
 
 /// Rows per batch when decoding JSON rows.
 const JSON_BATCH_ROWS: usize = 8 * 1024;

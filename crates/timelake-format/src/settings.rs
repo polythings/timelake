@@ -625,6 +625,28 @@ mod tests {
     use super::*;
     use crate::{Contract, property};
 
+    /// The default the docs give for `data-page-rows` is the writers' constants.
+    #[cfg(feature = "write")]
+    #[test]
+    fn data_page_rows_default_is_the_writers() {
+        use crate::file::{DATA_PAGE_ROWS, WASM_DATA_PAGE_ROWS};
+
+        let thousands = |n: usize| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, c) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        };
+        let expected =
+            format!("{}; {} when written from WebAssembly", thousands(DATA_PAGE_ROWS), thousands(WASM_DATA_PAGE_ROWS));
+        assert_eq!(find("data-page-rows").unwrap().default.to_string(), expected);
+    }
+
     #[test]
     fn names_are_unique_kebab_case_and_found_in_both_spellings() {
         for (i, s) in SETTINGS.iter().enumerate() {

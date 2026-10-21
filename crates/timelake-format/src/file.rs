@@ -72,6 +72,10 @@ pub fn compression(codec: &str, level: Option<&str>) -> Result<Compression, Parq
 /// Rows per data page when the table doesn't set `data-page-rows`: Parquet's own default.
 pub const DATA_PAGE_ROWS: usize = 20_000;
 
+/// Rows per data page in files written from WebAssembly, unless the table sets `data-page-rows`:
+/// compaction in a Worker holds a page per column of each file it merges.
+pub const WASM_DATA_PAGE_ROWS: usize = 8 * 1024;
+
 /// What data files record as their writer (`created_by`): the engine and the WASM writer write
 /// the same bytes.
 pub fn created_by() -> String {
