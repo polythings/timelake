@@ -12,6 +12,7 @@ use timelake::datafusion::datasource::file_format::file_compression_type::FileCo
 use timelake::datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOptions, SessionContext};
 use timelake::{AppendOptions, AppendResult, Chunk, Table, TableOptions};
 
+use crate::info::megabytes;
 use crate::{parse_duration, parse_kv};
 
 /// How to create a table.
@@ -238,7 +239,7 @@ impl<'a> Loader<'a> {
             self.appends,
             r.rows,
             r.files,
-            r.bytes as f64 / 1e6,
+            megabytes(r.bytes),
             r.commit.duration.as_secs_f64() * 1000.0,
             self.started.elapsed().as_secs_f64()
         );
