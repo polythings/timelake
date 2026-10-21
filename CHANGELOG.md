@@ -171,6 +171,8 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   removes them: the upload of the file being written, those of the other partitions' files, and uploads cut off when
   another one failed. They are now aborted, or run to their end and deleted. (A part that fails only once the file is
   finished can still leave its upload open: object_store gives no way to abort it.)
+- A stray file in the disk cache's directory (such as macOS's `.DS_Store`), or an object directory removed while a
+  sweep ran, stopped every sweep, so the disk cache grew past its budget. Sweeps now pass over such entries.
 
 ### Changed
 

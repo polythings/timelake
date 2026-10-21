@@ -698,10 +698,13 @@ fn touch(path: &std::path::Path) {
 }
 
 fn sweep(dir: &std::path::Path, budget: u64) -> std::io::Result<()> {
+    // Entries that can't be listed (a stray file such as `.DS_Store`, an object directory another
+    // sweep just removed) are passed over: one of them must not stop every sweep.
+    let entries = |dir: PathBuf| std::fs::read_dir(dir).into_iter().flatten().flatten();
     let mut blocks: Vec<(SystemTime, u64, PathBuf)> = vec![];
     for prefix in std::fs::read_dir(dir)?.flatten() {
-        for object in std::fs::read_dir(prefix.path())?.flatten() {
-            for file in std::fs::read_dir(object.path())?.flatten() {
+        for object in entries(prefix.path()) {
+            for file in entries(object.path()) {
                 let name = file.file_name();
                 if name == "meta.json" || name.to_string_lossy().contains(".tmp-") {
                     continue;
@@ -964,6 +967,10 @@ mod tests {
             write_block(&disk.object_dir(k), &info(k), 0, &[0; 1000]).unwrap();
             std::thread::sleep(Duration::from_millis(20));
         }
+        // Files that aren't the cache's, where directories are expected, are passed over.
+        std::fs::write(dir.path().join(".DS_Store"), b"").unwrap();
+        let prefix = disk.object_dir("z").parent().unwrap().to_path_buf();
+        std::fs::write(prefix.join(".DS_Store"), b"").unwrap();
         sweep(dir.path(), 2500).unwrap();
         let left: Vec<bool> = ["x", "y", "z"].iter().map(|k| disk.object_dir(k).join("0").exists()).collect();
         assert_eq!(left, [false, true, true], "the oldest block goes, and its directory with it");
