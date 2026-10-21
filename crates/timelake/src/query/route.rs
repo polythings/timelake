@@ -26,6 +26,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{cast, coalesce, ident, lit};
+use timelake_format::rollup::FunctionFamily;
 
 use super::PLANNING_REUSE;
 use super::gaps;

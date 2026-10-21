@@ -20,6 +20,7 @@ use datafusion::logical_expr::expr::AggregateFunction;
 use datafusion::logical_expr::{Aggregate, LogicalPlan, Projection};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{Expr, lit};
+use timelake_format::rollup::FunctionFamily;
 
 use super::rollup::unalias;
 use super::settings::session;

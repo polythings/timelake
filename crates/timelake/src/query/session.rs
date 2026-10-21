@@ -6,7 +6,7 @@ use arrow::array::{RecordBatch, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::functions_window::expr_fn::row_number;
-use datafusion::logical_expr::ExprFunctionExt;
+use datafusion::logical_expr::{AggregateUDF, ExprFunctionExt};
 use datafusion::prelude::{DataFrame, SessionConfig, SessionContext, ident, lit};
 use datafusion::sql::TableReference;
 use datafusion::sql::sqlparser::dialect::dialect_from_str;
@@ -24,6 +24,7 @@ use crate::lake::Lake;
 use crate::rollup::{Definition, RollupRefresh};
 use crate::{Chunk, TableOptions, parse_duration, property};
 use crate::{DEFAULT_NAMESPACE, TableName};
+use timelake_format::rollup::FunctionFamily;
 
 /// Name of the helper column of [`Session::latest`]'s fallback query.
 const ROW_NUMBER: &str = "__timelake_row_number";
@@ -129,15 +130,9 @@ impl Session {
         {
             ctx.register_udwf(f);
         }
-        for output in super::signal::Output::ALL {
-            ctx.register_udaf(super::signal::udaf(output));
-        }
-        for output in super::gaps::Output::ALL {
-            ctx.register_udaf(super::gaps::udaf(output));
-        }
-        for output in super::flatline::Output::ALL {
-            ctx.register_udaf(super::flatline::udaf(output));
-        }
+        register_family(&ctx, super::signal::udaf);
+        register_family(&ctx, super::gaps::udaf);
+        register_family(&ctx, super::flatline::udaf);
         Self { lake, ctx, catalog, routes }
     }
 
@@ -320,6 +315,13 @@ impl Session {
             .filter(ident(ROW_NUMBER).eq(lit(1u64)))?
             .drop_columns(&[ROW_NUMBER])?;
         Ok(df)
+    }
+}
+
+/// Registers an aggregate for each function of family `F`, made by `udaf`.
+fn register_family<F: FunctionFamily>(ctx: &SessionContext, udaf: fn(F) -> AggregateUDF) {
+    for &f in F::ALL {
+        ctx.register_udaf(udaf(f));
     }
 }
 

@@ -11,6 +11,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{FormatError, Result};
 
+/// A family of SQL functions, one per variant: what each returns of the same work.
+pub trait FunctionFamily: Copy + 'static {
+    /// Every function of the family.
+    const ALL: &'static [Self];
+
+    /// The SQL name.
+    fn name(self) -> &'static str;
+
+    /// The function called `name`, if it is one of these.
+    fn of(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|f| f.name() == name)
+    }
+}
+
 /// A signal aggregate over readings `(time, value)`, by what it returns from a group's runs of
 /// readings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,12 +41,10 @@ pub enum SignalFunction {
     State,
 }
 
-impl SignalFunction {
-    /// Every signal aggregate.
-    pub const ALL: [Self; 5] = [Self::Mean, Self::Integral, Self::CounterDiff, Self::CounterRate, Self::State];
+impl FunctionFamily for SignalFunction {
+    const ALL: &'static [Self] = &[Self::Mean, Self::Integral, Self::CounterDiff, Self::CounterRate, Self::State];
 
-    /// The SQL name.
-    pub fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Mean => "time_weighted_mean",
             Self::Integral => "integral",
@@ -41,12 +53,9 @@ impl SignalFunction {
             Self::State => "time_weighted_state",
         }
     }
+}
 
-    /// The aggregate called `name`, if it is one of these.
-    pub fn of(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|o| o.name() == name)
-    }
-
+impl SignalFunction {
     /// Whether the result depends on how the signal moves between readings.
     pub fn takes_method(self) -> bool {
         matches!(self, Self::Mean | Self::Integral | Self::State)
@@ -94,22 +103,15 @@ pub enum GapFunction {
     State,
 }
 
-impl GapFunction {
-    /// Every gap aggregate.
-    pub const ALL: [Self; 3] = [Self::Count, Self::Seconds, Self::State];
+impl FunctionFamily for GapFunction {
+    const ALL: &'static [Self] = &[Self::Count, Self::Seconds, Self::State];
 
-    /// The SQL name.
-    pub fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Count => "gap_count",
             Self::Seconds => "gap_seconds",
             Self::State => "gap_state",
         }
-    }
-
-    /// The aggregate called `name`, if it is one of these.
-    pub fn of(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|o| o.name() == name)
     }
 }
 

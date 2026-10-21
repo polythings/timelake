@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 use crate::lake::Lake;
 use crate::rollup::{Aggregate, Definition, RollupFunction};
 use crate::table::Table;
-use timelake_format::rollup::GapFunction;
+use timelake_format::rollup::{FunctionFamily, GapFunction};
 
 /// The width of `date_bin(width, <time>)` (`time_bucket` is its alias) in microseconds: a fixed
 /// width and the default origin. `None` for any other expression.

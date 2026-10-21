@@ -23,6 +23,7 @@ use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::utils::format_state_name;
 use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 use datafusion::prelude::{Expr, lit};
+use timelake_format::rollup::FunctionFamily;
 
 use super::functions::literal_arg;
 use super::lists::{list_items, list_of_structs, list_type};

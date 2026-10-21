@@ -34,6 +34,7 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, GroupsAccumulator, ScalarFunctionArgs, ScalarUDF,
     ScalarUDFImpl, Signature, Volatility,
 };
+use timelake_format::rollup::FunctionFamily;
 
 use super::functions::literal_arg;
 use super::lists::{list_items, list_of_structs, list_type};

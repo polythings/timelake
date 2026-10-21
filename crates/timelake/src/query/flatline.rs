@@ -29,6 +29,7 @@ use super::gaps::threshold_of_literal;
 use super::lists::{list_items, list_of_structs, list_type};
 use super::runs::{AllGroups, Input, OneGroup, Run, RunAggregate, Runs};
 use super::time;
+use timelake_format::rollup::FunctionFamily;
 
 /// What a flatline aggregate returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,19 +38,14 @@ pub(crate) enum Output {
     Seconds,
 }
 
-impl Output {
-    pub(crate) const ALL: [Output; 2] = [Output::Count, Output::Seconds];
+impl FunctionFamily for Output {
+    const ALL: &'static [Self] = &[Self::Count, Self::Seconds];
 
-    pub(crate) fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Count => "flatline_count",
             Self::Seconds => "flatline_seconds",
         }
-    }
-
-    /// The aggregate called `name`, if it is one of these.
-    pub(crate) fn of(name: &str) -> Option<Output> {
-        Self::ALL.into_iter().find(|o| o.name() == name)
     }
 }
 

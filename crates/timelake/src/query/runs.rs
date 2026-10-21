@@ -17,6 +17,7 @@ use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::expr::AggregateFunction;
 use datafusion::logical_expr::{Accumulator, EmitTo, ExprSchemable, GroupsAccumulator};
 use datafusion::prelude::Expr;
+use timelake_format::rollup::FunctionFamily;
 
 use super::rollup::unalias;
 
