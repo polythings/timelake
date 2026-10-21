@@ -2,7 +2,6 @@
 //! (spec 20), so no separate compaction job is needed.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use arrow::array::RecordBatch;
 use futures::StreamExt;
@@ -76,21 +75,15 @@ impl Table {
             }
         };
         if files.is_empty() {
-            let commit = CommitInfo {
-                snapshot_id: 0,
-                version: self.version(),
-                attempts: 0,
-                duration: Duration::ZERO,
-                duplicate: false,
-            };
+            let commit = CommitInfo { version: self.version(), ..CommitInfo::default() };
             return Ok((self.clone(), AppendResult::nothing(commit)));
         }
         let (n_files, bytes) = (files.len(), files.iter().map(DataFile::file_size_in_bytes).sum());
         let paths: Vec<String> = files.iter().map(|f| f.file_path().to_string()).collect();
 
-        let mut props = opts.properties.clone();
-        if let Some(id) = &opts.batch_id {
-            props.insert(summary::BATCH_ID.into(), id.clone());
+        let mut props = opts.properties;
+        if let Some(id) = opts.batch_id {
+            props.insert(summary::BATCH_ID.into(), id);
         }
         let committed = commit(self, Change::Append { files, latest }, props, uploads).await;
         if !matches!(&committed, Ok((_, info)) if !info.duplicate) && !matches!(committed, Err(Error::CommitUnknown(_)))
