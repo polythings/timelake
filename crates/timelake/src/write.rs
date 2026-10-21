@@ -263,7 +263,7 @@ mod shared_iceberg_tests {
         for m in &list {
             ours.extend(shared::read_manifest(m, &storage.read(&m.path).await.unwrap()).unwrap());
         }
-        let mut theirs = t.files().await.unwrap();
+        let mut theirs = t.files().await.unwrap().to_vec();
         theirs.sort_by(|a, b| a.data_file.file_path().cmp(b.data_file.file_path()));
         ours.sort_by(|a, b| a.file.path.cmp(&b.file.path));
         assert_eq!(ours.len(), theirs.len());
@@ -336,7 +336,7 @@ mod codec_tests {
         o.properties.insert(timelake_format::property::COMPRESSION_CODEC.into(), "LZ4".into());
         let t = lake.create_table("iot.lz4", &schema(), o).await.unwrap();
         let (t, _) = t.append(&[batch(&[(T0, 1, 1.0)])], AppendOptions::default()).await.unwrap();
-        let file = t.files().await.unwrap().remove(0);
+        let file = t.files().await.unwrap()[0].clone();
         let bytes = lake.storage().read(file.data_file.file_path()).await.unwrap();
         let reader = SerializedFileReader::new(bytes).unwrap();
         assert_eq!(reader.metadata().row_group(0).column(0).compression(), Compression::LZ4_RAW);

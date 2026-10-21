@@ -618,7 +618,7 @@ mod tests {
             let files = t.files().await.unwrap();
             assert_eq!(files.iter().map(|f| f.data_file.record_count()).sum::<u64>(), 2, "{fault:?}");
             let paths = store.paths().await;
-            for f in &files {
+            for f in files.iter() {
                 assert!(paths.iter().any(|p| f.data_file.file_path().ends_with(p.as_str())), "{fault:?}");
             }
         }

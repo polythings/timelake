@@ -281,7 +281,7 @@ async fn refresh_now(lake: &Lake, name: &TableName, raw: Option<&Table>, mode: R
     if !in_history(&raw, &rollup) {
         // The raw table went back (a rollback): start over, recording that nothing is reflected
         // yet, so routing reads the raw table until the rollup is computed again.
-        let removed = rollup.files().await?;
+        let removed = rollup.files().await?.to_vec();
         let change = Change::Delete { removed, lvi_cutoff: Some(i64::MAX) };
         rollup = commit(&rollup, change, Reflects::Nothing.record(), Uploads::default()).await?.0;
         after = None;

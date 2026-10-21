@@ -62,7 +62,7 @@ impl TableInfo {
         let contract = t.contract().clone();
 
         let mut by_partition: BTreeMap<Option<i32>, PartitionInfo> = BTreeMap::new();
-        for f in &files {
+        for f in files.iter() {
             let p = file_partition(&f.data_file);
             let label = match (p, contract.chunk) {
                 (Some(v), Some(chunk)) => chunk.label(v),

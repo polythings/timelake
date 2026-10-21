@@ -179,7 +179,7 @@ mod tests {
         // The same version read through its manifests.
         let metadata = t.metadata().clone();
         let manifests = Table::new(lake.clone(), t.name().clone(), t.location().to_string(), 3, metadata).unwrap();
-        let mut expected = manifests.files().await.unwrap();
+        let mut expected = manifests.files().await.unwrap().to_vec();
         expected.sort_by(|a, b| a.data_file.file_path().cmp(b.data_file.file_path()));
         let mut got = files.clone();
         got.sort_by(|a, b| a.data_file.file_path().cmp(b.data_file.file_path()));

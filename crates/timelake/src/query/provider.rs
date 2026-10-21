@@ -147,7 +147,7 @@ impl TimelakeProvider {
         let scan = Scan::new(table, state, projection, filters)?;
         match self.kind {
             Kind::Latest => scan_latest(table, projection).await,
-            Kind::Data => scan.data(table.files().await?, limit, self.series_order).await,
+            Kind::Data => scan.data(&table.files().await?, limit, self.series_order).await,
             Kind::Newest(newest) => scan.newest(newest).await,
         }
     }
@@ -243,7 +243,7 @@ impl<'a> Scan<'a> {
     /// A scan of `files`, data files of `table`; with `series_order`, for a signal aggregate.
     async fn data(
         &self,
-        files: Vec<LiveEntry>,
+        files: &[LiveEntry],
         limit: Option<usize>,
         series_order: Option<Order>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
@@ -317,7 +317,7 @@ impl<'a> Scan<'a> {
         let Scan { table, .. } = *self;
         let files = table.files().await?;
         let mut partitions: BTreeMap<Option<i32>, (i64, Vec<LiveEntry>)> = BTreeMap::new();
-        for f in files {
+        for f in files.iter().cloned() {
             let entry = partitions.entry(crate::write::file_partition(&f.data_file)).or_insert((i64::MIN, vec![]));
             entry.0 = entry.0.max(time_bounds(table, &f).1);
             entry.1.push(f);
@@ -326,7 +326,7 @@ impl<'a> Scan<'a> {
         partitions.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
         let scans = partitions
             .into_iter()
-            .map(|(last, files)| async move { Ok::<_, DataFusionError>((self.data(files, None, None).await?, last)) });
+            .map(|(last, files)| async move { Ok::<_, DataFusionError>((self.data(&files, None, None).await?, last)) });
         let waves = futures::stream::iter(scans).buffered(CONCURRENT_PARTITION_SCANS).try_collect::<Vec<_>>().await?;
         let time = table.contract().time_column.clone().unwrap_or_default();
         Ok(Arc::new(NewestFirstExec::try_new(waves, newest, &time)?))
@@ -360,19 +360,19 @@ impl<'a> Scan<'a> {
     /// Rows are deduplicated before the filters apply, so files that may share keys are only pruned
     /// by filters on the key columns: an older copy of a row must not outlive a newer one that a
     /// filter on another column would have pruned.
-    fn select_files(&self, files: Vec<LiveEntry>) -> DfResult<Selection> {
+    fn select_files(&self, files: &[LiveEntry]) -> DfResult<Selection> {
         let Scan { table, state, filters, .. } = *self;
         let contract = table.contract();
         let keys = contract.sort_columns();
         let read_dedup = contract.dedup && READ_DEDUP.of(state.config().options(), contract);
         if !read_dedup || keys.is_empty() {
-            let keep = self.prune(&files, filters)?;
-            return Ok((files.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect(), vec![], vec![]));
+            let keep = self.prune(files, filters)?;
+            return Ok((kept(files, &keep), vec![], vec![]));
         }
         let on_keys: Vec<Expr> =
             filters.iter().filter(|e| e.column_refs().iter().all(|c| keys.contains(&c.name))).cloned().collect();
-        let keep = self.prune(&files, &on_keys)?;
-        let files: Vec<LiveEntry> = files.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect();
+        let keep = self.prune(files, &on_keys)?;
+        let files = kept(files, &keep);
         let schema = table.schema();
         let key_indices = keys.iter().map(|k| schema.index_of(k)).collect::<Result<Vec<_>, _>>()?;
         let mut overlapping = overlapping_groups(&schema, &key_indices, &files);
@@ -620,6 +620,11 @@ impl<'a> Scan<'a> {
         futures::future::try_join_all(fetches).await?;
         Ok(())
     }
+}
+
+/// The `files` that `keep` says to keep.
+fn kept(files: &[LiveEntry], keep: &[bool]) -> Vec<LiveEntry> {
+    files.iter().zip(keep).filter(|(_, k)| **k).map(|(f, _)| f.clone()).collect()
 }
 
 /// Time partitions a newest-first scan plans at once: each reads the footers of its files.

@@ -288,9 +288,10 @@ impl Table {
     }
 
     /// All live data files of the current snapshot (an error with delete files, as [`Self::manifests`]).
-    pub async fn files(&self) -> Result<Vec<LiveEntry>> {
+    /// Shared with the table version that knows them, not copied.
+    pub async fn files(&self) -> Result<Arc<Vec<LiveEntry>>> {
         if let Some(files) = &self.files {
-            return Ok(files.as_ref().clone());
+            return Ok(Arc::clone(files));
         }
         let manifests = self.manifests().await?;
         let loaded = futures::future::try_join_all(manifests.iter().map(|m| self.lake.manifest(m))).await?;
@@ -298,7 +299,7 @@ impl Table {
             loaded.iter().flat_map(|es| es.iter().filter(|e| e.status != ManifestStatus::Deleted).cloned()).collect();
         match live.iter().find(|e| e.data_file.content_type() != DataContentType::Data) {
             Some(e) => Err(self.has_deletes(e.data_file.file_path())),
-            None => Ok(live),
+            None => Ok(Arc::new(live)),
         }
     }
 
