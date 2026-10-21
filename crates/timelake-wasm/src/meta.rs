@@ -84,7 +84,7 @@ impl TableMeta {
         let metadata = Metadata::parse(json.as_bytes())?;
         let properties = metadata.properties();
         let contract = Contract::from_properties(&properties)?;
-        contract.check_readable().map_err(|e| Error::invalid(e.0))?;
+        contract.check_readable().map_err(Error::Unreadable)?;
         let schema = metadata
             .columns()?
             .into_iter()

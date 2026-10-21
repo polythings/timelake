@@ -29,7 +29,7 @@ pub struct Head {
 impl Head {
     /// Parses a head written with a built-in codec (`arrow` or `json`).
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let head = Contents::decode(bytes, built_in).map_err(|e| Error::invalid(e.0))?;
+        let head = Contents::decode(bytes, built_in).map_err(Error::Unreadable)?;
         let meta = TableMeta::parse(&head.metadata_json)?;
         let by_id = meta.fields_by_id();
         let files = head.files.iter().map(|e| DataFile::from_entry(e, &by_id)).collect();

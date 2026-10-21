@@ -20,7 +20,7 @@ use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow_ipc::CompressionType;
 use arrow_ipc::reader::StreamReader;
 use arrow_ipc::writer::{IpcWriteOptions, StreamWriter};
-use arrow_schema::{ArrowError, DataType, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit};
 use arrow_select::concat::concat_batches;
 use serde::{Deserialize, Serialize};
 
@@ -105,18 +105,6 @@ pub fn built_in(name: &str) -> Option<&'static dyn HeadCodec> {
     }
 }
 
-impl From<ArrowError> for FormatError {
-    fn from(e: ArrowError) -> Self {
-        Self::new(format!("head: {e}"))
-    }
-}
-
-impl From<serde_json::Error> for FormatError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::new(format!("head: {e}"))
-    }
-}
-
 /// The content of a head, independent of its encoding.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HeadDoc {
@@ -153,8 +141,7 @@ impl HeadCodec for ArrowCodec {
     }
 
     fn encode(&self, doc: &HeadDoc) -> Result<Vec<u8>> {
-        let options =
-            IpcWriteOptions::default().try_with_compression(Some(CompressionType::ZSTD)).map_err(FormatError::from)?;
+        let options = IpcWriteOptions::default().try_with_compression(Some(CompressionType::ZSTD))?;
         let mut out = vec![];
         let properties = Schema::empty().with_metadata(doc.properties.clone().into_iter().collect());
         write_stream(&mut out, &properties, None, &options)?;
@@ -173,7 +160,7 @@ impl HeadCodec for ArrowCodec {
         while !bytes.is_empty() {
             let (stream, rest) = next_stream(bytes)?;
             bytes = rest;
-            let reader = StreamReader::try_new(Cursor::new(stream), None).map_err(FormatError::from)?;
+            let reader = StreamReader::try_new(Cursor::new(stream), None)?;
             let mut schema = reader.schema().as_ref().clone();
             if first {
                 doc.properties = schema.metadata.into_iter().collect();
@@ -183,9 +170,8 @@ impl HeadCodec for ArrowCodec {
             let name =
                 schema.metadata.remove(SECTION_KEY).ok_or_else(|| FormatError::new("head section without name"))?;
             let schema = Arc::new(schema);
-            let batches =
-                reader.map(|b| with_schema(&b.map_err(FormatError::from)?, &schema)).collect::<Result<Vec<_>>>()?;
-            doc.sections.insert(name, concat_batches(&schema, &batches).map_err(FormatError::from)?);
+            let batches = reader.map(|b| with_schema(&b?, &schema)).collect::<Result<Vec<_>>>()?;
+            doc.sections.insert(name, concat_batches(&schema, &batches)?);
         }
         Ok(doc)
     }
@@ -194,7 +180,7 @@ impl HeadCodec for ArrowCodec {
 /// `batch` with `schema`, which differs from its own only in metadata.
 fn with_schema(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-    RecordBatch::try_new_with_options(schema.clone(), batch.columns().to_vec(), &options).map_err(FormatError::from)
+    Ok(RecordBatch::try_new_with_options(schema.clone(), batch.columns().to_vec(), &options)?)
 }
 
 fn write_stream(
@@ -204,11 +190,11 @@ fn write_stream(
     options: &IpcWriteOptions,
 ) -> Result<()> {
     let mut buf = vec![];
-    let mut w = StreamWriter::try_new_with_options(&mut buf, schema, options.clone()).map_err(FormatError::from)?;
+    let mut w = StreamWriter::try_new_with_options(&mut buf, schema, options.clone())?;
     if let Some(batch) = batch {
-        w.write(batch).map_err(FormatError::from)?;
+        w.write(batch)?;
     }
-    w.finish().map_err(FormatError::from)?;
+    w.finish()?;
     drop(w);
     out.extend_from_slice(&(buf.len() as u64).to_le_bytes());
     out.extend_from_slice(&buf);
@@ -258,17 +244,17 @@ impl HeadCodec for JsonCodec {
                 let mut w = arrow_json::WriterBuilder::new()
                     .with_explicit_nulls(true)
                     .build::<_, arrow_json::writer::JsonArray>(vec![]);
-                w.write(&timestamps_as_integers(batch)?).map_err(FormatError::from)?;
-                w.finish().map_err(FormatError::from)?;
-                let rows = serde_json::from_slice(&w.into_inner()).map_err(FormatError::from)?;
+                w.write(&timestamps_as_integers(batch)?)?;
+                w.finish()?;
+                let rows = serde_json::from_slice(&w.into_inner())?;
                 Ok(JsonSection { name: name.clone(), schema: batch.schema().as_ref().clone(), rows })
             })
             .collect::<Result<_>>()?;
-        serde_json::to_vec(&JsonDoc { properties: doc.properties.clone(), sections }).map_err(FormatError::from)
+        Ok(serde_json::to_vec(&JsonDoc { properties: doc.properties.clone(), sections })?)
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<HeadDoc> {
-        let json: JsonDoc = serde_json::from_slice(bytes).map_err(FormatError::from)?;
+        let json: JsonDoc = serde_json::from_slice(bytes)?;
         let mut doc = HeadDoc { properties: json.properties, sections: BTreeMap::new() };
         for section in json.sections {
             let schema = Arc::new(section.schema);
@@ -285,10 +271,9 @@ impl HeadCodec for JsonCodec {
             ));
             let mut decoder = arrow_json::ReaderBuilder::new(read_as.clone())
                 .with_batch_size(section.rows.len().max(1))
-                .build_decoder()
-                .map_err(FormatError::from)?;
-            decoder.serialize(&section.rows).map_err(FormatError::from)?;
-            let batch = decoder.flush().map_err(FormatError::from)?.unwrap_or_else(|| RecordBatch::new_empty(read_as));
+                .build_decoder()?;
+            decoder.serialize(&section.rows)?;
+            let batch = decoder.flush()?.unwrap_or_else(|| RecordBatch::new_empty(read_as));
             let batch = integers_as_timestamps(&batch, &schema)?;
             doc.sections.insert(section.name, batch);
         }
@@ -311,7 +296,7 @@ fn timestamps_as_integers(batch: &RecordBatch) -> Result<RecordBatch> {
     }
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
     let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
-    RecordBatch::try_new_with_options(schema, columns, &options).map_err(FormatError::from)
+    Ok(RecordBatch::try_new_with_options(schema, columns, &options)?)
 }
 
 /// The inverse of [`timestamps_as_integers`], given the original schema.
@@ -326,7 +311,7 @@ fn integers_as_timestamps(batch: &RecordBatch, schema: &SchemaRef) -> Result<Rec
         })
         .collect();
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(FormatError::from)
+    Ok(RecordBatch::try_new_with_options(schema.clone(), columns, &options)?)
 }
 
 macro_rules! by_unit {

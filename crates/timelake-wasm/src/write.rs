@@ -383,7 +383,7 @@ impl Writer {
             advance(&state, table);
             let (maintenance, maintenance_error) = match &report.maintenance {
                 Some(Ok(m)) => (Some(maintain_report(m, version)), None),
-                Some(Err(e)) => (None, Some(e.clone())),
+                Some(Err(e)) => (None, Some(e.to_string())),
                 None => (None, None),
             };
             let report = JsAppendReport {

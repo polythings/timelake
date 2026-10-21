@@ -23,8 +23,6 @@
 
 #![warn(missing_docs)]
 
-use std::fmt;
-
 #[cfg(feature = "write")]
 pub mod append;
 pub mod bounds;
@@ -199,23 +197,28 @@ pub const INGEST_TIME_COLUMN: &str = "_ingest_ts";
 /// Optional warehouse-level index of table names, for stores that cannot list (plain HTTPS).
 pub const TABLES_INDEX: &str = "timelake-tables.json";
 
-/// An invalid contract property, duration, or partition value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormatError(pub String);
+/// An error in Timelake's table conventions.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum FormatError {
+    /// An invalid setting, duration, table name or partition value, or a malformed head object.
+    #[error("{0}")]
+    Invalid(String),
+    /// From Arrow, encoding or decoding the head object.
+    #[cfg(feature = "head")]
+    #[error(transparent)]
+    Arrow(#[from] arrow_schema::ArrowError),
+    /// From JSON, encoding or decoding the head object.
+    #[cfg(feature = "head")]
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
 
 impl FormatError {
     fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
+        Self::Invalid(msg.into())
     }
 }
-
-impl fmt::Display for FormatError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for FormatError {}
 
 /// `Result` with [`FormatError`].
 pub type Result<T> = std::result::Result<T, FormatError>;

@@ -315,6 +315,10 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Rust API: `timelake::align_batch` and `timelake::latest_per_series` are `timelake-format`'s and return its
   `WriteError`, which `?` turns into a `timelake::Error`. `TableName` is `timelake-format`'s too (still re-exported),
   so a bad table name is an `Error::Format`, not an `Error::Invalid`.
+- Rust API: `timelake_format::FormatError` is an enum (`FormatError::Invalid` holds a message; Arrow and JSON errors
+  of the head keep their cause), and `WriteError` reports its cause through `source()`, with Avro errors as
+  `WriteError::Avro`. An append's `maintenance` error is the `WriteError` itself, not its message. Arrow errors are no
+  longer prefixed with `head:`.
 - TypeScript client: `TableWriter` takes a table name without a namespace (`readings` is `default.readings`), like the
   reader and the engine, and both check names with the engine's rules, so `iot/readings` or `a.b.c` is an error.
 

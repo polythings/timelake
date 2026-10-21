@@ -4266,6 +4266,7 @@ dependencies = [
  "parquet",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

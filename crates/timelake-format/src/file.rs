@@ -120,7 +120,7 @@ pub fn writer_properties(
         .sort_columns()
         .iter()
         .map(|c| {
-            let column_idx = schema.index_of(c).map_err(|e| ParquetError::ArrowError(e.to_string()))?;
+            let column_idx = schema.index_of(c).map_err(|e| ParquetError::External(Box::new(e)))?;
             let column_idx = i32::try_from(column_idx).map_err(|_| ParquetError::General("too many columns".into()))?;
             Ok(SortingColumn { column_idx, descending: false, nulls_first: true })
         })

@@ -206,7 +206,7 @@ fn manifest_schema(partition: Option<&PartitionField>) -> WriteResult<Schema> {
         map("lower_bounds", 126, 127, "bytes"),
         map("upper_bounds", 129, 130, "bytes"),
     );
-    Schema::parse_str(&json).map_err(avro)
+    Ok(Schema::parse_str(&json)?)
 }
 
 const MANIFEST_LIST_SCHEMA: &str = r#"{"type": "record", "name": "manifest_file", "fields": [
@@ -231,10 +231,6 @@ const MANIFEST_LIST_SCHEMA: &str = r#"{"type": "record", "name": "manifest_file"
     ]}, "element-id": 508}], "default": null, "field-id": 507},
     {"name": "key_metadata", "type": ["null", "bytes"], "default": null, "field-id": 519}
 ]}"#;
-
-fn avro(e: impl std::fmt::Display) -> WriteError {
-    WriteError::Corrupt(format!("avro: {e}"))
-}
 
 fn some(v: Value) -> Value {
     Value::Union(1, Box::new(v))
@@ -285,7 +281,7 @@ pub fn write_manifest(ctx: &ManifestContext<'_>, entries: &[ManifestWrite]) -> W
         ("format-version", "2".to_string()),
         ("content", "data".to_string()),
     ] {
-        w.add_user_metadata(k.to_string(), v).map_err(avro)?;
+        w.add_user_metadata(k.to_string(), v)?;
     }
     for e in entries {
         let f = &e.file;
@@ -331,10 +327,9 @@ pub fn write_manifest(ctx: &ManifestContext<'_>, entries: &[ManifestWrite]) -> W
             ("sequence_number".into(), opt_long(e.sequence_number)),
             ("file_sequence_number".into(), opt_long(e.file_sequence_number)),
             ("data_file".into(), data_file),
-        ]))
-        .map_err(avro)?;
+        ]))?;
     }
-    w.into_inner().map_err(avro)
+    Ok(w.into_inner()?)
 }
 
 /// An entry to write into a manifest: `None` fields are inherited from the manifest list.
@@ -361,13 +356,12 @@ pub fn write_manifest_list(
     parent: Option<i64>,
     sequence_number: i64,
 ) -> WriteResult<Vec<u8>> {
-    let schema = Schema::parse_str(MANIFEST_LIST_SCHEMA).map_err(avro)?;
+    let schema = Schema::parse_str(MANIFEST_LIST_SCHEMA)?;
     let mut w = Writer::with_codec(&schema, vec![], Codec::Null);
-    w.add_user_metadata("snapshot-id".into(), snapshot_id.to_string()).map_err(avro)?;
-    w.add_user_metadata("parent-snapshot-id".into(), parent.map_or_else(|| "null".into(), |p| p.to_string()))
-        .map_err(avro)?;
-    w.add_user_metadata("sequence-number".into(), sequence_number.to_string()).map_err(avro)?;
-    w.add_user_metadata("format-version".into(), "2").map_err(avro)?;
+    w.add_user_metadata("snapshot-id".into(), snapshot_id.to_string())?;
+    w.add_user_metadata("parent-snapshot-id".into(), parent.map_or_else(|| "null".into(), |p| p.to_string()))?;
+    w.add_user_metadata("sequence-number".into(), sequence_number.to_string())?;
+    w.add_user_metadata("format-version".into(), "2")?;
     for m in manifests {
         let assign = |v: i64| if v == UNASSIGNED { sequence_number } else { v };
         let partitions = m.partitions.as_ref().map_or_else(null, |p| {
@@ -395,10 +389,9 @@ pub fn write_manifest_list(
             ("deleted_rows_count".into(), Value::Long(m.deleted_rows)),
             ("partitions".into(), partitions),
             ("key_metadata".into(), null()),
-        ]))
-        .map_err(avro)?;
+        ]))?;
     }
-    w.into_inner().map_err(avro)
+    Ok(w.into_inner()?)
 }
 
 /// A sequence number the manifest list assigns when the snapshot commits.
@@ -446,8 +439,8 @@ pub fn manifest_file(
 // --- reading ---------------------------------------------------------------------------------
 
 fn records(bytes: &[u8]) -> WriteResult<Vec<Value>> {
-    let reader = Reader::new(bytes).map_err(avro)?;
-    reader.map(|v| v.map_err(avro)).collect()
+    let reader = Reader::new(bytes)?;
+    reader.map(|v| v.map_err(WriteError::from)).collect()
 }
 
 fn field<'a>(record: &'a Value, name: &str) -> Option<&'a Value> {

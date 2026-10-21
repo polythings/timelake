@@ -1,77 +1,51 @@
 //! Errors of the write path (feature `write`).
 
-use std::fmt;
-
 use arrow_schema::ArrowError;
 use parquet::errors::ParquetError;
 
 use crate::FormatError;
 
 /// An error writing a table without the engine.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     /// The data or request doesn't fit the table (a missing required column, nulls in the time
     /// column, …).
+    #[error("invalid: {0}")]
     Invalid(String),
     /// Another writer changed the table in a way this commit can't build on.
+    #[error("conflict: {0}")]
     Conflict(String),
     /// A commit whose outcome can't be told: its metadata may be in the table. Nothing it wrote
     /// was deleted; load the table again to see whether it committed.
+    #[error("commit outcome unknown: {0}")]
     CommitUnknown(String),
     /// An object the table needs is missing.
+    #[error("not found: {0}")]
     NotFound(String),
     /// The store failed.
+    #[error("store: {0}")]
     Store(String),
-    /// A file Timelake reads isn't what it expects (Avro, JSON).
+    /// A file Timelake reads isn't what it expects (JSON metadata, a manifest's fields).
+    #[error("unexpected file contents: {0}")]
     Corrupt(String),
+    /// An Avro manifest or manifest list that can't be read or written.
+    #[error("unexpected file contents: avro: {0}")]
+    Avro(#[from] apache_avro::Error),
     /// Table conventions.
-    Format(FormatError),
+    #[error(transparent)]
+    Format(#[from] FormatError),
     /// Arrow.
-    Arrow(ArrowError),
+    #[error(transparent)]
+    Arrow(#[from] ArrowError),
     /// Parquet.
-    Parquet(ParquetError),
+    #[error(transparent)]
+    Parquet(#[from] ParquetError),
 }
 
 impl WriteError {
     /// An [`WriteError::Invalid`] with `msg`.
     pub fn invalid(msg: impl Into<String>) -> Self {
         Self::Invalid(msg.into())
-    }
-}
-
-impl fmt::Display for WriteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(m) => write!(f, "invalid: {m}"),
-            Self::Conflict(m) => write!(f, "conflict: {m}"),
-            Self::CommitUnknown(m) => write!(f, "commit outcome unknown: {m}"),
-            Self::NotFound(m) => write!(f, "not found: {m}"),
-            Self::Store(m) => write!(f, "store: {m}"),
-            Self::Corrupt(m) => write!(f, "unexpected file contents: {m}"),
-            Self::Format(e) => e.fmt(f),
-            Self::Arrow(e) => e.fmt(f),
-            Self::Parquet(e) => e.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for WriteError {}
-
-impl From<FormatError> for WriteError {
-    fn from(e: FormatError) -> Self {
-        Self::Format(e)
-    }
-}
-
-impl From<ArrowError> for WriteError {
-    fn from(e: ArrowError) -> Self {
-        Self::Arrow(e)
-    }
-}
-
-impl From<ParquetError> for WriteError {
-    fn from(e: ParquetError) -> Self {
-        Self::Parquet(e)
     }
 }
 

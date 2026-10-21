@@ -37,7 +37,7 @@ pub struct AppendOptions {
 }
 
 /// What [`append`] did.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct AppendReport {
     /// Rows committed (after in-append dedup); 0 for a duplicate batch.
     pub rows: usize,
@@ -49,7 +49,7 @@ pub struct AppendReport {
     pub commit: CommitInfo,
     /// Inline maintenance after the commit: `None` if it didn't run or had nothing to do. An
     /// error here means the append is committed but maintenance failed: don't retry the append.
-    pub maintenance: Option<Result<MaintainReport, String>>,
+    pub maintenance: Option<WriteResult<MaintainReport>>,
 }
 
 /// Appends `batches` to `table` as one commit; returns the new version.
@@ -116,7 +116,7 @@ pub async fn append<H: Host>(
             Ok((maintained, report))
         }
         Err(e) => {
-            report.maintenance = Some(Err(e.to_string()));
+            report.maintenance = Some(Err(e));
             Ok((table, report))
         }
     }

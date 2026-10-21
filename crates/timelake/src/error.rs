@@ -76,6 +76,7 @@ impl From<timelake_format::error::WriteError> for Error {
             W::CommitUnknown(m) => Self::CommitUnknown(m),
             W::NotFound(m) => Self::NotFound(m),
             W::Store(m) | W::Corrupt(m) => Self::Io(std::io::Error::other(m)),
+            e @ W::Avro(_) => Self::Io(std::io::Error::other(e)),
             W::Format(e) => Self::Format(e),
             W::Arrow(e) => Self::Arrow(e),
             W::Parquet(e) => Self::Parquet(e),

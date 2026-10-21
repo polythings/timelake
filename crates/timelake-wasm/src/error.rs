@@ -14,6 +14,9 @@ pub enum Error {
     Table(#[from] WriteError),
     #[error("bad table contract: {0}")]
     Contract(#[from] FormatError),
+    /// A table this reader can't read: a head it can't decode, or a newer table format.
+    #[error(transparent)]
+    Unreadable(FormatError),
     #[error("Parquet: {0}")]
     Parquet(#[from] ParquetError),
     #[error("Arrow: {0}")]
