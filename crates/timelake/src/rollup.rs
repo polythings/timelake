@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::ops::Range;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -28,13 +29,11 @@ use crate::{format_duration, parse_duration, property, summary};
 
 /// Rows a refresh appends per commit, at most about.
 const ROWS_PER_COMMIT: usize = 1 << 20;
-/// The recorded sequence number of a rollup that reflects nothing: every raw file is newer.
-const NOTHING: i64 = -1;
 /// A refresh recomputes at least this much time per query (a window of whole buckets).
 const MIN_WINDOW_MICROS: i64 = 86_400_000_000;
 
 /// Half-open ranges of time, in microseconds since the epoch.
-pub(crate) type Ranges = Vec<(i64, i64)>;
+pub(crate) type Ranges = Vec<Range<i64>>;
 
 pub(crate) use timelake_format::rollup::{Aggregate, RollupFunction};
 
@@ -77,21 +76,58 @@ impl Definition {
     }
 }
 
-/// The sequence number of the raw table snapshot `rollup` reflects, if it was ever refreshed.
-pub(crate) fn recorded_sequence(rollup: &Table) -> Option<i64> {
-    rollup.summary_value(summary::ROLLUP_SOURCE_SEQUENCE)?.parse().ok()
+/// What of its raw table a refreshed rollup reflects, as its snapshot summary records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reflects {
+    /// Nothing: the raw table went back past what the rollup held (a rollback), so it is
+    /// computed again from every raw file.
+    Nothing,
+    /// The raw table's snapshot with this id and sequence number.
+    Snapshot { id: i64, sequence: i64 },
+}
+
+impl Reflects {
+    /// How the summary records [`Reflects::Nothing`]: what every Timelake version reads as a
+    /// snapshot older than any raw file.
+    const NOTHING: (&str, &str) = ("none", "-1");
+
+    /// What `rollup` reflects; `None` if it was never refreshed.
+    pub(crate) fn of(rollup: &Table) -> Option<Self> {
+        let sequence: i64 = rollup.summary_value(summary::ROLLUP_SOURCE_SEQUENCE)?.parse().ok()?;
+        let id = rollup.summary_value(summary::ROLLUP_SOURCE_SNAPSHOT).and_then(|s| s.parse().ok());
+        match id {
+            Some(id) if sequence >= 0 => Some(Self::Snapshot { id, sequence }),
+            _ => Some(Self::Nothing),
+        }
+    }
+
+    /// The raw table's data files committed after this sequence number are new to the rollup;
+    /// `None` when all are.
+    pub(crate) fn sequence(self) -> Option<i64> {
+        match self {
+            Self::Nothing => None,
+            Self::Snapshot { sequence, .. } => Some(sequence),
+        }
+    }
+
+    /// The snapshot summary properties that record this.
+    fn record(self) -> HashMap<String, String> {
+        let (id, sequence) = match self {
+            Self::Nothing => (Self::NOTHING.0.to_string(), Self::NOTHING.1.to_string()),
+            Self::Snapshot { id, sequence } => (id.to_string(), sequence.to_string()),
+        };
+        HashMap::from([
+            (summary::ROLLUP_SOURCE_SNAPSHOT.to_string(), id),
+            (summary::ROLLUP_SOURCE_SEQUENCE.to_string(), sequence),
+        ])
+    }
 }
 
 /// Whether the raw table snapshot `rollup` reflects is in the history of `raw`'s current snapshot.
 /// `false` after a rollback past it: the rollup may hold rows the raw table no longer has. When
 /// expiry has removed the snapshots in between, it can't tell and says `true`.
 pub(crate) fn in_history(raw: &Table, rollup: &Table) -> bool {
-    let (Some(id), Some(sequence)) = (
-        rollup.summary_value(summary::ROLLUP_SOURCE_SNAPSHOT).and_then(|s| s.parse::<i64>().ok()),
-        recorded_sequence(rollup),
-    ) else {
-        return true;
-    };
+    let Some(Reflects::Snapshot { id, sequence }) = Reflects::of(rollup) else { return true };
     let metadata = raw.metadata();
     let mut snapshot = metadata.current_snapshot();
     while let Some(s) = snapshot {
@@ -125,33 +161,33 @@ pub(crate) fn changed(raw: &Table, files: &[LiveEntry], after: Option<i64>, widt
     let mut ranges = vec![];
     for f in files.iter().filter(|f| after.is_none_or(|s| f.sequence_number > s)) {
         let (lo, hi) = (bound(f.data_file.lower_bounds().get(&id))?, bound(f.data_file.upper_bounds().get(&id))?);
-        ranges.push((floor(lo, width), floor(hi, width).saturating_add(width)));
+        ranges.push(floor(lo, width)..floor(hi, width).saturating_add(width));
     }
     Some(merge(ranges))
 }
 
 /// Sorts ranges and merges those that overlap or touch.
 pub(crate) fn merge(mut ranges: Ranges) -> Ranges {
-    ranges.sort_unstable();
+    ranges.sort_unstable_by_key(|r| (r.start, r.end));
     let mut out: Ranges = vec![];
-    for (lo, hi) in ranges {
+    for r in ranges {
         match out.last_mut() {
-            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
-            _ => out.push((lo, hi)),
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
         }
     }
     out
 }
 
 /// `ranges` cut into windows of whole buckets, at least a day long where the range is.
-fn windows(ranges: &[(i64, i64)], width: i64) -> Ranges {
+fn windows(ranges: &[Range<i64>], width: i64) -> Ranges {
     let window = (MIN_WINDOW_MICROS.saturating_add(width - 1) / width).max(1).saturating_mul(width);
     let mut out = vec![];
-    for &(lo, hi) in ranges {
-        let mut start = lo;
-        while start < hi {
-            let end = start.saturating_add(window).min(hi);
-            out.push((start, end));
+    for r in ranges {
+        let mut start = r.start;
+        while start < r.end {
+            let end = start.saturating_add(window).min(r.end);
+            out.push(start..end);
             start = end;
         }
     }
@@ -207,7 +243,7 @@ pub(crate) async fn refresh_all(raw: &Table, mode: RollupRefresh) -> Result<Refr
 fn due(raw: &Table, name: &TableName) -> bool {
     let Some((_, rollup)) = raw.lake().caches().tables.get(name) else { return true };
     let current = raw.current_snapshot().map(|s| s.sequence_number());
-    if recorded_sequence(&rollup).is_some_and(|r| current.is_some_and(|c| r >= c)) {
+    if Reflects::of(&rollup).and_then(Reflects::sequence).is_some_and(|r| current.is_some_and(|c| r >= c)) {
         return false;
     }
     is_due(&rollup)
@@ -246,35 +282,29 @@ async fn refresh_now(lake: &Lake, name: &TableName, raw: Option<&Table>, mode: R
     };
     let Some(snapshot) = raw.current_snapshot() else { return Ok(0) };
     let (snapshot_id, sequence) = (snapshot.snapshot_id(), snapshot.sequence_number());
-    let mut recorded = recorded_sequence(&rollup);
+    // Raw files committed after this sequence number are new to the rollup (all for `None`).
+    let mut after = Reflects::of(&rollup).and_then(Reflects::sequence);
     if !in_history(&raw, &rollup) {
         // The raw table went back (a rollback): start over, recording that nothing is reflected
         // yet, so routing reads the raw table until the rollup is computed again.
         let removed = rollup.files().await?;
-        let record = HashMap::from([
-            (summary::ROLLUP_SOURCE_SNAPSHOT.to_string(), "none".to_string()),
-            (summary::ROLLUP_SOURCE_SEQUENCE.to_string(), NOTHING.to_string()),
-        ]);
         let change = Change::Delete { removed, lvi_cutoff: Some(i64::MAX) };
-        rollup = commit(&rollup, change, record, Uploads::default()).await?.0;
-        recorded = Some(NOTHING);
-    } else if recorded.is_some_and(|r| r >= sequence) {
+        rollup = commit(&rollup, change, Reflects::Nothing.record(), Uploads::default()).await?.0;
+        after = None;
+    } else if after.is_some_and(|r| r >= sequence) {
         return Ok(0);
     }
     let files = raw.files().await?;
     // No time bounds on a changed file: recompute everything, in one query.
-    let windows: Vec<Option<(i64, i64)>> = match changed(&raw, &files, recorded, def.width) {
+    let windows: Vec<Option<Range<i64>>> = match changed(&raw, &files, after, def.width) {
         Some(ranges) => windows(&ranges, def.width).into_iter().map(Some).collect(),
         None => vec![None],
     };
-    let record = HashMap::from([
-        (summary::ROLLUP_SOURCE_SNAPSHOT.to_string(), snapshot_id.to_string()),
-        (summary::ROLLUP_SOURCE_SEQUENCE.to_string(), sequence.to_string()),
-    ]);
+    let record = Reflects::Snapshot { id: snapshot_id, sequence }.record();
     let session = crate::query::refresh_session(lake, raw.name(), name).await?;
     let (mut pending, mut rows): (Vec<RecordBatch>, u64) = (vec![], 0);
-    for (i, &window) in windows.iter().enumerate() {
-        let ranges = window.map(|w| vec![w]);
+    for (i, window) in windows.iter().enumerate() {
+        let ranges = window.clone().map(|w| vec![w]);
         let frame = crate::query::rollup_frame(&session, &raw, &def, ranges.as_deref())?;
         if i == 0 {
             same_states(&rollup, frame.schema().as_arrow())?;
@@ -382,12 +412,15 @@ mod tests {
 
     #[test]
     fn ranges_merge_and_split_into_windows() {
-        assert_eq!(merge(vec![(5, 7), (0, 2), (2, 3), (6, 9)]), vec![(0, 3), (5, 9)]);
+        assert_eq!(merge(vec![5..7, 0..2, 2..3, 6..9]), vec![0..3, 5..9]);
         let day = MIN_WINDOW_MICROS;
         let hour = day / 24;
-        assert_eq!(windows(&[(0, 2 * day + hour)], hour), vec![(0, day), (day, 2 * day), (2 * day, 2 * day + hour)]);
+        assert_eq!(
+            windows(std::slice::from_ref(&(0..2 * day + hour)), hour),
+            vec![0..day, day..2 * day, 2 * day..2 * day + hour]
+        );
         // A bucket wider than a day is one window.
-        assert_eq!(windows(&[(0, 4 * day)], 2 * day), vec![(0, 2 * day), (2 * day, 4 * day)]);
+        assert_eq!(windows(std::slice::from_ref(&(0..4 * day)), 2 * day), vec![0..2 * day, 2 * day..4 * day]);
         assert_eq!(floor(-1, 60), -60);
     }
 

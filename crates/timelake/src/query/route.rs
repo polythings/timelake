@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ use super::settings::{READ_DEDUP, ROLLUP_ROUTING};
 use super::signal::{Method, Output, state_type, udaf};
 use crate::TableName;
 use crate::lake::Lake;
-use crate::rollup::{Definition, Ranges, RollupFunction, changed, floor, in_history, layout, recorded_sequence};
+use crate::rollup::{Definition, Ranges, Reflects, RollupFunction, changed, floor, in_history, layout};
 use crate::table::Table;
 
 /// Stands for no bound: beyond any time a table holds (about ±73,000 years), with room to add a
@@ -117,11 +118,11 @@ async fn routes_for(
         }
         let Ok(rollup) = lake.table_recent(&rollup_name, interval, PLANNING_REUSE).await else { continue };
         let Ok(def) = Definition::of(&rollup) else { continue };
-        let Some(recorded) = recorded_sequence(&rollup) else { continue };
+        let Some(reflects) = Reflects::of(&rollup) else { continue };
         if def.source != *name || !in_history(&raw, &rollup) {
             continue;
         }
-        let Some(dirty) = changed(&raw, &files, Some(recorded), def.width) else { continue };
+        let Some(dirty) = changed(&raw, &files, reflects.sequence(), def.width) else { continue };
         // Retention drops whole partitions that end before now minus the retention: buckets from
         // there on are complete in a table (and were when the rollup computed them).
         let kept = |t: &Table| t.contract().retention_cutoff(now);
@@ -144,19 +145,19 @@ fn ceil(t: i64, width: i64) -> i64 {
 }
 
 /// `[from, to)` minus the (sorted, merged) `ranges`.
-fn complement(ranges: &[(i64, i64)], from: i64, to: i64) -> Ranges {
+fn complement(ranges: &[Range<i64>], from: i64, to: i64) -> Ranges {
     let mut out = vec![];
     let mut start = from;
-    for &(lo, hi) in ranges {
-        if lo > start {
-            out.push((start, lo.min(to)));
+    for r in ranges {
+        if r.start > start {
+            out.push(start..r.start.min(to));
         }
-        start = start.max(hi);
+        start = start.max(r.end);
     }
     if start < to {
-        out.push((start, to));
+        out.push(start..to);
     }
-    out.retain(|(lo, hi)| lo < hi);
+    out.retain(|r| !r.is_empty());
     out
 }
 
@@ -219,13 +220,13 @@ impl RollupRewrite {
         let Some(routes) = routes.filter(|r| r.version == q.table.version()) else { return Ok(None) };
         for candidate in &routes.rollups {
             let Some(answer) = candidate.answers(&q) else { continue };
-            let Some((first, last)) = full_buckets(q.from, q.to, width) else { return Ok(None) };
+            let Some(full) = full_buckets(q.from, q.to, width) else { return Ok(None) };
             // A query bucket comes from the rollup only if all of the rollup's buckets in it do.
             let from_rollup: Ranges = candidate
                 .clean
                 .iter()
-                .map(|&(lo, hi)| (ceil(lo, width).max(first), floor(hi, width).min(last)))
-                .filter(|(lo, hi)| lo < hi)
+                .map(|r| ceil(r.start, width).max(full.start)..floor(r.end, width).min(full.end))
+                .filter(|r| !r.is_empty())
                 .collect();
             if from_rollup.is_empty() {
                 continue;
@@ -649,10 +650,10 @@ fn nanos(e: &Expr) -> Option<i128> {
 }
 
 /// The buckets entirely within `[from, to]` (inclusive µs), as a half-open range of bucket starts.
-fn full_buckets(from: i64, to: i64, width: i64) -> Option<(i64, i64)> {
+fn full_buckets(from: i64, to: i64, width: i64) -> Option<Range<i64>> {
     let first = if from == i64::MIN { -FAR } else { ceil(from, width).max(-FAR) };
     let last = if to == i64::MAX { FAR } else { floor(to.checked_add(1)?, width).min(FAR) };
-    (first < last).then_some((first, last))
+    (first < last).then_some(first..last)
 }
 
 /// `UNION ALL` of the aggregate over the raw rows outside `from_rollup` and the rollup's rows in
@@ -662,7 +663,7 @@ fn rewrite(
     q: &Query<'_>,
     candidate: &Candidate,
     answer: &Answer,
-    from_rollup: &[(i64, i64)],
+    from_rollup: &[Range<i64>],
 ) -> DfResult<Option<LogicalPlan>> {
     // Raw side: the same aggregate, over the rows of the other buckets.
     let input_schema = a.input.schema();
@@ -678,9 +679,9 @@ fn rewrite(
     let (open_from, open_to) = (FAR.saturating_neg(), FAR);
     let outside = from_rollup
         .iter()
-        .filter_map(|&(lo, hi)| {
-            let before = (lo > open_from).then(|| time.clone().lt(at(lo, &tz)));
-            let after = (hi < open_to).then(|| time.clone().gt_eq(at(hi, &tz)));
+        .filter_map(|r| {
+            let before = (r.start > open_from).then(|| time.clone().lt(at(r.start, &tz)));
+            let after = (r.end < open_to).then(|| time.clone().gt_eq(at(r.end, &tz)));
             match (before, after) {
                 (Some(b), Some(a)) => Some(b.or(a)),
                 (b, a) => b.or(a),
@@ -751,7 +752,7 @@ fn rewrite(
 fn rollup_rows(
     q: &Query<'_>,
     candidate: &Candidate,
-    from_rollup: &[(i64, i64)],
+    from_rollup: &[Range<i64>],
     tz: Option<&Arc<str>>,
 ) -> DfResult<LogicalPlanBuilder> {
     let at =
@@ -767,9 +768,9 @@ fn rollup_rows(
     let bucket = ident(&candidate.def.bucket);
     let inside = from_rollup
         .iter()
-        .map(|&(lo, hi)| {
-            let from = (lo > open_from).then(|| bucket.clone().gt_eq(at(lo, &bucket_tz)));
-            let to = (hi < open_to).then(|| bucket.clone().lt(at(hi, &bucket_tz)));
+        .map(|r| {
+            let from = (r.start > open_from).then(|| bucket.clone().gt_eq(at(r.start, &bucket_tz)));
+            let to = (r.end < open_to).then(|| bucket.clone().lt(at(r.end, &bucket_tz)));
             match (from, to) {
                 (Some(f), Some(t)) => f.and(t),
                 (f, t) => f.or(t).unwrap_or_else(|| datafusion::prelude::lit(true)),
@@ -826,13 +827,13 @@ mod tests {
 
     #[test]
     fn complement_and_full_buckets() {
-        assert_eq!(complement(&[(10, 20), (30, 40)], 0, 50), vec![(0, 10), (20, 30), (40, 50)]);
-        assert_eq!(complement(&[(0, 60)], 0, 60), vec![]);
-        assert_eq!(complement(&[], 5, 10), vec![(5, 10)]);
+        assert_eq!(complement(&[10..20, 30..40], 0, 50), vec![0..10, 20..30, 40..50]);
+        assert_eq!(complement(std::slice::from_ref(&(0..60)), 0, 60), vec![]);
+        assert_eq!(complement(&[], 5, 10), vec![5..10]);
         // [30, 179] holds the 60-wide buckets at 60 and 120 whole; [30, 178] only the one at 60.
-        assert_eq!(full_buckets(30, 179, 60), Some((60, 180)));
-        assert_eq!(full_buckets(30, 178, 60), Some((60, 120)));
-        assert_eq!(full_buckets(60, 119, 60), Some((60, 120)));
+        assert_eq!(full_buckets(30, 179, 60), Some(60..180));
+        assert_eq!(full_buckets(30, 178, 60), Some(60..120));
+        assert_eq!(full_buckets(60, 119, 60), Some(60..120));
         assert_eq!(full_buckets(61, 119, 60), None);
         assert_eq!(ceil(61, 60), 120);
     }

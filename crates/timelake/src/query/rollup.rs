@@ -2,6 +2,7 @@
 //! the query that computes its buckets, and the expressions routing matches against it.
 
 use std::any::Any;
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
@@ -181,7 +182,7 @@ pub(crate) fn rollup_frame(
     ctx: &SessionContext,
     raw: &Table,
     def: &Definition,
-    ranges: Option<&[(i64, i64)]>,
+    ranges: Option<&[Range<i64>]>,
 ) -> Result<DataFrame> {
     let time = raw
         .contract()
@@ -197,7 +198,7 @@ pub(crate) fn rollup_frame(
         let at = |t: i64| Expr::Literal(ScalarValue::TimestampMicrosecond(Some(t), tz.clone()), None);
         let predicate = ranges
             .iter()
-            .map(|&(lo, hi)| ident(&time).gt_eq(at(lo)).and(ident(&time).lt(at(hi))))
+            .map(|r| ident(&time).gt_eq(at(r.start)).and(ident(&time).lt(at(r.end))))
             .reduce(Expr::or)
             .unwrap_or_else(|| lit(false));
         df = df.filter(predicate)?;
