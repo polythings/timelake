@@ -652,7 +652,7 @@ dependencies = [
 [[package]]
 name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
+source = "git+https://github.com/polythings/lakekit?rev=786f8932a9a66333b493112921ab12f341df7cf8#786f8932a9a66333b493112921ab12f341df7cf8"
 dependencies = [
  "loko-clock",
  "loko-random",
@@ -664,7 +664,7 @@ dependencies = [
 [[package]]
 name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=ee74e3c01a552c22a1c0b93267d03d28706dec85#ee74e3c01a552c22a1c0b93267d03d28706dec85"
+source = "git+https://github.com/polythings/lakekit?rev=786f8932a9a66333b493112921ab12f341df7cf8#786f8932a9a66333b493112921ab12f341df7cf8"
 dependencies = [
  "apache-avro",
  "arrow-schema",
@@ -752,7 +752,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "loko-clock"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -762,7 +762,7 @@ dependencies = [
 [[package]]
 name = "loko-random"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -773,7 +773,7 @@ dependencies = [
 [[package]]
 name = "loko-store"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=6c79750109b7929e927a582e92570105da625714#6c79750109b7929e927a582e92570105da625714"
+source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
 
 [[package]]
 name = "memchr"
