@@ -93,26 +93,8 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
         return Ok(table.clone());
     }
     report.partitions_compacted += plan.groups.iter().map(|(p, _)| p).collect::<HashSet<_>>().len();
-    let props = writer_properties(table)?;
     let uploads = Uploads::default();
-    // Groups are rewritten at once while they read no more files together than one merge may: the
-    // memory one merge is allowed. Every rewrite runs to its end, so one that fails doesn't drop the
-    // others halfway with their uploads open. The futures are created up front so the returned
-    // future stays `Send`.
-    let inputs = Semaphore::new(MAX_MERGE_INPUTS);
-    let rewrites: Vec<_> = plan
-        .groups
-        .iter()
-        .map(|(partition, files)| {
-            let (inputs, writer) = (&inputs, PartitionWriter::new(table, *partition, &props, &uploads));
-            async move {
-                let n = u32::try_from(files.len().min(MAX_MERGE_INPUTS)).unwrap_or(u32::MAX);
-                let _permits = inputs.acquire_many(n).await.expect("the semaphore is never closed");
-                rewrite_partition(table, files, writer).await
-            }
-        })
-        .collect();
-    let results: Vec<Result<Rewritten>> = futures::stream::iter(rewrites).buffered(CONCURRENT_REWRITES).collect().await;
+    let results = rewrite_groups(table, &plan.groups, &uploads).await?;
     let (mut removed, mut added, mut sequence_numbers) = (vec![], vec![], vec![]);
     let mut outcome = Ok(());
     for ((_, files), result) in plan.groups.into_iter().zip(results) {
@@ -146,6 +128,32 @@ async fn compact(table: &Table, opts: &MaintainOptions, report: &mut MaintainRep
         let _ = table.lake().storage().delete_many(paths).await;
     }
     Ok(committed?.0)
+}
+
+/// Rewrites each group of files of a partition, uploads queued in `uploads`. Groups are rewritten
+/// at once while they read no more files together than one merge may: the memory one merge is
+/// allowed. Every rewrite runs to its end, so one that fails doesn't drop the others halfway with
+/// their uploads open.
+async fn rewrite_groups(
+    table: &Table,
+    groups: &[(Option<i32>, Vec<LiveEntry>)],
+    uploads: &Uploads,
+) -> Result<Vec<Result<Rewritten>>> {
+    let props = writer_properties(table)?;
+    let inputs = Semaphore::new(MAX_MERGE_INPUTS);
+    // The futures are created up front so the returned future stays `Send`.
+    let rewrites: Vec<_> = groups
+        .iter()
+        .map(|(partition, files)| {
+            let (inputs, writer) = (&inputs, PartitionWriter::new(table, *partition, &props, uploads));
+            async move {
+                let n = u32::try_from(files.len().min(MAX_MERGE_INPUTS)).unwrap_or(u32::MAX);
+                let _permits = inputs.acquire_many(n).await.expect("the semaphore is never closed");
+                rewrite_partition(table, files, writer).await
+            }
+        })
+        .collect();
+    Ok(futures::stream::iter(rewrites).buffered(CONCURRENT_REWRITES).collect().await)
 }
 
 /// Merges the rows of `files` (oldest commit first), files of one partition, into sorted,
