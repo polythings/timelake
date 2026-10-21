@@ -140,15 +140,10 @@ fn series_window(e: &Expr) -> Option<(HashSet<String>, String)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{T0, answer, batch, faulty_lake, opts, schema};
     use crate::{AppendOptions, Session, TableOptions};
 
     const SECOND: i64 = 1_000_000;
-
-    async fn answer(s: &Session, sql: &str) -> crate::Result<String> {
-        let rows = s.sql(sql).await?.collect().await?;
-        Ok(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string())
-    }
 
     /// Two appends whose readings interleave in time for the same devices, dedup off: the segments
     /// would overlap, so `auto` merges the files in series order, which gives the definition's

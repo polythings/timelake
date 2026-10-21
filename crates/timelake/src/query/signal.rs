@@ -587,13 +587,11 @@ mod tests {
     /// Conditions count as 1 while true: seconds above a limit, and the share of time above it.
     #[tokio::test]
     async fn conditions_are_ones_while_true() {
-        let s = crate::Session::new(crate::testing::faulty_lake().0);
         let sql = "SELECT integral(t, v > 10) AS above, time_weighted_mean(t, v > 10) AS share
                    FROM (VALUES (TIMESTAMP '2026-01-01 00:00:00', 5.0), (TIMESTAMP '2026-01-01 00:00:10', 15.0),
                                 (TIMESTAMP '2026-01-01 00:00:40', 12.0), (TIMESTAMP '2026-01-01 00:01:00', 3.0),
                                 (TIMESTAMP '2026-01-01 00:01:40', 20.0)) AS r(t, v)";
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let got = crate::testing::answer_on_empty_lake(sql).await.unwrap();
         // Above from 0:10 to 1:00 of 0:00 to 1:40: 50 of 100 seconds.
         assert!(got.contains("| 50.0  | 0.5   |"), "{got}");
     }

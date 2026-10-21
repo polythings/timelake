@@ -656,13 +656,11 @@ impl ExecutionPlan for AsofJoinExec {
 
 #[cfg(test)]
 mod tests {
-    use crate::Session;
-    use crate::testing::faulty_lake;
+    use crate::testing::answer_on_empty_lake;
 
+    /// A query's rows, without the header.
     async fn answer(sql: &str) -> crate::Result<Vec<String>> {
-        let s = Session::new(faulty_lake().0);
-        let rows = s.sql(sql).await?.collect().await?;
-        let text = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let text = answer_on_empty_lake(sql).await?;
         Ok(text.lines().filter(|l| l.starts_with("| ")).skip(1).map(str::to_owned).collect())
     }
 

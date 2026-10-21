@@ -142,7 +142,7 @@ impl Accumulator for HistogramAccumulator {
 #[cfg(test)]
 mod tests {
     use crate::Session;
-    use crate::testing::faulty_lake;
+    use crate::testing::{answer, faulty_lake};
 
     #[tokio::test]
     async fn counts_per_bin() {
@@ -150,8 +150,7 @@ mod tests {
         // numpy.histogram([0, 1, 2.5, 4.9, 5, 7, 10, 11, -1], bins=4, range=(0, 10)) counts [2, 2, 2, 1].
         let sql = "SELECT histogram(x, 0, 10, 4) AS h
                    FROM (VALUES (0.0), (1.0), (2.5), (4.9), (5.0), (7.0), (10.0), (11.0), (-1.0), (NULL)) AS v(x)";
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let got = answer(&s, sql).await.unwrap();
         assert!(got.contains("[2, 2, 2, 1]"), "{got}");
         let bad = "SELECT histogram(x, 5, 1, 4) FROM (VALUES (1.0)) AS v(x)";
         let err = match s.sql(bad).await {

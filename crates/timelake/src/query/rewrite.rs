@@ -241,7 +241,7 @@ mod tests {
 
     use super::*;
     use crate::query::Session;
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{T0, answer, batch, faulty_lake, opts, schema};
     use crate::{AppendOptions, Lake};
 
     #[test]
@@ -343,8 +343,7 @@ mod tests {
             format!("SELECT device FROM {inner} WHERE rn = 1 AND code = 1"),
         ] {
             assert!(reads_index(&s, &sql).await, "{sql}");
-            let batches = s.sql(&sql).await.unwrap().collect().await.unwrap();
-            let rows = arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string();
+            let rows = answer(&s, &sql).await.unwrap();
             assert!(rows.contains("| 1      |") && !rows.contains("| 2      |"), "{sql}\n{rows}");
         }
     }
@@ -354,10 +353,7 @@ mod tests {
     #[tokio::test]
     async fn string_one_gives_the_same_rows() {
         let s = Session::new(lake_with_data().await);
-        let count = async |sql: String| {
-            let batches = s.sql(&format!("SELECT count(*) FROM ({sql})")).await.unwrap().collect().await.unwrap();
-            arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string()
-        };
+        let count = async |sql: String| answer(&s, &format!("SELECT count(*) FROM ({sql})")).await.unwrap();
         let by_int = count(format!("SELECT * FROM {ROW_NUMBER} WHERE rn = 1")).await;
         assert_eq!(count(format!("SELECT * FROM {ROW_NUMBER} WHERE rn = '1'")).await, by_int);
         assert!(by_int.contains("| 3 "), "{by_int}");

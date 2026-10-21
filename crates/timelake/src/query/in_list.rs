@@ -263,7 +263,7 @@ mod tests {
     use parquet::file::properties::WriterProperties;
 
     use super::*;
-    use crate::testing::{T0, batch, faulty_lake, opts};
+    use crate::testing::{T0, answer, batch, faulty_lake, opts};
     use crate::{AppendOptions, Session, property};
 
     /// Devices 0..100, 100 rows each, one page per device and 50 devices per row group.
@@ -397,8 +397,7 @@ mod tests {
             for on in ["true", "false"] {
                 let session = Session::new(lake.clone());
                 session.sql(&format!("SET timelake.in_list_pruning = {on}")).await.unwrap();
-                let batches = session.sql(&sql).await.unwrap().collect().await.unwrap();
-                answers.push(arrow::util::pretty::pretty_format_batches(&batches).unwrap().to_string());
+                answers.push(answer(&session, &sql).await.unwrap());
             }
             assert_eq!(answers[0], answers[1], "{sql}");
             assert!(answers[0].contains("| 750 |"), "{sql}: {}", answers[0]);

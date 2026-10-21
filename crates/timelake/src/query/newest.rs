@@ -391,7 +391,7 @@ impl NewestFirstRead {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{T0, batch, faulty_lake, opts};
+    use crate::testing::{T0, answer, batch, faulty_lake, opts};
     use crate::{AppendOptions, Session};
 
     const MINUTE: i64 = 60_000_000;
@@ -417,11 +417,9 @@ mod tests {
                 let s = Session::new(lake.clone());
                 s.sql("SET timelake.filter_pushdown = false").await.unwrap();
                 s.sql(&format!("SET timelake.newest_first = {on}")).await.unwrap();
-                let plan = s.sql(&format!("EXPLAIN {sql}")).await.unwrap().collect().await.unwrap();
-                let plan = arrow::util::pretty::pretty_format_batches(&plan).unwrap().to_string();
+                let plan = answer(&s, &format!("EXPLAIN {sql}")).await.unwrap();
                 assert_eq!(plan.contains("NewestFirstExec"), on == "true", "{sql}\n{plan}");
-                let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-                answers.push(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string());
+                answers.push(answer(&s, sql).await.unwrap());
             }
             assert_eq!(answers[0], answers[1], "{sql}");
             assert!(answers[0].contains("| 99.0  |") || answers[0].contains("| 10 |"), "{sql}\n{}", answers[0]);
@@ -479,11 +477,9 @@ mod tests {
             for on in ["true", "false"] {
                 let s = Session::new(lake.clone());
                 s.sql(&format!("SET timelake.newest_first = {on}")).await.unwrap();
-                let plan = s.sql(&format!("EXPLAIN {sql}")).await.unwrap().collect().await.unwrap();
-                let plan = arrow::util::pretty::pretty_format_batches(&plan).unwrap().to_string();
+                let plan = answer(&s, &format!("EXPLAIN {sql}")).await.unwrap();
                 assert_eq!(plan.contains("NewestFirstExec"), on == "true", "{sql}\n{plan}");
-                let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-                answers.push(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string());
+                answers.push(answer(&s, sql).await.unwrap());
             }
             assert_eq!(answers[0], answers[1], "{sql}");
         }
@@ -496,8 +492,7 @@ mod tests {
             "SELECT date_bin(INTERVAL '1 hour', time, TIMESTAMP '2026-01-01 00:30:00') AS h, max(value) FROM iot.r
              GROUP BY 1 ORDER BY 1 DESC LIMIT 5",
         ] {
-            let plan = s.sql(&format!("EXPLAIN {sql}")).await.unwrap().collect().await.unwrap();
-            let plan = arrow::util::pretty::pretty_format_batches(&plan).unwrap().to_string();
+            let plan = answer(&s, &format!("EXPLAIN {sql}")).await.unwrap();
             assert!(!plan.contains("NewestFirstExec"), "{sql}\n{plan}");
         }
     }

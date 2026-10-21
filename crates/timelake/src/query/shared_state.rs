@@ -128,13 +128,8 @@ fn share(node: LogicalPlan) -> DfResult<Transformed<LogicalPlan>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{T0, batch, faulty_lake, opts, schema};
+    use crate::testing::{T0, answer, batch, faulty_lake, opts, schema};
     use crate::{AppendOptions, Session};
-
-    async fn answer(s: &Session, sql: &str) -> String {
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string()
-    }
 
     /// The four aggregates of one column by both methods, with others: two states (one per
     /// method, the counters with the first), and the answers they give without sharing.
@@ -151,13 +146,13 @@ mod tests {
                           counter_rate(time, value) AS rate, integral(time, value) AS ff_area, count(*) AS n
                    FROM iot.r GROUP BY 1, 2 ORDER BY 1, 2";
         let shared = Session::new(lake.clone());
-        let plan = answer(&shared, &format!("EXPLAIN {sql}")).await;
+        let plan = answer(&shared, &format!("EXPLAIN {sql}")).await.unwrap();
         let states = plan.lines().find(|l| l.contains("Aggregate:")).unwrap().matches("time_weighted_state(").count();
         assert_eq!(states, 2, "{plan}");
         assert!(plan.contains("counter_rate_of_state("), "{plan}");
         let alone = Session::new(lake);
         alone.sql("SET timelake.shared_signal_state = false").await.unwrap();
-        assert!(!answer(&alone, &format!("EXPLAIN {sql}")).await.contains("time_weighted_state("));
-        assert_eq!(answer(&shared, sql).await, answer(&alone, sql).await);
+        assert!(!answer(&alone, &format!("EXPLAIN {sql}")).await.unwrap().contains("time_weighted_state("));
+        assert_eq!(answer(&shared, sql).await.unwrap(), answer(&alone, sql).await.unwrap());
     }
 }

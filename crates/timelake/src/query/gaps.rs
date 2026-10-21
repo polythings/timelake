@@ -258,6 +258,7 @@ mod tests {
     use arrow::array::TimestampMicrosecondArray;
 
     use super::*;
+    use crate::testing::answer;
 
     const THRESHOLD: i64 = 10;
 
@@ -351,8 +352,7 @@ mod tests {
                                 ('b', TIMESTAMP '2026-01-01 00:00:00'), ('b', TIMESTAMP '2026-01-01 00:01:00'))
                         AS r(tag, t)
                    GROUP BY tag ORDER BY tag";
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let got = answer(&s, sql).await.unwrap();
         // a stopped from 0:30 to 5:30; b's minute is not longer than the threshold.
         assert!(got.contains("| a   | 1    | 300.0 |") && got.contains("| b   | 0    | 0.0   |"), "{got}");
         let months = "SELECT gap_count(t, INTERVAL '1 month') FROM (VALUES (TIMESTAMP '2026-01-01')) AS r(t)";

@@ -124,18 +124,11 @@ impl PartitionEvaluator for ChangeEvaluator {
 
 #[cfg(test)]
 mod tests {
-    use crate::Session;
-    use crate::testing::faulty_lake;
-
-    async fn answer(sql: &str) -> crate::Result<String> {
-        let s = Session::new(faulty_lake().0);
-        let rows = s.sql(sql).await?.collect().await?;
-        Ok(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string())
-    }
+    use crate::testing::answer_on_empty_lake;
 
     #[tokio::test]
     async fn changes_from_the_row_before() {
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT d, diff(x) OVER w AS diff, pct_change(x) OVER w AS pct, rate(t, x) OVER w AS rate
              FROM (SELECT d, CAST(t AS TIMESTAMP) AS t, x FROM (VALUES
                  (1, '2026-01-01 00:00:10', 20.0), (1, '2026-01-01 00:00:00', 10.0),
@@ -158,6 +151,6 @@ mod tests {
             ],
             "{got}"
         );
-        assert!(answer("SELECT rate(x, x) OVER () FROM (VALUES (1.0)) AS v(x)").await.is_err());
+        assert!(answer_on_empty_lake("SELECT rate(x, x) OVER () FROM (VALUES (1.0)) AS v(x)").await.is_err());
     }
 }

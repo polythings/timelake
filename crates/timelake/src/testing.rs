@@ -27,7 +27,7 @@ use timelake_format::rows::{align_batch, sort_and_split, with_ingest_time};
 use crate::commit::{Change, commit};
 use crate::storage::{Storage, Uploads};
 use crate::write::{write_partition, writer_properties};
-use crate::{Lake, Table, TableOptions};
+use crate::{Lake, Result, Session, Table, TableOptions};
 
 /// Which operation a [`Fault`] breaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,8 +316,18 @@ pub(crate) async fn append_unsorted(table: &Table, partition: Option<i32>, batch
 /// A lake on a [`FaultyStore`].
 pub(crate) fn faulty_lake() -> (Lake, Arc<FaultyStore>) {
     let store = Arc::new(FaultyStore::default());
-    let lake = Lake::with_storage(Storage::from_store(store.clone(), "memory://test"), "memory://test/wh");
-    (lake, store)
+    (reopen(&store), store)
+}
+
+/// A query's rows as a text table.
+pub(crate) async fn answer(s: &Session, sql: &str) -> Result<String> {
+    let rows = s.sql(sql).await?.collect().await?;
+    Ok(arrow::util::pretty::pretty_format_batches(&rows)?.to_string())
+}
+
+/// A query's rows as a text table, from a session on an empty lake: for SQL over literal rows.
+pub(crate) async fn answer_on_empty_lake(sql: &str) -> Result<String> {
+    answer(&Session::new(faulty_lake().0), sql).await
 }
 
 /// A lake on a [`FaultyStore`] that uploads files of more than 1 KiB in parts.

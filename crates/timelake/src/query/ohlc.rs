@@ -168,7 +168,7 @@ impl Accumulator for Bar {
 #[cfg(test)]
 mod tests {
     use crate::Session;
-    use crate::testing::faulty_lake;
+    use crate::testing::{answer, faulty_lake};
 
     #[tokio::test]
     async fn open_high_low_close() {
@@ -179,8 +179,7 @@ mod tests {
                        ('a', '2026-01-01 00:00:02', 9.0), ('a', '2026-01-01 00:00:04', 11.0),
                        ('b', '2026-01-01 00:00:01', NULL)) AS v(s, t, p))
                    GROUP BY s) ORDER BY s";
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let got = answer(&s, sql).await.unwrap();
         assert!(got.contains("| a | 12.0 | 12.0 | 9.0 | 11.0 |"), "{got}");
         assert!(got.contains("| b |      |      |     |      |"), "{got}");
     }

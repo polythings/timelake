@@ -128,19 +128,12 @@ impl AggregateUDFImpl for Selection {
 
 #[cfg(test)]
 mod tests {
-    use crate::Session;
-    use crate::testing::faulty_lake;
-
-    async fn answer(sql: &str) -> crate::Result<String> {
-        let s = Session::new(faulty_lake().0);
-        let rows = s.sql(sql).await?.collect().await?;
-        Ok(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string())
-    }
+    use crate::testing::answer_on_empty_lake;
 
     #[tokio::test]
     async fn values_at_first_last_and_a_time() {
         // Rows out of time order; the value at 11:30 is the 11:00 one, before the first row there is none.
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT d, first(t, x) AS f, last(t, x) AS l, value_at(t, x, TIMESTAMP '2026-01-01 11:30:00') AS at,
                     asof(t, x, '2026-01-01 09:00:00') AS early, last(t, x) FILTER (WHERE x < 30) AS l30
              FROM (SELECT d, CAST(t AS TIMESTAMP) AS t, x FROM (VALUES
@@ -152,6 +145,6 @@ mod tests {
         .unwrap();
         assert!(got.contains("| 1 | 10.0 | 30.0 | 20.0 |       | 20.0 |"), "{got}");
         assert!(got.contains("| 2 | 5.0  | 5.0  | 5.0  |       | 5.0  |"), "{got}");
-        assert!(answer("SELECT first(x, t) FROM (VALUES (1.0, 2.0)) AS v(x, t)").await.is_err());
+        assert!(answer_on_empty_lake("SELECT first(x, t) FROM (VALUES (1.0, 2.0)) AS v(x, t)").await.is_err());
     }
 }

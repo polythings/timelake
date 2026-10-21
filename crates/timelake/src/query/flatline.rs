@@ -346,6 +346,7 @@ mod tests {
     use datafusion::common::ScalarValue;
 
     use super::*;
+    use crate::testing::answer;
 
     const THRESHOLD: i64 = 10;
 
@@ -430,8 +431,7 @@ mod tests {
                                 ('a', TIMESTAMP '2026-01-01 00:03:30', 3.0), ('b', TIMESTAMP '2026-01-01 00:00:00', 5.0),
                                 ('b', TIMESTAMP '2026-01-01 00:01:00', 6.0)) AS r(tag, t, v)
                    GROUP BY tag ORDER BY tag";
-        let rows = s.sql(sql).await.unwrap().collect().await.unwrap();
-        let got = arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string();
+        let got = answer(&s, sql).await.unwrap();
         // a held 2.0 from 0:30 until 3.0 came at 3:30; b's minute isn't longer than the threshold.
         assert!(got.contains("| a   | 1 | 180.0 |") && got.contains("| b   | 0 | 0.0   |"), "{got}");
     }

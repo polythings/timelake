@@ -227,19 +227,12 @@ fn interpolate(x: &ArrayRef, t: Option<&ArrayRef>) -> DfResult<ArrayRef> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Session;
-    use crate::testing::faulty_lake;
-
-    async fn answer(sql: &str) -> crate::Result<String> {
-        let s = Session::new(faulty_lake().0);
-        let rows = s.sql(sql).await?.collect().await?;
-        Ok(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string())
-    }
+    use crate::testing::answer_on_empty_lake;
 
     #[tokio::test]
     async fn buckets_cover_the_range() {
         // From the bucket holding the start to the last starting before the end.
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT bucket FROM time_buckets(INTERVAL '6 hours', TIMESTAMP '2026-01-01 05:00:00',
                                               TIMESTAMP '2026-01-01 18:00:00')",
         )
@@ -250,7 +243,7 @@ mod tests {
         }
         assert_eq!(got.matches("2026-01-01T").count(), 3, "{got}");
         // An origin shifts the buckets; expressions are folded.
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT count(*) AS n, min(bucket) AS first FROM time_buckets(INTERVAL '1 day',
                  TIMESTAMP '2026-01-01 05:00:00', TIMESTAMP '2026-01-01 05:00:00' + INTERVAL '3 days',
                  TIMESTAMP '2000-01-01 06:00:00')",
@@ -259,9 +252,11 @@ mod tests {
         .unwrap();
         assert!(got.contains("| 4 | 2025-12-31T06:00:00Z |"), "{got}");
         // A day back from now: the partial hour it starts in, then 24 more (24 if now is on the hour).
-        let got = answer("SELECT count(*) AS n FROM time_buckets(INTERVAL '1 hour', now() - INTERVAL '1 day', now())")
-            .await
-            .unwrap();
+        let got = answer_on_empty_lake(
+            "SELECT count(*) AS n FROM time_buckets(INTERVAL '1 hour', now() - INTERVAL '1 day', now())",
+        )
+        .await
+        .unwrap();
         assert!(got.contains("| 25 ") || got.contains("| 24 "), "{got}");
         for bad in [
             "SELECT * FROM time_buckets(INTERVAL '1 month', TIMESTAMP '2026-01-01', TIMESTAMP '2026-03-01')",
@@ -273,13 +268,13 @@ mod tests {
             "SELECT * FROM time_buckets(INTERVAL '1 day', TIMESTAMP '2026-01-01', TIMESTAMP '2026-01-02',
                                         arrow_cast(-9223000000000000000, 'Timestamp(Microsecond, None)'))",
         ] {
-            assert!(answer(bad).await.is_err(), "{bad}");
+            assert!(answer_on_empty_lake(bad).await.is_err(), "{bad}");
         }
     }
 
     #[tokio::test]
     async fn gaps_are_filled() {
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT d, t, forward_fill(x) OVER w AS ff, bfill(x) OVER w AS bf, interpolate(x) OVER w AS rows,
                     interpolate(x, t) OVER w AS by_time
              FROM (VALUES (1, 0, NULL), (1, 1, 10.0), (1, 2, NULL), (1, 5, 40.0), (1, 6, NULL),

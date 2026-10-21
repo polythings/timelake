@@ -153,19 +153,12 @@ impl PartitionEvaluator for RollingEvaluator {
 
 #[cfg(test)]
 mod tests {
-    use crate::Session;
-    use crate::testing::faulty_lake;
-
-    async fn answer(sql: &str) -> crate::Result<String> {
-        let s = Session::new(faulty_lake().0);
-        let rows = s.sql(sql).await?.collect().await?;
-        Ok(arrow::util::pretty::pretty_format_batches(&rows).unwrap().to_string())
-    }
+    use crate::testing::answer_on_empty_lake;
 
     #[tokio::test]
     async fn like_pandas() {
         // pandas.Series([1, 2, 4, 8, None, 9]).rolling(3).mean() / .std(); zscore over the series.
-        let got = answer(
+        let got = answer_on_empty_lake(
             "SELECT t, round(rolling_mean(x, 3) OVER w, 6) AS m, round(rolling_std(x, 3) OVER w, 6) AS s,
                     round(zscore(x) OVER w, 6) AS z
              FROM (VALUES (1, 1.0), (2, 2.0), (3, 4.0), (4, 8.0), (5, NULL), (6, 9.0)) AS v(t, x)
@@ -186,6 +179,6 @@ mod tests {
             ],
             "{got}"
         );
-        assert!(answer("SELECT rolling_mean(x, 0) OVER () FROM (VALUES (1.0)) AS v(x)").await.is_err());
+        assert!(answer_on_empty_lake("SELECT rolling_mean(x, 0) OVER () FROM (VALUES (1.0)) AS v(x)").await.is_err());
     }
 }
