@@ -68,6 +68,7 @@ fn parse_query(query: &JsValue) -> Result<QuerySpec> {
     serde_wasm_bindgen::from_value(query.clone()).map_err(|e| Error::invalid(format!("bad query: {e}")))
 }
 
+/// `value` as a plain JavaScript value: objects (not `Map`s) for JSON objects.
 fn to_js<T: Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {
     Ok(value.serialize(&serde_wasm_bindgen::Serializer::json_compatible())?)
 }

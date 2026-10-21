@@ -13,6 +13,7 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use timelake_format::append::{AppendOptions, append};
 use timelake_format::error::{WriteError, WriteResult};
@@ -22,6 +23,8 @@ use timelake_format::maintain::{MaintainOptions, MaintainReport, MaintainSteps, 
 use timelake_format::table::TableState;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
+
+use crate::to_js;
 
 /// A [`Host`] over a JavaScript store object (see the TypeScript `Store` interface).
 #[derive(Clone, Debug)]
@@ -242,9 +245,12 @@ fn camel_case_keys(value: serde_json::Value) -> serde_json::Value {
     fields.into_iter().map(|(k, v)| (camel(&k), v)).collect()
 }
 
-/// `value` as a plain JavaScript value: objects (not `Map`s) for JSON objects.
-fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
-    value.serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(Into::into)
+/// A call's options from JavaScript, where `undefined` or `null` means the defaults.
+fn options_from_js<T: DeserializeOwned + Default>(options: JsValue) -> Result<T, JsValue> {
+    if options.is_undefined() || options.is_null() {
+        return Ok(T::default());
+    }
+    serde_wasm_bindgen::from_value(options).map_err(|e| JsValue::from_str(&format!("bad options: {e}")))
 }
 
 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a byte count from JavaScript")]
@@ -310,11 +316,7 @@ impl Writer {
     pub fn maintain(&self, options: JsValue) -> Promise {
         let (host, location, state) = (self.host.clone(), self.location.clone(), self.state.clone());
         future_to_promise(async move {
-            let o: JsMaintainOptions = if options.is_undefined() || options.is_null() {
-                JsMaintainOptions::default()
-            } else {
-                serde_wasm_bindgen::from_value(options).map_err(|e| JsValue::from_str(&format!("bad options: {e}")))?
-            };
+            let o: JsMaintainOptions = options_from_js(options)?;
             let all = MaintainSteps::default();
             let steps = MaintainSteps {
                 compact: o.compact.unwrap_or(all.compact),
@@ -357,11 +359,7 @@ impl Writer {
     ) -> Promise {
         let (host, location, state) = (self.host.clone(), self.location.clone(), self.state.clone());
         future_to_promise(async move {
-            let options: JsAppendOptions = if options.is_undefined() || options.is_null() {
-                JsAppendOptions::default()
-            } else {
-                serde_wasm_bindgen::from_value(options).map_err(|e| JsValue::from_str(&format!("bad options: {e}")))?
-            };
+            let options: JsAppendOptions = options_from_js(options)?;
             let table = current(&host, &location, &state).await.map_err(|e| to_js_err(&e))?;
             let batches = rows(table.schema.clone()).map_err(|e| to_js_err(&e))?;
             let opts = AppendOptions {
