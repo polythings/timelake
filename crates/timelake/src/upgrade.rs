@@ -2,7 +2,7 @@
 //!
 //! Every step is an ordinary commit, so nothing is lost: the previous snapshots stay readable,
 //! and the upgrade first sets `timelake.keep-snapshots-until` so none of them expires for a while
-//! (7 days by default). Within that time, [`Table::rollback`] returns the table to the snapshot it
+//! ([`DEFAULT_KEEP_SNAPSHOTS`] unless told otherwise). Within that time, [`Table::rollback`] returns the table to the snapshot it
 //! had before the upgrade.
 
 use std::collections::{HashMap, HashSet};
@@ -22,6 +22,9 @@ use crate::storage::Uploads;
 use crate::table::Table;
 use crate::{Session, head, property, summary};
 
+/// How long an upgrade keeps every snapshot unless told otherwise: [`UpgradeOptions::keep_snapshots`].
+pub const DEFAULT_KEEP_SNAPSHOTS: Duration = Duration::from_hours(7 * 24);
+
 /// Options for [`Table::upgrade`].
 #[derive(Clone, Debug)]
 pub struct UpgradeOptions {
@@ -35,7 +38,7 @@ pub struct UpgradeOptions {
 
 impl Default for UpgradeOptions {
     fn default() -> Self {
-        Self { dry_run: false, compact: true, keep_snapshots: Duration::from_hours(7 * 24) }
+        Self { dry_run: false, compact: true, keep_snapshots: DEFAULT_KEEP_SNAPSHOTS }
     }
 }
 

@@ -32,7 +32,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7"] }
 url = "2"
 anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "string"] }
 pyo3 = { version = "0.28", features = ["abi3-py310"] }
 # Moves with PyO3: its minor version names the PyO3 it serves.
 pythonize = "0.28"

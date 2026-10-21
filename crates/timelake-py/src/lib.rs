@@ -492,3 +492,15 @@ fn _timelake(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.py().import("atexit")?.call_method1("register", (flush,))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    /// The stub's default for `Table.upgrade(keep_snapshots=…)` is the engine's. Python signatures need a literal, so
+    /// the module repeats it; `tests/test_package.py` checks the module against the stub.
+    #[test]
+    fn upgrade_keeps_snapshots_as_long_as_the_engine() {
+        let stub = include_str!("../python/timelake/_timelake.pyi");
+        let default = timelake::format_duration(timelake::DEFAULT_KEEP_SNAPSHOTS);
+        assert!(stub.contains(&format!("keep_snapshots: str = \"{default}\"")), "the stub's default isn't {default}");
+    }
+}

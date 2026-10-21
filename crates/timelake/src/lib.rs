@@ -58,6 +58,6 @@ pub use timelake_format::contract::{Chunk, Contract, TableOptions};
 pub use timelake_format::name::{DEFAULT_NAMESPACE, TableName};
 pub use timelake_format::rows::{align_batch, latest_per_series};
 pub use timelake_format::{bounds, contract, format_duration, parse_duration, property, settings, summary};
-pub use upgrade::{UpgradeOptions, UpgradeReport, UpgradeStep};
+pub use upgrade::{DEFAULT_KEEP_SNAPSHOTS, UpgradeOptions, UpgradeReport, UpgradeStep};
 pub use write::file_partition;
 pub use {arrow, datafusion};
