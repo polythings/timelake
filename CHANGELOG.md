@@ -185,6 +185,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - The disk cache keyed S3 objects by the endpoint only when it was given in a few option names, not when it came from
   `AWS_ENDPOINT_URL`/`AWS_ENDPOINT_URL_S3` or as `endpoint_url`: two endpoints with the same bucket name could then
   share cached blocks. The endpoint now comes from the same place as the store's own.
+- The engine (and so the CLI and Python) read the delete files of a table another engine had written row-level deletes
+  to as data, so deleted rows came back, and its commits and compaction would carry them on. Reads and writes of such
+  a table are now an error naming the delete file, as in the TypeScript client.
 
 ### Changed
 

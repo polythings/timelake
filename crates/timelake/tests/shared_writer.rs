@@ -582,9 +582,10 @@ async fn expiry_keeps_tagged_snapshots() {
 async fn the_shared_writer_refuses_tables_with_delete_files() {
     use timelake_format::iceberg::{Content, ManifestFile, read_manifest_list, write_manifest_list};
 
-    let (_dir, lake) = temp_lake();
+    let (dir, lake) = temp_lake();
     let t = lake.create_table("iot.r", &schema(), opts()).await.unwrap();
     let (t, _) = t.append(&[batch(T0, 1, 1, 2, |_, _| 1.0)], no_maintenance()).await.unwrap();
+    timelake::flush().await;
     let snapshot = t.metadata().current_snapshot().unwrap();
     let host = EngineHost::new(&lake);
     // Add a delete manifest to the current snapshot's manifest list, as Spark would.
@@ -599,8 +600,25 @@ async fn the_shared_writer_refuses_tables_with_delete_files() {
     let list = write_manifest_list(&manifests, snapshot.snapshot_id(), None, snapshot.sequence_number()).unwrap();
     (&&host).put(snapshot.manifest_list(), list).await.unwrap();
 
+    // The head (written before the deletes) would answer without reading the manifest list.
+    (&&host).delete(&[format!("{}/metadata/timelake-head", t.location())]).await.unwrap();
+
     let state = TableState::load(&&host, t.location()).await.unwrap();
     let err = append(&&host, state, &[batch(T0, 1, 1, 2, |_, _| 2.0)], &shared_no_maintenance()).await.unwrap_err();
+    assert!(err.to_string().contains("delete files"), "{err}");
+
+    // The engine refuses it too, for reads and writes: it would read the deleted rows back.
+    let lake = reopen(&dir);
+    let t = lake.table("iot.r").await.unwrap();
+    let err = t.files().await.unwrap_err();
+    assert!(err.to_string().contains("delete files"), "{err}");
+    let err = t.append(&[batch(T0, 1, 1, 2, |_, _| 2.0)], no_maintenance()).await.unwrap_err();
+    assert!(err.to_string().contains("delete files"), "{err}");
+    let query = match Session::new(lake).sql("SELECT count(*) FROM iot.r").await {
+        Ok(df) => df.collect().await.map(|_| ()),
+        Err(e) => Err(e.into()),
+    };
+    let err = query.unwrap_err();
     assert!(err.to_string().contains("delete files"), "{err}");
 }
 

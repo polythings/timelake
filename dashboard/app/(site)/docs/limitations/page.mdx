@@ -6,7 +6,7 @@ export const metadata = { title: "Limitations" }
 
 - **No REST catalog.** Tables are found by path (Hadoop-catalog layout). Engines that only speak the Iceberg REST protocol can’t attach yet.
 - **Freshness is per commit.** Data is visible when its append commits; there is no hot tier or write-ahead log for sub-commit freshness.
-- **No deletes.** Row-level deletes, the delete audit trail, and GDPR erasure are designed but not built. Retention drops whole partitions only.
+- **No deletes.** Row-level deletes, the delete audit trail, and GDPR erasure are designed but not built. Retention drops whole partitions only. A table with delete files another engine (Spark, Trino) wrote is refused, for reads and writes, by the engine, the CLI, Python and the TypeScript client: they don't apply them, so the deleted rows would come back. Compact the deletes away with that engine first.
 - **No schema evolution.** The schema is fixed at creation.
 - **Duplicates until compaction, outside Timelake.** The Timelake reader (CLI, Python, Rust) skips older copies of a row when reading; DuckDB, other Iceberg readers, and the TypeScript client see them until compaction removes them.
 - **Rollups don't store percentiles,** and have no calendar buckets (months) or filters in their definition. A query is answered from a rollup whose bucket width divides its own and whose grouping includes its own, only by Timelake's reader (not plain DuckDB). Rollups don't see deletes (there are none yet). See [Rollups](/docs/rollups#not-yet).

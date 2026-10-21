@@ -4,7 +4,10 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use futures::future::{BoxFuture, Shared};
 use iceberg::arrow::schema_to_arrow_schema;
-use iceberg::spec::{DataFile, ManifestFile, ManifestStatus, SnapshotRef, TableMetadata, TableMetadataBuilder};
+use iceberg::spec::{
+    DataContentType, DataFile, ManifestContentType, ManifestFile, ManifestStatus, SnapshotRef, TableMetadata,
+    TableMetadataBuilder,
+};
 
 use crate::contract::Contract;
 use crate::error::{Error, Result};
@@ -165,22 +168,39 @@ impl Table {
         self.summary_value(summary::LAST_VALUE_INDEX).map(str::to_string)
     }
 
-    /// Manifests of the current snapshot.
+    /// Manifests of the current snapshot. A table with delete files (row-level deletes another
+    /// engine wrote) is an error: Timelake doesn't apply them, so it would read the deleted rows
+    /// back, and carry the delete files over as data when it writes.
     pub async fn manifests(&self) -> Result<Arc<Vec<ManifestFile>>> {
-        match self.current_snapshot() {
-            None => Ok(Arc::default()),
-            Some(s) => self.lake.manifest_list(s.manifest_list(), self.metadata.format_version()).await,
+        let Some(snapshot) = self.current_snapshot() else { return Ok(Arc::default()) };
+        let manifests = self.lake.manifest_list(snapshot.manifest_list(), self.metadata.format_version()).await?;
+        match manifests.iter().find(|m| m.content != ManifestContentType::Data) {
+            Some(m) => Err(self.has_deletes(&m.manifest_path)),
+            None => Ok(manifests),
         }
     }
 
-    /// All live data files of the current snapshot.
+    /// All live data files of the current snapshot (an error with delete files, as [`Self::manifests`]).
     pub async fn files(&self) -> Result<Vec<LiveEntry>> {
         if let Some(files) = &self.files {
             return Ok(files.as_ref().clone());
         }
         let manifests = self.manifests().await?;
         let loaded = futures::future::try_join_all(manifests.iter().map(|m| self.lake.manifest(m))).await?;
-        Ok(loaded.iter().flat_map(|es| es.iter().filter(|e| e.status != ManifestStatus::Deleted).cloned()).collect())
+        let live: Vec<LiveEntry> =
+            loaded.iter().flat_map(|es| es.iter().filter(|e| e.status != ManifestStatus::Deleted).cloned()).collect();
+        match live.iter().find(|e| e.data_file.content_type() != DataContentType::Data) {
+            Some(e) => Err(self.has_deletes(e.data_file.file_path())),
+            None => Ok(live),
+        }
+    }
+
+    fn has_deletes(&self, path: &str) -> Error {
+        Error::invalid(format!(
+            "{}: the table has delete files ({path}), which Timelake doesn't apply; compact them away with the \
+             engine that wrote them first",
+            self.name
+        ))
     }
 }
 
