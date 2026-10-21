@@ -76,6 +76,7 @@ What lives where, which technologies are used and why, and how a write and a que
 | `storage.rs` | Opens the right object store for a URL (`s3://`, `gs://`, `az://`, `https://`, local). Read, write, `write_if_absent` (the conditional write), list, and delete; `Uploads`, a queue of files a commit sends all at once; also adapts the store to iceberg-rust's file interface. |
 | `lake.rs` | The catalog. `Lake` is a warehouse: `create_table` writes `v1.metadata.json`, `table()` finds the current version (the head and a listing of the metadata files at once, or a check for the next version of one it already has), `tables()` lists them. |
 | `table.rs` | `Table`: one version of a table (name, metadata, contract, schema) and `files()`, the live data files (from the head, or from its manifests). |
+| `info.rs` | `Table::info`: a version's contract, size, partitions and newest snapshots, which `timelake info` prints and Python's `Table.info()` returns. |
 | `head/` | The head object: `mod.rs` writes a table's head after a commit without moving it backwards, and loads a table from it; `codec.rs` holds the codecs a lake reads and writes heads with. The layout (header, `HeadDoc`, sections) and the `arrow` and `json` codecs are `timelake_format::head`'s, shared with the WASM reader. |
 | `footer.rs` | Parquet footers kept apart from their files, for the head: read from the store once and cached. Their encoding is shared with the WASM writer (`timelake_format::footer`). |
 | `cache.rs` | Small bounded caches for files that never change once written (manifests, manifest lists, last-value indexes) and recently loaded table versions. |
@@ -116,7 +117,7 @@ Tests live next to the code (`#[cfg(test)]` modules, with test storage in `testi
 
 ## The CLI and the Python package
 
-- `crates/timelake-cli/src`: `main.rs` defines the commands with `clap` and prints results as a table, CSV, or JSON; `load.rs` reads CSV and Parquet and appends them in commits; `info.rs` renders `timelake info` as text or JSON; `bench.rs` is the hidden benchmark mode of `timelake sql`. `tests/cli.rs` runs the binary end to end.
+- `crates/timelake-cli/src`: `main.rs` defines the commands with `clap` and prints results as a table, CSV, or JSON; `load.rs` reads CSV and Parquet and appends them in commits; `info.rs` prints the engine's `TableInfo` as `timelake info` text; `bench.rs` is the hidden benchmark mode of `timelake sql`. `tests/cli.rs` runs the binary end to end.
 - `crates/timelake-py/src/lib.rs`: classes `Lake` and `Table`. Each method runs the engine on a shared Tokio runtime and releases Python's GIL while it waits. Data comes in through the Arrow C stream interface, so pyarrow and polars objects work directly. Errors map to `KeyError`, `FileExistsError`, `ValueError` and `timelake.ConflictError`.
 - `crates/timelake-py/python/timelake`: the Python side: `__init__.py`, the type stub `_timelake.pyi`, `_types.py` (typed result dicts), and `py.typed`. Tests are in `crates/timelake-py/tests`.
 
@@ -128,7 +129,7 @@ The WASM module never makes network requests. The TypeScript client fetches byte
 2. The client fetches the manifest list and manifests; the module parses them (Avro, with `timelake_format::iceberg`, as the writers read them) into a list of files.
 3. `planFiles(query)` drops files whose min/max values can't match (`prune.rs`).
 4. For each file, the client fetches the end of the file (the footer). `ParquetFile.plan` (`file.rs`) returns the byte ranges of the row groups and columns needed. The client fetches just those ranges.
-5. `Query.push` decodes and filters each file (`filter.rs`) and collects rows, time buckets (`aggregate.rs`), or the newest row per series (`latest.rs`); `finish` returns JSON rows (`output.rs`). The client validates them with Zod if a schema was given.
+5. `Query.push` decodes and filters each file a batch at a time (`filter.rs`) and collects rows (with a `limit`, only those that can still be returned), time buckets (`aggregate.rs`), or the newest row per series (`latest.rs`); `finish` returns JSON rows (`output.rs`). The client validates them with Zod if a schema was given.
 
 `spec.rs` describes the query a host sends; `error.rs` the errors it gets back. The crate has its own unit tests and a golden test on a small table written by the engine (`crates/timelake-wasm/tests`).
 
