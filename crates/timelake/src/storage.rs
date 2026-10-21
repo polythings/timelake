@@ -57,7 +57,7 @@ pub struct Storage {
     upload_buffer: usize,
 }
 
-/// What a file's upload buffers before it becomes a multipart upload: object_store's default.
+/// What a file's upload buffers before it becomes a multipart upload: `object_store`'s default.
 const UPLOAD_BUFFER: usize = 10 << 20;
 
 /// A store's raw-prefix listing.

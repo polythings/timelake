@@ -104,15 +104,13 @@ impl<'a> PartitionWriter<'a> {
             return Ok(());
         }
         // Kept in `open` while it is written, so `abort` finds its upload if anything fails.
-        let (_, writer, upload) = match &mut self.open {
-            Some(open) => open,
-            None => {
-                let uri = format!("{}/{}.parquet", self.dir, uuid::Uuid::now_v7());
-                let writer = FileWriter::new(self.table.schema(), self.props.clone())?;
-                let upload = self.table.lake().storage().deferred_writer(&uri, self.uploads)?;
-                self.open.insert((uri, writer, upload))
-            }
-        };
+        if self.open.is_none() {
+            let uri = format!("{}/{}.parquet", self.dir, uuid::Uuid::now_v7());
+            let writer = FileWriter::new(self.table.schema(), self.props.clone())?;
+            let upload = self.table.lake().storage().deferred_writer(&uri, self.uploads)?;
+            self.open = Some((uri, writer, upload));
+        }
+        let (_, writer, upload) = self.open.as_mut().expect("a file was opened above");
         writer.write(batch)?;
         upload.put(writer.take()).await?;
         if writer.size() >= self.target {
