@@ -268,7 +268,7 @@ struct JsAppendReport {
     version: u64,
     /// As a string: snapshot ids don't fit a JavaScript number.
     snapshot_id: String,
-    attempts: u64,
+    attempts: usize,
     duplicate: bool,
     /// Inline maintenance, if it did something; an error message if it failed (the append is
     /// committed either way).

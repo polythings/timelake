@@ -4,7 +4,9 @@
 //! "replace" and "delete" snapshots, and frequent appends need manifest merging so that planning a
 //! scan doesn't fetch one manifest per commit. This module writes manifests, manifest lists,
 //! snapshots and table metadata directly, then commits through the object-store catalog with
-//! optimistic retries.
+//! optimistic retries. The protocol's rules (summaries, the last-value index, which manifests are
+//! rewritten, retries, judging a conditional PUT) are `timelake_format::commit`'s, shared with the
+//! WebAssembly writer; this module does the engine's I/O, caching and concurrency around them.
 //!
 //! A commit takes two round trips: every new file (data, manifests, manifest list, last-value
 //! index) is encoded locally and uploaded at once, then the new metadata is written with
@@ -14,10 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use arrow::array::{Int64Array, RecordBatch};
-use arrow::compute::kernels::cmp::gt_eq;
-use arrow::compute::{cast, filter_record_batch};
-use arrow::datatypes::DataType;
+use arrow::array::RecordBatch;
 use bytes::Bytes;
 use iceberg::spec::{
     DataFile, ManifestFile, ManifestListWriter, ManifestStatus, ManifestWriter, ManifestWriterBuilder, Operation,
@@ -26,6 +25,11 @@ use iceberg::spec::{
 
 use futures::future::BoxFuture;
 
+pub use timelake_format::commit::CommitInfo;
+use timelake_format::commit::{
+    FileTotals, IndexAction, MAX_ATTEMPTS, ManifestEntry, ManifestPlan, backoff_millis, manifest_plan, read_back,
+    rewrite_manifests, snapshot_summary,
+};
 use timelake_format::layout::{hint_uri, manifest_list_uri, manifest_uri, metadata_uri};
 
 use crate::error::{Error, Result};
@@ -33,77 +37,26 @@ use crate::storage::Uploads;
 use crate::table::{LiveEntry, Table};
 use crate::{background, head, lvi, summary};
 
-/// Above this many manifests, an append merges the existing ones into one, keeping scan planning
-/// to a handful of reads no matter how many commits a table has seen.
-const MERGE_MANIFESTS_AT: usize = 8;
-/// Attempts before a commit that keeps losing the race gives up with [`Error::Conflict`].
-const MAX_ATTEMPTS: usize = 10;
-/// Wait before attempt `n`: a random number of these milliseconds, times `n`.
-const BACKOFF_MILLIS: std::ops::Range<u64> = 5..50;
+/// What a commit changes, with iceberg-rust's data files and the engine's manifest entries.
+pub(crate) type Change = timelake_format::commit::Change<DataFile, LiveEntry>;
 
-/// What a commit changes.
-#[derive(Debug)]
-pub(crate) enum Change {
-    /// New data files (and the newest row per series among them, for the last-value index).
-    Append { files: Vec<DataFile>, latest: Option<RecordBatch> },
-    /// Remove files and add files with the same rows (compaction): `Operation::Replace`. Each added
-    /// file keeps the data sequence number in `sequence_numbers` (the newest of the files it
-    /// replaces), so files committed in between still order after the rows it holds.
-    Replace { removed: Vec<LiveEntry>, added: Vec<DataFile>, sequence_numbers: Vec<i64> },
-    /// Remove files (retention): `Operation::Delete`. The last-value index drops series whose
-    /// newest row is older than `lvi_cutoff` (µs since the epoch).
-    Delete { removed: Vec<LiveEntry>, lvi_cutoff: Option<i64> },
-    /// Set the last-value index of a table that has none (`timelake upgrade`); data is unchanged:
-    /// `Operation::Replace` with no files.
-    Index { latest: RecordBatch },
-}
-
-impl Change {
-    fn added(&self) -> &[DataFile] {
-        match self {
-            Self::Append { files, .. } => files,
-            Self::Replace { added, .. } => added,
-            Self::Delete { .. } | Self::Index { .. } => &[],
-        }
+impl ManifestEntry for LiveEntry {
+    fn path(&self) -> &str {
+        self.data_file.file_path()
     }
 
-    /// The data sequence number the `i`th added file keeps, if not the commit's own.
-    fn data_sequence(&self, i: usize) -> Option<i64> {
-        match self {
-            Self::Replace { sequence_numbers, .. } => sequence_numbers.get(i).copied(),
-            _ => None,
-        }
-    }
-
-    fn removed(&self) -> &[LiveEntry] {
-        match self {
-            Self::Append { .. } | Self::Index { .. } => &[],
-            Self::Replace { removed, .. } | Self::Delete { removed, .. } => removed,
-        }
-    }
-
-    fn operation(&self) -> Operation {
-        match self {
-            Self::Append { .. } => Operation::Append,
-            Self::Replace { .. } | Self::Index { .. } => Operation::Replace,
-            Self::Delete { .. } => Operation::Delete,
-        }
+    fn is_deleted(&self) -> bool {
+        self.status == ManifestStatus::Deleted
     }
 }
 
-/// How a commit went.
-#[derive(Clone, Debug)]
-pub struct CommitInfo {
-    /// The new snapshot (for a duplicate, the current one; 0 if nothing was committed).
-    pub snapshot_id: i64,
-    /// The table version after the commit.
-    pub version: u64,
-    /// Attempts it took: more than one means other writers committed concurrently.
-    pub attempts: usize,
-    /// Time from the first attempt to the commit.
-    pub duration: Duration,
-    /// True if the batch id was already committed and nothing was written.
-    pub duplicate: bool,
+/// Iceberg-rust's name for the operation.
+fn operation(change: &Change) -> Operation {
+    match change.operation() {
+        timelake_format::commit::Operation::Append => Operation::Append,
+        timelake_format::commit::Operation::Replace => Operation::Replace,
+        timelake_format::commit::Operation::Delete => Operation::Delete,
+    }
 }
 
 /// Commits `change` on top of the latest version, rebasing and retrying when another writer
@@ -171,11 +124,9 @@ async fn commit_with(
     Err(gave_up(table))
 }
 
-/// Waits before attempt `attempt` (from 2): a random number of [`BACKOFF_MILLIS`], times `attempt`,
-/// so writers that lost the same race don't meet again.
+/// Waits before attempt `attempt` (from 2), as [`backoff_millis`] says.
 async fn back_off(attempt: usize) {
-    let attempt = u64::try_from(attempt).unwrap_or(u64::MAX);
-    tokio::time::sleep(Duration::from_millis(rand::random_range(BACKOFF_MILLIS) * attempt)).await;
+    tokio::time::sleep(Duration::from_millis(backoff_millis(attempt, rand::random()))).await;
 }
 
 fn gave_up(table: &Table) -> Error {
@@ -218,11 +169,11 @@ pub(crate) fn writable(table: &Table) -> Result<()> {
 /// Idempotency: an append whose batch id is already in the table's history (the current snapshot
 /// and its ancestors, so not snapshots a rollback left behind) is a no-op.
 fn is_duplicate(base: &Table, change: &Change, props: &HashMap<String, String>) -> bool {
-    let (Change::Append { .. }, Some(id)) = (change, props.get(summary::BATCH_ID)) else { return false };
+    let Some(id) = change.batch_id(props) else { return false };
     let metadata = base.metadata();
     let mut snapshot = metadata.current_snapshot();
     while let Some(s) = snapshot {
-        if s.summary().additional_properties.get(summary::BATCH_ID) == Some(id) {
+        if s.summary().additional_properties.get(summary::BATCH_ID).map(String::as_str) == Some(id) {
             return true;
         }
         snapshot = s.parent_snapshot_id().and_then(|p| metadata.snapshot_by_id(p));
@@ -233,11 +184,9 @@ fn is_duplicate(base: &Table, change: &Change, props: &HashMap<String, String>) 
 /// Commits new table metadata as version N+1. `Ok(None)` if another writer got there first.
 /// `files` are the new version's live files, if known without reading its manifests.
 ///
-/// A conditional PUT that reports failure may have landed all the same: a retry after a first
-/// try that landed gets "already exists", and a timeout says nothing. The version is then read
-/// back: our own metadata there is the commit, another writer's means it lost. If that can't be
-/// told, the error is [`Error::CommitUnknown`], and callers must not delete what the metadata
-/// references.
+/// A conditional PUT that reports failure may have landed all the same: the version is then read
+/// back and judged by [`read_back`]. If that can't tell, the error is [`Error::CommitUnknown`], and
+/// callers must not delete what the metadata references.
 pub(crate) async fn publish(
     base: &Table,
     metadata: TableMetadata,
@@ -248,23 +197,16 @@ pub(crate) async fn publish(
     let version = base.version() + 1;
     let uri = metadata_uri(base.location(), version);
     let bytes = Bytes::from(serde_json::to_vec(&metadata)?);
-    let unknown = |e: &dyn std::fmt::Display| Error::CommitUnknown(format!("{} v{version}: {e}", base.name()));
+    let unknown = |e: &Error| Error::CommitUnknown(format!("{} v{version}: {e}", base.name()));
     // Built first: metadata this Timelake can't load is never committed.
     let mut table =
         Table::new(base.lake().clone(), base.name().clone(), base.location().to_string(), version, metadata)?;
     let ours = match storage.write_if_absent(&uri, bytes.clone()).await {
         Ok(true) => true,
-        // Ours (an earlier try landed) or another writer's. Absent now, it was never ours: our
-        // version would still be there.
-        Ok(false) => match storage.read_opt(&uri).await {
-            Ok(found) => found.is_some_and(|found| found == bytes),
-            Err(e) => return Err(unknown(&e)),
-        },
-        // Absent now, the PUT may still land.
-        Err(e) => match storage.read_opt(&uri).await {
-            Ok(Some(found)) => found == bytes,
-            Ok(None) | Err(_) => return Err(unknown(&e)),
-        },
+        put => {
+            let found = storage.read_opt(&uri).await;
+            read_back(put.as_ref().err(), found.as_ref().map(|f| f.as_deref()), &bytes).map_err(unknown)?
+        }
     };
     if !ours {
         return Ok(None);
@@ -320,8 +262,6 @@ struct Manifests {
     carried: Vec<ManifestFile>,
     /// Entries of each manifest written, for the cache.
     entries: Vec<(String, Vec<LiveEntry>)>,
-    /// How many of the files to remove were found.
-    found: usize,
 }
 
 /// The last-value index of the new snapshot.
@@ -351,14 +291,6 @@ impl<'a> SnapshotWriter<'a> {
         // Manifests and the last-value index don't depend on each other: prepare them concurrently.
         let (manifests, index) = futures::join!(self.write_manifests(), self.write_index(&base_summary));
         let (manifests, index) = (manifests?, index?);
-        let removing = self.change.removed().len();
-        if manifests.found != removing {
-            return Err(Error::Conflict(format!(
-                "{}: {} of {removing} files to remove are no longer in the table (concurrent maintenance?)",
-                self.base.name(),
-                removing - manifests.found,
-            )));
-        }
 
         let list: Vec<ManifestFile> = manifests.new.into_iter().chain(manifests.carried).collect();
         let list_uri = self.write_manifest_list(&list).await?;
@@ -366,17 +298,11 @@ impl<'a> SnapshotWriter<'a> {
         // Both run to their end, so neither is dropped halfway with uploads open.
         let (data_sent, sent) = futures::join!(data.send(), self.uploads.send());
         data_sent.and(sent)?;
-        let mut summary = props.clone();
-        // What a rollup reflects stays recorded until a refresh records something newer.
-        for key in [summary::ROLLUP_SOURCE_SNAPSHOT, summary::ROLLUP_SOURCE_SEQUENCE] {
-            if let (false, Some(v)) = (summary.contains_key(key), base_summary.get(key)) {
-                summary.insert(key.into(), v.clone());
-            }
-        }
-        if let Some(location) = &index.location {
-            summary.insert(summary::LAST_VALUE_INDEX.into(), location.clone());
-        }
-        summary.extend(self.counters(&base_summary));
+        let (added, removed) = (self.change.added(), self.change.removed());
+        let added = FileTotals::of(added.iter().map(|f| (f.record_count(), f.file_size_in_bytes())));
+        let removed =
+            FileTotals::of(removed.iter().map(|e| (e.data_file.record_count(), e.data_file.file_size_in_bytes())));
+        let summary = snapshot_summary(props, &base_summary, index.location.as_deref(), added, removed);
         let metadata = self.base.metadata();
         let snapshot = Snapshot::builder()
             .with_snapshot_id(self.snapshot_id)
@@ -384,7 +310,7 @@ impl<'a> SnapshotWriter<'a> {
             .with_sequence_number(self.sequence_number)
             .with_timestamp_ms(chrono::Utc::now().timestamp_millis())
             .with_manifest_list(list_uri.clone())
-            .with_summary(Summary { operation: self.change.operation(), additional_properties: summary })
+            .with_summary(Summary { operation: operation(self.change), additional_properties: summary })
             .with_schema_id(metadata.current_schema_id())
             .build();
         let new_metadata = self.base.next_metadata().set_branch_snapshot(snapshot, "main")?.build()?.metadata;
@@ -452,10 +378,10 @@ impl<'a> SnapshotWriter<'a> {
         (uri, writer)
     }
 
-    /// Writes a manifest of the added files, carries the base snapshot's manifests over, and
-    /// rewrites the ones that contain removed files (or all of them once there are too many).
+    /// Writes a manifest of the added files, then carries the base snapshot's manifests over or
+    /// rewrites them, as [`manifest_plan`] says.
     async fn write_manifests(&self) -> Result<Manifests> {
-        let mut out = Manifests { new: vec![], carried: vec![], entries: vec![], found: 0 };
+        let mut out = Manifests { new: vec![], carried: vec![], entries: vec![] };
         let added = self.change.added();
         if !added.is_empty() {
             let (uri, mut w) = self.manifest_writer("added");
@@ -469,35 +395,19 @@ impl<'a> SnapshotWriter<'a> {
         }
 
         let current = self.base.manifests().await?;
-        let removed: HashSet<&str> = self.change.removed().iter().map(|e| e.data_file.file_path()).collect();
-        let merge = removed.is_empty() && current.len() + out.new.len() > MERGE_MANIFESTS_AT;
-        if removed.is_empty() && !merge {
+        let removed: HashSet<&str> = self.change.removed().iter().map(ManifestEntry::path).collect();
+        let ManifestPlan::Rewrite { merge } = manifest_plan(removed.len(), current.len(), out.new.len()) else {
             out.carried = current.to_vec();
             return Ok(out);
-        }
+        };
         let lake = self.base.lake();
         let loaded = futures::future::try_join_all(current.iter().map(|m| lake.manifest(m))).await?;
-        let (mut kept, mut deleted) = (vec![], vec![]);
-        for (manifest, entries) in current.iter().zip(&loaded) {
-            let live = entries.iter().filter(|e| e.status != ManifestStatus::Deleted);
-            if !merge && !live.clone().any(|e| removed.contains(e.data_file.file_path())) {
-                out.carried.push(manifest.clone());
-                continue;
-            }
-            for e in live {
-                if removed.contains(e.data_file.file_path()) {
-                    deleted.push(LiveEntry {
-                        status: ManifestStatus::Deleted,
-                        snapshot_id: self.snapshot_id,
-                        ..e.clone()
-                    });
-                } else {
-                    kept.push(LiveEntry { status: ManifestStatus::Existing, ..e.clone() });
-                }
-            }
-        }
-        out.found = deleted.len();
-        if !kept.is_empty() {
+        let rewritten = rewrite_manifests(loaded.iter().map(|m| m.as_slice()), &removed, merge)
+            .map_err(|e| Error::Conflict(format!("{}: {e}", self.base.name())))?;
+        out.carried = rewritten.carried.iter().map(|&i| current[i].clone()).collect();
+        if !rewritten.kept.is_empty() {
+            let kept: Vec<LiveEntry> =
+                rewritten.kept.iter().map(|e| LiveEntry { status: ManifestStatus::Existing, ..(*e).clone() }).collect();
             let (uri, mut w) = self.manifest_writer("merged");
             for e in &kept {
                 let file = e.data_file.as_ref().clone();
@@ -506,7 +416,12 @@ impl<'a> SnapshotWriter<'a> {
             out.new.push(w.write_manifest_file().await?);
             out.entries.push((uri, kept));
         }
-        if !deleted.is_empty() {
+        if !rewritten.removed.is_empty() {
+            let deleted: Vec<LiveEntry> = rewritten
+                .removed
+                .iter()
+                .map(|e| LiveEntry { status: ManifestStatus::Deleted, snapshot_id: self.snapshot_id, ..(*e).clone() })
+                .collect();
             let (uri, mut w) = self.manifest_writer("deleted");
             for e in &deleted {
                 w.add_delete_file(e.data_file.as_ref().clone(), e.sequence_number, Some(e.file_sequence_number))?;
@@ -517,34 +432,22 @@ impl<'a> SnapshotWriter<'a> {
         Ok(out)
     }
 
-    /// The last-value index for the new snapshot: extended on append, kept on compaction, and
-    /// trimmed to the retention cutoff on delete.
+    /// The last-value index for the new snapshot, as [`Change::index_action`] says.
     async fn write_index(&self, base_summary: &HashMap<String, String>) -> Result<LastValueIndex> {
         let base = self.base;
-        let unchanged = LastValueIndex { location: base.last_value_index(), written: None };
-        let new = match self.change {
-            Change::Append { latest: Some(latest), .. } => {
-                // Only extend an index that covers all existing rows.
-                let base_rows: u64 = base_summary.get(summary::TOTAL_RECORDS).and_then(|v| v.parse().ok()).unwrap_or(0);
-                if base.last_value_index().is_none() && base_rows > 0 {
-                    return Ok(LastValueIndex { location: None, written: None });
+        let time_column = &base.contract().time_column;
+        let unchanged = || LastValueIndex { location: base.last_value_index(), written: None };
+        let new = match self.change.index_action(base_summary, time_column.is_some()) {
+            IndexAction::Keep => return Ok(unchanged()),
+            IndexAction::Drop => None,
+            IndexAction::Extend(latest) => lvi::merged(base, latest).await?,
+            IndexAction::Trim(cutoff) => match (base.last_value_index(), time_column) {
+                (Some(location), Some(time)) => {
+                    Some(timelake_format::lvi::retain_since(&lvi::read(base, &location).await?, time, cutoff)?)
                 }
-                lvi::merged(base, latest).await?
-            }
-            Change::Append { latest: None, .. } => return Ok(LastValueIndex { location: None, written: None }),
-            Change::Index { latest } => Some(latest.clone()),
-            Change::Replace { .. } => return Ok(unchanged),
-            Change::Delete { lvi_cutoff, .. } => {
-                let (Some(location), Some(cutoff), Some(time_column)) =
-                    (&unchanged.location, lvi_cutoff, &base.contract().time_column)
-                else {
-                    return Ok(unchanged);
-                };
-                let index = lvi::read(base, location).await?;
-                let times = cast(index.column(index.schema().index_of(time_column)?), &DataType::Int64)?;
-                let keep = gt_eq(&times, &Int64Array::new_scalar(*cutoff))?;
-                Some(filter_record_batch(&index, &keep)?)
-            }
+                _ => return Ok(unchanged()),
+            },
+            IndexAction::Set(latest) => Some(latest.clone()),
         };
         let Some(index) = new else { return Ok(LastValueIndex { location: None, written: None }) };
         let location = lvi::new_uri(base, self.snapshot_id);
@@ -564,41 +467,6 @@ impl<'a> SnapshotWriter<'a> {
         w.add_manifests(manifests.iter().cloned())?;
         w.close().await?;
         Ok(uri)
-    }
-
-    /// Iceberg's standard snapshot summary counters.
-    fn counters(&self, base_summary: &HashMap<String, String>) -> HashMap<String, String> {
-        let total = |k: &str| base_summary.get(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-        let (added, removed) = (self.change.added(), self.change.removed());
-        let added_rows: u64 = added.iter().map(DataFile::record_count).sum();
-        let added_bytes: u64 = added.iter().map(DataFile::file_size_in_bytes).sum();
-        let removed_rows: u64 = removed.iter().map(|e| e.data_file.record_count()).sum();
-        let removed_bytes: u64 = removed.iter().map(|e| e.data_file.file_size_in_bytes()).sum();
-        let (added_files, removed_files) = (added.len() as u64, removed.len() as u64);
-        let mut out = HashMap::new();
-        for (k, v) in [
-            (summary::ADDED_DATA_FILES, added_files),
-            (summary::ADDED_RECORDS, added_rows),
-            (summary::ADDED_FILES_SIZE, added_bytes),
-            (summary::DELETED_DATA_FILES, removed_files),
-            (summary::DELETED_RECORDS, removed_rows),
-            (summary::REMOVED_FILES_SIZE, removed_bytes),
-        ] {
-            if v != 0 {
-                out.insert(k.to_string(), v.to_string());
-            }
-        }
-        for (k, v) in [
-            (summary::TOTAL_DATA_FILES, (total(summary::TOTAL_DATA_FILES) + added_files).saturating_sub(removed_files)),
-            (summary::TOTAL_RECORDS, (total(summary::TOTAL_RECORDS) + added_rows).saturating_sub(removed_rows)),
-            (summary::TOTAL_FILES_SIZE, (total(summary::TOTAL_FILES_SIZE) + added_bytes).saturating_sub(removed_bytes)),
-            (summary::TOTAL_DELETE_FILES, 0),
-            (summary::TOTAL_POSITION_DELETES, 0),
-            (summary::TOTAL_EQUALITY_DELETES, 0),
-        ] {
-            out.insert(k.to_string(), v.to_string());
-        }
-        out
     }
 
     /// The manifest list as readers will see it: sequence numbers this commit assigned filled in.

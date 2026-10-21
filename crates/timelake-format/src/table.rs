@@ -63,7 +63,8 @@ impl TableState {
         Self::from_metadata(location, version, Metadata::parse(&bytes)?)
     }
 
-    fn from_metadata(location: &str, version: u64, metadata: Metadata) -> WriteResult<Self> {
+    /// Version `version` with `metadata`: an error if the shared writer can't write it.
+    pub(crate) fn from_metadata(location: &str, version: u64, metadata: Metadata) -> WriteResult<Self> {
         if metadata.format_version() != 2 {
             return Err(WriteError::invalid("only Iceberg format version 2 tables can be written"));
         }

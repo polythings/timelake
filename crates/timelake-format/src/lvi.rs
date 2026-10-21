@@ -1,9 +1,12 @@
 //! The last-value index's file: the newest row of every series, as one small Parquet file per
 //! snapshot (`timelake.last-value-index` in its summary), so `DuckDB` can read it too.
 
-use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_array::{Int64Array, RecordBatch};
+use arrow_cast::cast;
+use arrow_ord::cmp::gt_eq;
+use arrow_schema::{DataType, SchemaRef};
 use arrow_select::concat::concat_batches;
+use arrow_select::filter::filter_record_batch;
 use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -33,6 +36,14 @@ pub fn decode(bytes: Bytes, schema: &SchemaRef) -> WriteResult<RecordBatch> {
     Ok(concat_batches(schema, &batches)?)
 }
 
+/// The rows of `index` whose `time_column` is at or after `cutoff` (µs since the epoch): what
+/// retention leaves of it.
+pub fn retain_since(index: &RecordBatch, time_column: &str, cutoff: i64) -> WriteResult<RecordBatch> {
+    let times = cast(index.column(index.schema().index_of(time_column)?), &DataType::Int64)?;
+    let keep = gt_eq(&times, &Int64Array::new_scalar(cutoff))?;
+    Ok(filter_record_batch(index, &keep)?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -54,5 +65,18 @@ mod tests {
         assert_eq!(read.schema(), table);
         assert_eq!(read.column(0).null_count(), 1);
         assert_eq!(read.column(1).as_any().downcast_ref::<Float64Array>().unwrap().value(0), 1.5);
+    }
+
+    #[test]
+    fn retention_keeps_series_seen_since_the_cutoff() {
+        use arrow_array::TimestampMicrosecondArray;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "t",
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+            false,
+        )]));
+        let times = TimestampMicrosecondArray::from(vec![1, 5, 9]);
+        let index = RecordBatch::try_new(schema, vec![Arc::new(times)]).unwrap();
+        assert_eq!(retain_since(&index, "t", 5).unwrap().num_rows(), 2);
     }
 }
