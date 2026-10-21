@@ -141,6 +141,23 @@ test("a handle many versions behind reads the newest version once cacheMs is ove
   expect((await cached.info()).version).toBe(first)
 })
 
+test("without cacheMs, a handle reuses a version for the table's version-check-interval", async () => {
+  createSmall("checked", 0)
+  createSmall("unchecked", 0)
+  fx.cli("alter", "iot.checked", "--set", "version-check-interval=0s")
+  fx.cli("alter", "iot.unchecked", "--set", "version-check-interval=1h")
+  const [checked, unchecked] = [lake.table("iot.checked"), lake.table("iot.unchecked")]
+  expect([(await checked.info()).versionCheckIntervalMs, (await unchecked.info()).versionCheckIntervalMs]).toEqual([
+    0, 3_600_000,
+  ])
+  appendSmall("checked", 1, 1)
+  appendSmall("unchecked", 1, 1)
+  expect((await checked.latest()).map((r) => r.velocity)).toEqual([1])
+  expect((await unchecked.latest()).map((r) => r.velocity)).toEqual([0])
+  // cacheMs, when given, wins over the table's setting.
+  expect((await new Lake(fx.url, { cacheMs: 0 }).table("iot.unchecked").latest()).map((r) => r.velocity)).toEqual([1])
+})
+
 test("a handle behind the versions maintenance deleted reads the newest version", async () => {
   createSmall("expired", 0)
   const t = new Lake(fx.url, { cacheMs: 0 }).table("iot.expired")

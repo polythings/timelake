@@ -11,7 +11,7 @@ use serde::Serialize;
 use timelake_format::bounds::{Bound, decode};
 use timelake_format::iceberg::{Content, Entry, ManifestFile, Status, read_manifest, read_manifest_list};
 use timelake_format::metadata::{Metadata, SnapshotRef};
-use timelake_format::{Chunk, Contract, IcebergType, LISTED_SNAPSHOTS, format_duration, summary};
+use timelake_format::{Chunk, Contract, IcebergType, LISTED_SNAPSHOTS, duration_millis, format_duration, summary};
 
 use crate::error::{Error, Result};
 use crate::prune::scale_to_micros;
@@ -72,6 +72,9 @@ pub struct TableMeta {
     /// Newest first, at most [`LISTED_SNAPSHOTS`].
     pub snapshots: Vec<SnapshotInfo>,
     pub last_updated_ms: i64,
+    /// How long a reader uses a version it loaded before checking for a newer one: the table's
+    /// `version-check-interval`.
+    pub version_check_interval_ms: i64,
 }
 
 impl TableMeta {
@@ -113,6 +116,7 @@ impl TableMeta {
             snapshot_count: all.len(),
             snapshots,
             last_updated_ms: metadata.last_updated_ms(),
+            version_check_interval_ms: duration_millis(contract.version_check_interval),
         })
     }
 }

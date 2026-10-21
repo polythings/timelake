@@ -44,7 +44,7 @@ The client asks for some objects that may not exist: the head, the version hint,
 
 | Call | Returns |
 | --- | --- |
-| `new Lake(url, { fetch?, concurrency?, cacheMs?, rewriteUrl? })` | A warehouse handle. `concurrency` caps parallel requests (default 16). `cacheMs` controls how long a loaded table version is reused (default 5000). `rewriteUrl` maps object URLs when a warehouse has moved. |
+| `new Lake(url, { fetch?, concurrency?, cacheMs?, rewriteUrl? })` | A warehouse handle. `concurrency` caps parallel requests (default 16). `cacheMs` is how long a loaded table version is reused before checking for a newer one, in ms; without it, each table's [`version-check-interval`](/docs/settings) setting decides (1 s unless the table sets it), as for the engine. `rewriteUrl` maps object URLs when a warehouse has moved. |
 | `lake.tables()` | `string[]` of `namespace.table`. |
 | `lake.table(name, schema?)` | A table handle. `name` is `namespace.table`, or `table` in the namespace `default`; both parts use `[A-Za-z0-9_-]`, as in the engine. Rows are typed and validated with the Zod schema if one is given; otherwise they are `Record<string, unknown>`. |
 | `table.latest({ series?, columns? })` | The newest row of each series, read from the last-value index in a single request. Tables without the index (written by another Iceberg writer) are scanned instead. |
@@ -103,7 +103,7 @@ export default {
 
 ## How a query runs
 
-1. Read the table's head object (`metadata/timelake-head`) and `version-hint.text` at the same time. The head holds the metadata, the files, and usually the last-value index and file footers, so a `latest` query needs no further request. A HEAD request for the next version runs alongside the query; if one exists, the result is dropped and the query reruns on the newest version. Tables without a head are read through the metadata, the manifest list, and the manifests. A loaded version is reused for `cacheMs`. After that, HEAD requests for the loaded version and the next one check for a newer version: maintenance deletes the oldest metadata files, so a missing loaded version also means a newer one exists.
+1. Read the table's head object (`metadata/timelake-head`) and `version-hint.text` at the same time. The head holds the metadata, the files, and usually the last-value index and file footers, so a `latest` query needs no further request. A HEAD request for the next version runs alongside the query; if one exists, the result is dropped and the query reruns on the newest version. Tables without a head are read through the metadata, the manifest list, and the manifests. A loaded version is reused for `cacheMs`, or the table's `version-check-interval` without it. After that, HEAD requests for the loaded version and the next one check for a newer version: maintenance deletes the oldest metadata files, so a missing loaded version also means a newer one exists.
 
    To find the newest version, the client asks for versions after the one it knows, doubling the step until a version is missing, then halving it, so a handle many commits behind needs a few requests, not one per commit. If the metadata it would start from was deleted, it starts again from the head and the version hint.
 2. Prune data files on their Iceberg column bounds (time range, series key).

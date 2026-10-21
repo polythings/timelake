@@ -358,6 +358,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - The WebAssembly reader (TypeScript client) decodes a file a batch at a time and, for a query with a `limit`,
   keeps only the rows that can still be in the result, so it uses memory for about `limit` rows rather than every
   matching row. The newest 10 of 1 Mi rows: 4 MB at most instead of 55 MB, which matters in a Worker's 128 MB.
+- TypeScript client: without `cacheMs`, a table handle reuses a loaded version for the table's
+  `version-check-interval` (1 s unless the table sets it), as the engine does, instead of 5 s; `cacheMs` still
+  overrides it. `table.info()` gives the setting as `versionCheckIntervalMs`.
 - Python: `Table.info()` returns every field of `timelake info --json`, typed as `TableInfo`: the schema, retention,
   partitions, and the newest 50 `snapshots`, newest first. `snapshots` was a count before; the count is now
   `snapshot_count`. `timelake info --json` gains `timelake_format_version` and `current_snapshot`. The Rust API has

@@ -95,7 +95,10 @@ export interface LakeOptions {
   fetch?: Fetch
   /** Maximum concurrent HTTP requests per query. Default 16. */
   concurrency?: number
-  /** How long a loaded table version is reused, in ms. Default 5000. */
+  /**
+   * How long a loaded table version is reused before checking for a newer one, in ms. Default: each table's
+   * `version-check-interval` setting (1 s unless the table sets it).
+   */
   cacheMs?: number
   /** Rewrite object URLs before fetching (e.g. when a warehouse was copied to a new host). */
   rewriteUrl?: (url: string) => string
@@ -128,6 +131,8 @@ export interface TableInfo {
   /** Newest first, at most 50. */
   snapshots: SnapshotInfo[]
   lastUpdatedMs: number
+  /** The table's `version-check-interval` in ms: how long a loaded version is reused unless `cacheMs` is given. */
+  versionCheckIntervalMs: number
   /** Committed version (`vN.metadata.json`). */
   version: number
   /** Number of manifests in the current snapshot; `null` when the table was read from its head. */
@@ -168,7 +173,6 @@ export interface QueryStats {
 // --- helpers ---------------------------------------------------------------------------------------
 
 const DEFAULT_CONCURRENCY = 16
-const DEFAULT_CACHE_MS = 5000
 
 const optionalMicros = (t: TimeInput | undefined) => (t === undefined ? undefined : timeMicros(t))
 
@@ -267,14 +271,14 @@ const TableNames = z.array(z.string())
 /** A Timelake warehouse served over HTTP(S): Vercel Blob, S3/R2/GCS public URLs, a CDN, … */
 export class Lake {
   readonly url: string
-  readonly options: Required<Omit<LakeOptions, "rewriteUrl">> & Pick<LakeOptions, "rewriteUrl">
+  readonly options: Required<Omit<LakeOptions, "rewriteUrl" | "cacheMs">> & Pick<LakeOptions, "rewriteUrl" | "cacheMs">
 
   constructor(url: string, options: LakeOptions = {}) {
     this.url = trimTrailingSlashes(url)
     this.options = {
       fetch: options.fetch ?? ((target, init) => globalThis.fetch(target, init)),
       concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
-      cacheMs: options.cacheMs ?? DEFAULT_CACHE_MS,
+      cacheMs: options.cacheMs,
       rewriteUrl: options.rewriteUrl,
     }
   }
@@ -329,6 +333,8 @@ type Loaded = {
 export class TableHandle<T = Row> {
   private loaded: Promise<Loaded> | null = null
   private loadedAt = 0
+  /** The loaded version's `version-check-interval`; `undefined` while it loads. */
+  private checkIntervalMs: number | undefined
   #location: string | undefined
   /** Statistics of the last query, the requests that loaded the table version included. */
   lastStats: QueryStats = emptyStats()
@@ -355,10 +361,12 @@ export class TableHandle<T = Row> {
 
   /**
    * Loads (or reuses) the current table version. A version loaded earlier is reused within
-   * `cacheMs`, and after that while no newer one exists (checked as the next query runs).
+   * `cacheMs`, or the table's `version-check-interval` without it, and after that while no newer
+   * one exists (checked as the next query runs). A version still loading is reused.
    */
   private load(requests: Requests): Promise<Loaded> {
-    if (this.loaded && Date.now() - this.loadedAt < this.lake.options.cacheMs) return this.loaded
+    const reuseMs = this.lake.options.cacheMs ?? this.checkIntervalMs ?? Infinity
+    if (this.loaded && Date.now() - this.loadedAt < reuseMs) return this.loaded
     const previous = this.loaded
     return this.keep(
       previous
@@ -387,9 +395,15 @@ export class TableHandle<T = Row> {
   /** Makes `loaded` the version later calls reuse. */
   private keep(loaded: Promise<Loaded>): Promise<Loaded> {
     this.loadedAt = Date.now()
-    loaded.catch(() => {
-      if (this.loaded === loaded) this.loaded = null
-    })
+    this.checkIntervalMs = undefined
+    loaded.then(
+      (l) => {
+        if (this.loaded === loaded) this.checkIntervalMs = l.info.versionCheckIntervalMs
+      },
+      () => {
+        if (this.loaded === loaded) this.loaded = null
+      },
+    )
     this.loaded = loaded
     return loaded
   }

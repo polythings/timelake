@@ -591,10 +591,10 @@ pub static SETTINGS: &[Setting] = &[
         default: DefaultValue::Value("1s"),
         levels: &[Level::Table, Level::Session],
         since: "0.6.0",
-        description: "The Timelake reader uses a table version it loaded or checked this long before checking for a \
-                      newer one, so queries in that time send no request for it and can miss commits by other \
-                      processes. `0s` checks on every query. This process's own commits are seen at once, and \
-                      writers always check.",
+        description: "The Timelake reader (the engine, and the TypeScript client unless given `cacheMs`) uses a \
+                      table version it loaded or checked this long before checking for a newer one, so queries in \
+                      that time send no request for it and can miss commits by other processes. `0s` checks on \
+                      every query. This process's own commits are seen at once, and writers always check.",
     },
     Setting {
         name: "rollups",
