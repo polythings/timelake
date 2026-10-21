@@ -268,7 +268,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   PyO3 0.29. No iceberg-rust release is on Arrow 59 yet, so Iceberg's types come from
   [`polythings-iceberg`](https://github.com/polythings/iceberg-rust), iceberg 0.10.1 with only its Arrow version
   raised; it goes once an iceberg-rust release catches up. Rust code that used `iceberg` types from Timelake's API
-  depends on `polythings-iceberg` (library name `iceberg`) instead.
+  depends on `polythings-iceberg` (library name `iceberg`) instead. Timelake sessions keep DataFusion 54's 10 MiB
+  for `datafusion.optimizer.repartition_file_min_size` (55 lowered it to 1 MiB): a Timelake file holds few row
+  groups, so a small table split into byte ranges ran on fewer cores (TSBS IoT breakdown-frequency 10 → 16 ms).
 
 - Maintenance in the engine merges several groups of files at once (up to 8, reading at most 24 files together, the
   most one merge reads), instead of one partition after another. Rollup refreshes load their rollups, and queries
