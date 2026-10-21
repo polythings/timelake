@@ -181,6 +181,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
 - Changing settings, `rollback` and snapshot expiry retried without limit or pause when another writer kept publishing
   first (or a store kept reporting the version as taken). They now back off and give up with a conflict error after 10
   attempts, as commits do.
+- A table with `head-format = none` sent a DELETE of its head after every commit. Each process now deletes it once.
 
 ### Changed
 

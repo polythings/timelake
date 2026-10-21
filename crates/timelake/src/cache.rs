@@ -24,6 +24,8 @@ pub(crate) struct Caches {
     pub(crate) footers: BoundedCache<String, Bytes>,
     /// Table versions this process loaded or committed, with when (see `Lake::table_recent`).
     pub(crate) tables: BoundedCache<TableName, (Instant, Table)>,
+    /// Heads (by URI) this process deleted and hasn't written since: not deleted again.
+    pub(crate) deleted_heads: BoundedCache<String, ()>,
 }
 
 impl Default for Caches {
@@ -34,6 +36,7 @@ impl Default for Caches {
             last_value_indexes: BoundedCache::new(64),
             footers: BoundedCache::new(8192),
             tables: BoundedCache::new(1024),
+            deleted_heads: BoundedCache::new(1024),
         }
     }
 }

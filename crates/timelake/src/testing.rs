@@ -63,9 +63,15 @@ pub(crate) struct FaultyStore {
     faults: Arc<Mutex<Vec<Fault>>>,
     latency: Arc<Mutex<Duration>>,
     open_uploads: Arc<AtomicUsize>,
+    deleted: Arc<Mutex<Vec<String>>>,
 }
 
 impl FaultyStore {
+    /// Every path a delete was asked for, in order (whether it existed or not).
+    pub(crate) fn deleted(&self) -> Vec<String> {
+        self.deleted.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
     /// Multipart uploads started and neither completed nor aborted.
     pub(crate) fn open_uploads(&self) -> usize {
         self.open_uploads.load(Ordering::SeqCst)
@@ -233,6 +239,14 @@ impl ObjectStore for FaultyStore {
         &self,
         locations: BoxStream<'static, object_store::Result<Path>>,
     ) -> BoxStream<'static, object_store::Result<Path>> {
+        let deleted = Arc::clone(&self.deleted);
+        let locations = locations
+            .inspect(move |p| {
+                if let Ok(p) = p {
+                    deleted.lock().unwrap_or_else(PoisonError::into_inner).push(p.to_string());
+                }
+            })
+            .boxed();
         self.inner.delete_stream(locations)
     }
 

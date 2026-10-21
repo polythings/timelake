@@ -79,10 +79,17 @@ pub(crate) async fn write(table: &Table) -> Result<()> {
     let storage = lake.storage();
     let uri = uri(table.location());
     let contract = table.contract();
+    let deleted = &lake.caches().deleted_heads;
     let Some(codec) = lake.head_codecs().get(&contract.head_format) else {
-        // Turned off, or a codec this process doesn't have: leave no head behind that could go stale.
-        return storage.delete(&uri).await;
+        // Turned off, or a codec this process doesn't have: leave no head behind that could go
+        // stale. Once is enough, not a request on every commit.
+        if deleted.get(&uri).is_none() {
+            storage.delete(&uri).await?;
+            deleted.insert(uri, ());
+        }
+        return Ok(());
     };
+    deleted.remove(&uri);
     let files = table.files().await?;
     let mut doc = to_doc(table, &files)?;
     let mut bytes = encode(table.version(), codec.as_ref(), &doc)?;
@@ -91,7 +98,7 @@ pub(crate) async fn write(table: &Table) -> Result<()> {
     if let Some(index) = table.last_value_index() {
         doc.sections.insert(LAST_VALUES.into(), lvi::read(table, &index).await?);
         let with_index = encode(table.version(), codec.as_ref(), &doc)?;
-        let cost = (with_index.len() - bytes.len()) as u64;
+        let cost = with_index.len().saturating_sub(bytes.len()) as u64;
         if cost <= budget {
             bytes = with_index;
             budget -= cost;
@@ -644,6 +651,14 @@ mod tests {
         crate::flush().await;
         assert_eq!(stored_header(&lake, &t).await, None);
         assert_eq!(reopen(&store).table("iot.off").await.unwrap().version(), 2);
+
+        // The head is deleted once, not again on every commit.
+        let (t, _) = t.append(&[batch(&[(T0 + 1, 1, 1.0)])], no_maintenance()).await.unwrap();
+        t.append(&[batch(&[(T0 + 2, 1, 1.0)])], no_maintenance()).await.unwrap();
+        crate::flush().await;
+        let head = uri(t.location());
+        let head = head.trim_start_matches("memory://test/");
+        assert!(store.deleted().iter().filter(|p| *p == head).count() <= 1, "{:?}", store.deleted());
 
         let err = lake.create_table("iot.x", &schema(), with_properties(&[(property::HEAD_FORMAT, "bson")])).await;
         assert!(matches!(err, Err(Error::Invalid(_))), "{err:?}");
