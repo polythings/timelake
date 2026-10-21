@@ -200,6 +200,7 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   `--no-compact`, `--no-retention` and `--no-expire`.
 - `--chunk` and `--retention` of `timelake create` and `import` are checked when the arguments are parsed, with the
   usage message, before any file is read.
+- Python: `repr(Lake(...))` quotes the location as Python's `repr` does (`Lake('…')`), not with Rust's double quotes.
 
 ### Changed
 

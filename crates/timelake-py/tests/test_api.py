@@ -20,7 +20,7 @@ def test_lake_location_is_a_url(lake: timelake.Lake) -> None:
 
 
 def test_lake_repr_shows_location(lake: timelake.Lake) -> None:
-    assert repr(lake) == f"Lake({lake.location!r})".replace("'", '"')
+    assert repr(lake) == f"Lake({lake.location!r})"
 
 
 def test_new_table_is_at_version_one(table: timelake.Table) -> None:

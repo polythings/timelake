@@ -229,8 +229,10 @@ impl Lake {
         collect(py, async move { session.latest(&table).await })
     }
 
-    fn __repr__(&self) -> String {
-        format!("Lake({:?})", self.inner.location())
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        // Python's quoting of the location, as `repr` of a str gives it.
+        let location = pyo3::types::PyString::new(py, self.inner.location()).repr()?;
+        Ok(format!("Lake({location})"))
     }
 }
 
@@ -391,7 +393,10 @@ impl Table {
         let table = self.get();
         let (files, manifests) = run(py, {
             let table = table.clone();
-            async move { Ok((table.files().await?, table.manifests().await?.len())) }
+            async move {
+                let (files, manifests) = tokio::try_join!(table.files(), table.manifests())?;
+                Ok((files, manifests.len()))
+            }
         })?;
         let contract = table.contract();
         Ok(TableInfo {
