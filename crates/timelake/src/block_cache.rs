@@ -226,7 +226,16 @@ impl CachedStore {
             });
             let max_blocks = if self.config.request == 0 { u64::MAX } else { (self.config.request / block).max(1) };
             for run in runs(&missing, max_blocks) {
-                let fetch = self.clone().fetch_run(location.clone(), run.clone()).shared();
+                // A task of its own, so the GET runs to its end and its blocks are stored even if
+                // every read waiting for it is dropped (a LIMIT, a timeout).
+                let task = tokio::spawn(self.clone().fetch_run(location.clone(), run.clone()));
+                let fetch = async move {
+                    task.await.unwrap_or_else(|e| {
+                        Err(Arc::new(object_store::Error::Generic { store: "cache", source: Box::new(e) }))
+                    })
+                }
+                .boxed()
+                .shared();
                 for (i, b) in run.clone().enumerate() {
                     let one: Fetch = fetch
                         .clone()
@@ -241,7 +250,7 @@ impl CachedStore {
         // The runs are fetched at the same time, not one after another.
         let fetched = futures::future::try_join_all(waits.into_iter().map(|(b, f)| f.map(move |r| r.map(|v| (b, v)))))
             .await
-            .map_err(|e| object_store::Error::Generic { store: "cache", source: Box::new(ArcError(e)) })?;
+            .map_err(unshared)?;
         blocks.extend(fetched);
         if info.is_none() {
             info = self.objects.get(location);
@@ -253,44 +262,40 @@ impl CachedStore {
 
     /// Fetches blocks `run` in one ranged GET and caches them; one result per block (empty past the
     /// end of the object).
-    fn fetch_run(
+    async fn fetch_run(
         self: Arc<Self>,
         location: Path,
         run: Range<u64>,
-    ) -> BoxFuture<'static, Result<Arc<Vec<Bytes>>, Arc<object_store::Error>>> {
-        async move {
-            let block = self.config.block;
-            let options =
-                GetOptions { range: Some(GetRange::Bounded(run.start * block..run.end * block)), ..Default::default() };
-            let fetched = async {
-                let result = self.inner.get_opts(&location, options).await?;
-                let meta = result.meta.clone();
-                let start = result.range.start;
-                Ok::<_, object_store::Error>((meta, start, result.bytes().await?))
-            }
-            .await;
-            {
-                let mut inflight = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
-                for b in run.clone() {
-                    inflight.remove(&(location.clone(), b));
-                }
-            }
-            let (meta, start, bytes) = fetched.map_err(Arc::new)?;
-            self.counters.misses.fetch_add(run.end - run.start, Ordering::Relaxed);
-            self.counters.bytes_fetched.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            let info = self.learn(&location, &meta);
-            let first = start / block;
-            self.store_blocks(&location, &info, first, &bytes);
-            let size = usize::try_from(block).unwrap_or(usize::MAX);
-            let per_block = (run.start..run.end)
-                .map(|b| {
-                    let from = usize::try_from(b.saturating_sub(first)).unwrap_or(usize::MAX).saturating_mul(size);
-                    bytes.slice(from.min(bytes.len())..from.saturating_add(size).min(bytes.len()))
-                })
-                .collect();
-            Ok(Arc::new(per_block))
+    ) -> Result<Arc<Vec<Bytes>>, Arc<object_store::Error>> {
+        let fetched = self.fetch_and_store(&location, run.clone()).await;
+        // Only now, with the blocks stored: a read that no longer finds the fetch finds its blocks.
+        let mut inflight = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
+        for b in run {
+            inflight.remove(&(location.clone(), b));
         }
-        .boxed()
+        fetched.map_err(Arc::new)
+    }
+
+    async fn fetch_and_store(&self, location: &Path, run: Range<u64>) -> object_store::Result<Arc<Vec<Bytes>>> {
+        let block = self.config.block;
+        let options =
+            GetOptions { range: Some(GetRange::Bounded(run.start * block..run.end * block)), ..Default::default() };
+        let result = self.inner.get_opts(location, options).await?;
+        let (meta, start) = (result.meta.clone(), result.range.start);
+        let bytes = result.bytes().await?;
+        self.counters.misses.fetch_add(run.end - run.start, Ordering::Relaxed);
+        self.counters.bytes_fetched.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let info = self.learn(location, &meta);
+        let first = start / block;
+        self.store_blocks(location, &info, first, &bytes);
+        let size = usize::try_from(block).unwrap_or(usize::MAX);
+        let per_block = (run.start..run.end)
+            .map(|b| {
+                let from = usize::try_from(b.saturating_sub(first)).unwrap_or(usize::MAX).saturating_mul(size);
+                bytes.slice(from.min(bytes.len())..from.saturating_add(size).min(bytes.len()))
+            })
+            .collect();
+        Ok(Arc::new(per_block))
     }
 
     /// Answers a whole-object, offset or suffix read of an object whose size the cache doesn't know:
@@ -397,6 +402,17 @@ fn cacheable(location: &Path, options: &GetOptions) -> bool {
 /// named with a UUID (as Iceberg files are by every engine).
 fn is_immutable(location: &Path) -> bool {
     matches!(location.extension(), Some("parquet" | "avro"))
+}
+
+/// A shared fetch's error for one of the reads waiting for it: a missing object stays
+/// `NotFound`, which callers act on.
+fn unshared(e: Arc<object_store::Error>) -> object_store::Error {
+    match e.as_ref() {
+        object_store::Error::NotFound { path, .. } => {
+            object_store::Error::NotFound { path: path.clone(), source: Box::new(ArcError(e)) }
+        }
+        _ => object_store::Error::Generic { store: "cache", source: Box::new(ArcError(e)) },
+    }
 }
 
 #[derive(Debug)]
@@ -904,6 +920,37 @@ mod tests {
         })
         .await;
         assert_eq!(n, 1);
+    }
+
+    /// A read dropped while its GET is out (a LIMIT, a timeout) neither keeps the cache alive nor
+    /// leaves the GET for a later read to resume: it finishes on its own and its blocks are kept.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_read_leaves_nothing_behind() {
+        let store = Arc::new(Counting::default());
+        let path = Path::from("t/data/d.parquet");
+        store.inner.put(&path, data(5000).into()).await.unwrap();
+        let c = cached(&store, None);
+        let read = c.get_range(&path, 0..100);
+        assert!(tokio::time::timeout(Duration::from_millis(1), read).await.is_err(), "dropped before its GET returns");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let n = gets_for(&store, async { assert_eq!(c.get_range(&path, 0..100).await.unwrap(), data(100)) }).await;
+        assert_eq!(n, 0, "the dropped read's GET finished and its block is cached");
+
+        let weak = Arc::downgrade(&c.0);
+        let read = c.get_range(&path, 4096..4196);
+        assert!(tokio::time::timeout(Duration::from_millis(1), read).await.is_err());
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(weak.upgrade().is_none(), "nothing holds the cache once its fetches are done");
+    }
+
+    /// A missing object is `NotFound`, as from the store: callers tell it from other errors.
+    #[tokio::test]
+    async fn a_missing_object_is_not_found() {
+        let store = Arc::new(Counting::default());
+        let c = cached(&store, None);
+        let err = c.get_range(&Path::from("t/data/gone.parquet"), 0..100).await.unwrap_err();
+        assert!(matches!(err, object_store::Error::NotFound { .. }), "{err:?}");
     }
 
     #[tokio::test]

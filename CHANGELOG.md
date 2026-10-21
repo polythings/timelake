@@ -173,6 +173,11 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   finished can still leave its upload open: object_store gives no way to abort it.)
 - A stray file in the disk cache's directory (such as macOS's `.DS_Store`), or an object directory removed while a
   sweep ran, stopped every sweep, so the disk cache grew past its budget. Sweeps now pass over such entries.
+- A read cut short (a `LIMIT`, a timeout) could leave the block cache's GETs half done: the cache, and the store under
+  it, then stayed in memory for good, and a later read resumed the stale request. Each fetch now runs to its end on
+  its own, and another read can't miss both the fetch and its blocks.
+- Through the block cache, a missing object was a generic error, so snapshot expiry failed instead of passing over a
+  manifest list another process had already deleted. It is `NotFound` again.
 
 ### Changed
 
