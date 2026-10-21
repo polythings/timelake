@@ -1,8 +1,8 @@
 //! Timelake's own Iceberg commit layer (D13, spec 2), built on iceberg-rust's public spec types.
 //!
-//! iceberg-rust 0.10 only exposes fast-append transactions; compaction and retention need
-//! "replace" and "delete" snapshots, and frequent appends need manifest merging so that planning a
-//! scan doesn't fetch one manifest per commit. This module writes manifests, manifest lists,
+//! iceberg-rust's transactions only fast-append, while compaction and retention need "replace" and
+//! "delete" snapshots, and frequent appends need manifest merging so that planning a scan doesn't
+//! fetch one manifest per commit. So this module writes manifests, manifest lists,
 //! snapshots and table metadata directly, then commits through the object-store catalog with
 //! optimistic retries. The protocol's rules (summaries, the last-value index, which manifests are
 //! rewritten, retries, judging a conditional PUT) are `timelake_format::commit`'s, shared with the

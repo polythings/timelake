@@ -609,13 +609,13 @@ impl Storage {
         OutputFile::new(self.iceberg_storage(), uri.to_string())
     }
 
-    /// An output file whose upload completes in [`Uploads::send`] rather than when it is closed.
     /// A multipart upload of `uri` whose completion is queued in `uploads`, like
     /// [`Storage::deferred_output_file`], for writers that produce bytes themselves.
     pub(crate) fn deferred_writer(&self, uri: &str, uploads: &Uploads) -> Result<DeferredWriter> {
         Ok(DeferredWriter { inner: self.buf_writer(self.path(uri)?), uploads: uploads.clone() })
     }
 
+    /// An output file whose upload completes in [`Uploads::send`] rather than when it is closed.
     pub(crate) fn deferred_output_file(&self, uri: &str, uploads: &Uploads) -> OutputFile {
         let storage = IcebergStorage { inner: Some(self.clone()), uploads: Some(uploads.clone()) };
         OutputFile::new(Arc::new(storage), uri.to_string())
@@ -710,11 +710,9 @@ impl std::fmt::Debug for Uploads {
     }
 }
 
-// --- iceberg-rust adapter -----------------------------------------------------------------------
-//
-// iceberg-rust storage is pluggable (`Storage` + `StorageFactory`). Both traits require serde via
-// typetag so storages can cross process boundaries; Timelake never serializes them, so the store
-// handle is skipped and a deserialized instance is unusable by design.
+// The iceberg-rust adapter. iceberg-rust storage is pluggable (`Storage` + `StorageFactory`). Both
+// traits require serde via typetag so storages can cross process boundaries; Timelake never
+// serializes them, so the store handle is skipped and a deserialized instance is unusable by design.
 
 fn ice_err(e: impl std::error::Error + Send + Sync + 'static) -> iceberg::Error {
     iceberg::Error::new(iceberg::ErrorKind::Unexpected, "Timelake storage").with_source(e)

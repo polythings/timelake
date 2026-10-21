@@ -370,7 +370,7 @@ pub struct CommitInfo {
     pub duplicate: bool,
 }
 
-// --- the shared write path's commit -------------------------------------------------------------
+// The shared write path's commit.
 
 /// Commits `change` on top of the newest version, retrying on conflicts. `props` go into the
 /// snapshot summary.

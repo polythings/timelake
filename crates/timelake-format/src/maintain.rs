@@ -447,8 +447,6 @@ async fn read_footer<H: Host>(host: &H, path: &str, size: u64) -> WriteResult<Ar
     }
 }
 
-// --- expiry ----------------------------------------------------------------------------------
-
 /// Expires old snapshots and deletes the files only they referenced.
 async fn expire<H: Host>(host: &H, table: TableState, report: &mut MaintainReport) -> WriteResult<TableState> {
     let mut table = table;

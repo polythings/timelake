@@ -437,8 +437,6 @@ pub fn write_manifest_file(
     Ok((file, bytes))
 }
 
-// --- reading ---------------------------------------------------------------------------------
-
 fn records(bytes: &[u8]) -> WriteResult<Vec<Value>> {
     let reader = Reader::new(bytes)?;
     reader.map(|v| v.map_err(WriteError::from)).collect()
