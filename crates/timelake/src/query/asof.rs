@@ -355,35 +355,63 @@ fn asof_join(join: Join) -> DfResult<Transformed<LogicalPlan>> {
         JoinType::Inner => false,
         _ => return plan_err!("ASOF JOIN keeps every left row"),
     };
-    let refs = |e: &Expr, side: &LogicalPlan| {
-        let columns = e.column_refs();
-        !columns.is_empty() && columns.iter().all(|c| side.schema().has_column(c))
-    };
-    let sides = |a: &Expr, b: &Expr| {
-        if refs(a, &join.left) && refs(b, &join.right) {
-            Some((a.clone(), b.clone(), false))
-        } else if refs(b, &join.left) && refs(a, &join.right) {
-            Some((b.clone(), a.clone(), true))
-        } else {
-            None
-        }
-    };
+    let sides = Sides { left: &join.left, right: &join.right };
     let mut on = join.on.clone();
     for e in &rest {
         match e {
-            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) => match sides(left, right) {
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) => match sides.of(left, right) {
                 Some((l, r, _)) => on.push((l, r)),
                 None => return plan_err!("ASOF JOIN's keys compare a left column with a right one"),
             },
             _ => return plan_err!("ASOF JOIN takes equalities in ON and one comparison of times in MATCH_CONDITION"),
         }
     }
-    let Expr::ScalarFunction(f) = marker else { unreachable!("a marker is a call") };
+    let (left_time, right_time, direction) = match_condition(marker, &sides)?;
+    let node = AsofJoin {
+        left: join.left.as_ref().clone(),
+        right: join.right.as_ref().clone(),
+        on,
+        left_time,
+        right_time,
+        direction,
+        keep_unmatched,
+        schema: join.schema,
+    };
+    Ok(Transformed::yes(LogicalPlan::Extension(Extension { node: Arc::new(node) })))
+}
+
+/// A join's two sides, to tell which side an expression reads.
+struct Sides<'a> {
+    left: &'a LogicalPlan,
+    right: &'a LogicalPlan,
+}
+
+impl Sides<'_> {
+    /// `a` and `b` as (left, right) expressions, and whether they were the other way round; `None`
+    /// unless one reads only the left side's columns and the other only the right's.
+    fn of(&self, a: &Expr, b: &Expr) -> Option<(Expr, Expr, bool)> {
+        let reads = |e: &Expr, side: &LogicalPlan| {
+            let columns = e.column_refs();
+            !columns.is_empty() && columns.iter().all(|c| side.schema().has_column(c))
+        };
+        if reads(a, self.left) && reads(b, self.right) {
+            Some((a.clone(), b.clone(), false))
+        } else if reads(b, self.left) && reads(a, self.right) {
+            Some((b.clone(), a.clone(), true))
+        } else {
+            None
+        }
+    }
+}
+
+/// The left time, the right time and the direction of a `MATCH_CONDITION` (its marker).
+fn match_condition(marker: &Expr, sides: &Sides<'_>) -> DfResult<(Expr, Expr, Direction)> {
+    let Expr::ScalarFunction(f) = marker else { return internal_err!("a MATCH_CONDITION marker is a call") };
     let Some(Expr::BinaryExpr(BinaryExpr { left, op, right })) = f.args.first() else {
         return plan_err!("MATCH_CONDITION compares a left time with a right time");
     };
     // Written as `left_time op right_time`, or the other way round.
-    let (left_time, right_time, op) = match sides(left, right) {
+    let (left_time, right_time, op) = match sides.of(left, right) {
         Some((l, r, false)) => (l, r, *op),
         Some((l, r, true)) => {
             let Some(swapped) = op.swap() else { return plan_err!("MATCH_CONDITION takes >=, >, <= or <") };
@@ -398,17 +426,7 @@ fn asof_join(join: Join) -> DfResult<Transformed<LogicalPlan>> {
         Operator::Lt => Direction::After { inclusive: false },
         _ => return plan_err!("MATCH_CONDITION takes >=, >, <= or <"),
     };
-    let node = AsofJoin {
-        left: join.left.as_ref().clone(),
-        right: join.right.as_ref().clone(),
-        on,
-        left_time,
-        right_time,
-        direction,
-        keep_unmatched,
-        schema: join.schema,
-    };
-    Ok(Transformed::yes(LogicalPlan::Extension(Extension { node: Arc::new(node) })))
+    Ok((left_time, right_time, direction))
 }
 
 /// Pushes the parts of a filter above an [`AsofJoin`] that read only left columns into its left

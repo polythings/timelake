@@ -197,78 +197,112 @@ type Outputs = Vec<(String, usize, bool)>;
 /// The raw table and the rollup a planned `SELECT … FROM <raw> GROUP BY time_bucket(…), keys…`
 /// defines (`name` is the rollup's), with its output columns in the query's order.
 pub(crate) fn definition_of(plan: &LogicalPlan, name: &crate::TableName) -> Result<(Table, Definition, Vec<String>)> {
-    let fail = |msg: &str| Error::invalid(format!("rollup {name}: {msg}"));
-    let (outputs, node) = outputs_of(plan).map_err(|msg| fail(&msg))?;
-    let raw = raw_table_of(node).map_err(|msg| fail(&msg))?;
-    let contract = raw.contract();
-    let Some(time) = contract.time_column.clone() else { return Err(fail(SHAPE)) };
+    let fail = |msg: String| Error::invalid(format!("rollup {name}: {msg}"));
+    let (outputs, node) = outputs_of(plan).map_err(fail)?;
+    let raw = raw_table_of(node).map_err(fail)?;
+    let Some(time) = raw.contract().time_column.clone() else { return Err(fail(SHAPE.into())) };
+    let (width, keys) = grouping_of(node, &raw, &time).map_err(fail)?;
+    let selected = Selected::of(outputs, node, &keys, &time).map_err(fail)?;
+    let Some(bucket) = selected.bucket else { return Err(fail("select the time_bucket".into())) };
+    if selected.keys.len() != keys.iter().flatten().count() {
+        return Err(fail("select every grouping column".into()));
+    }
+    if selected.aggregates.is_empty() {
+        return Err(fail("select at least one aggregate".into()));
+    }
+    let (keys, aggregates) = (selected.keys, selected.aggregates);
+    let def = Definition { source: raw.name().clone(), width, bucket, keys, aggregates };
+    Ok((raw, def, selected.order))
+}
 
-    let n_group = node.group_expr.len();
+/// What a rollup query groups by: the bucket width, and for each grouping expression the
+/// series-key column it is (`None` for the bucket).
+fn grouping_of(
+    node: &AggregateNode,
+    raw: &Table,
+    time: &str,
+) -> std::result::Result<(i64, Vec<Option<String>>), String> {
+    let series_key = &raw.contract().series_key;
     let mut width = None;
-    let mut keys: Vec<Option<String>> = vec![None; n_group];
+    let mut keys: Vec<Option<String>> = vec![None; node.group_expr.len()];
     for (i, g) in node.group_expr.iter().enumerate() {
-        if let Some(w) = bucket_width(g, &time) {
+        if let Some(w) = bucket_width(g, time) {
             if width.replace(w).is_some() {
-                return Err(fail("group by one time_bucket"));
+                return Err("group by one time_bucket".into());
             }
         } else if let Expr::Column(c) = unalias(g)
-            && contract.series_key.contains(&c.name)
+            && series_key.contains(&c.name)
         {
             keys[i] = Some(c.name.clone());
         } else {
-            return Err(fail(&format!(
-                "group by time_bucket(<fixed width>, {time}) and series-key columns ({}), not {g}",
-                contract.series_key.join(", ")
-            )));
+            let series_key = series_key.join(", ");
+            return Err(format!(
+                "group by time_bucket(<fixed width>, {time}) and series-key columns ({series_key}), not {g}"
+            ));
         }
     }
-    let Some(width) = width else { return Err(fail(&format!("group by time_bucket(<width>, {time})"))) };
+    let Some(width) = width else { return Err(format!("group by time_bucket(<width>, {time})")) };
     if width % time::SECOND_MICROS != 0 {
-        return Err(fail("the bucket width must be whole seconds"));
+        return Err("the bucket width must be whole seconds".into());
     }
+    Ok((width, keys))
+}
 
-    let (mut bucket, mut key_names, mut aggregates, mut order) = (None, vec![], vec![], vec![]);
-    for (output, index, named) in outputs {
-        let column = if index < n_group {
-            match &keys[index] {
-                Some(key) if *key == output || !named => {
-                    key_names.push(key.clone());
+/// The columns a rollup query selects: the bucket's name, the keys, the aggregates, and all of
+/// them in the query's order.
+struct Selected {
+    bucket: Option<String>,
+    keys: Vec<String>,
+    aggregates: Vec<Aggregate>,
+    order: Vec<String>,
+}
+
+impl Selected {
+    /// The columns of `outputs`, over `node` grouping by `keys` (as [`grouping_of`] gives them).
+    fn of(
+        outputs: Outputs,
+        node: &AggregateNode,
+        keys: &[Option<String>],
+        time: &str,
+    ) -> std::result::Result<Self, String> {
+        let mut selected = Self { bucket: None, keys: vec![], aggregates: vec![], order: vec![] };
+        for (output, index, named) in outputs {
+            let column = match keys.get(index) {
+                Some(Some(key)) if *key == output || !named => {
+                    selected.keys.push(key.clone());
                     key.clone()
                 }
-                Some(key) => return Err(fail(&format!("keep the name of key column {key}"))),
-                None => {
+                Some(Some(key)) => return Err(format!("keep the name of key column {key}")),
+                Some(None) => {
                     let b = if named { output } else { "bucket".to_string() };
-                    bucket = Some(b.clone());
+                    selected.bucket = Some(b.clone());
                     b
                 }
-            }
-        } else {
-            let e = &node.aggr_expr[index - n_group];
-            let Some((function, column)) = aggregate_of(e, &time) else {
-                return Err(fail(&format!(
-                    "{e} isn't an aggregate a rollup stores: count, sum, min, max, avg, first_value / last_value \
-                     ORDER BY {time}, m4, a signal aggregate or a gap aggregate"
-                )));
+                None => {
+                    let a = stored_aggregate(&node.aggr_expr[index - keys.len()], output, named, time)?;
+                    let name = a.name.clone();
+                    selected.aggregates.push(a);
+                    name
+                }
             };
-            // `integral:linear` of `value` is `integral_linear_value`; `gap_count:300s` is `gap_count_300s`.
-            let stem = function.to_string().replace(':', "_");
-            let default = column.as_ref().map_or_else(|| stem.clone(), |c| format!("{stem}_{c}"));
-            let a = Aggregate { name: if named { output } else { default }, function, column };
-            let name = a.name.clone();
-            aggregates.push(a);
-            name
-        };
-        order.push(column);
+            selected.order.push(column);
+        }
+        Ok(selected)
     }
-    let Some(bucket) = bucket else { return Err(fail("select the time_bucket")) };
-    if key_names.len() != keys.iter().flatten().count() {
-        return Err(fail("select every grouping column"));
-    }
-    if aggregates.is_empty() {
-        return Err(fail("select at least one aggregate"));
-    }
-    let def = Definition { source: raw.name().clone(), width, bucket, keys: key_names, aggregates };
-    Ok((raw, def, order))
+}
+
+/// The aggregate a rollup stores for `e`, in column `output` if the query `named` it.
+fn stored_aggregate(e: &Expr, output: String, named: bool, time: &str) -> std::result::Result<Aggregate, String> {
+    let Some((function, column)) = aggregate_of(e, time) else {
+        return Err(format!(
+            "{e} isn't an aggregate a rollup stores: count, sum, min, max, avg, first_value / last_value ORDER BY \
+             {time}, m4, a signal aggregate or a gap aggregate"
+        ));
+    };
+    // `integral:linear` of `value` is `integral_linear_value`; `gap_count:300s` is `gap_count_300s`.
+    let stem = function.to_string().replace(':', "_");
+    let default = column.as_ref().map_or_else(|| stem.clone(), |c| format!("{stem}_{c}"));
+    Ok(Aggregate { name: if named { output } else { default }, function, column })
 }
 
 const SHAPE: &str = "the query must be SELECT … FROM <time-series table> GROUP BY time_bucket(…), <series-key columns>";

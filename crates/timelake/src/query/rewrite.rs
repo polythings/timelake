@@ -5,14 +5,14 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{Column, ScalarValue};
 use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::logical_expr::expr::{Sort, WindowFunction};
 use datafusion::logical_expr::utils::{conjunction, split_conjunction};
 use datafusion::logical_expr::{
-    BinaryExpr, Expr, Filter, LogicalPlan, Operator, Projection, TableScan, WindowFunctionDefinition,
+    BinaryExpr, Expr, Filter, LogicalPlan, Operator, Projection, TableScan, Window, WindowFunctionDefinition,
 };
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 
@@ -76,10 +76,7 @@ fn is_one(e: &Expr) -> bool {
 
 /// Splits `rn = 1` (either side), where `is_rn` says which column is `rn`, from the other
 /// conjuncts of a filter predicate.
-fn split_rn_equals_one(
-    predicate: &Expr,
-    is_rn: impl Fn(&datafusion::common::Column) -> bool,
-) -> (Option<&datafusion::common::Column>, Vec<Expr>) {
+fn split_rn_equals_one(predicate: &Expr, is_rn: impl Fn(&Column) -> bool) -> (Option<&Column>, Vec<Expr>) {
     let mut rn = None;
     let mut others = vec![];
     for c in split_conjunction(predicate) {
@@ -103,66 +100,25 @@ fn split_rn_equals_one(
 /// `Filter(rn = 1) ← [Projection] ← Window(row_number() PARTITION BY series ORDER BY time DESC) ← Scan`
 fn rewrite_row_number(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
     let LogicalPlan::Filter(filter) = node else { return Ok(None) };
-    // Find the window node, allowing column-only/alias projections in between.
-    let mut current = filter.input.as_ref();
-    let mut projections = vec![];
-    let window = loop {
-        match current {
-            LogicalPlan::Projection(p) => {
-                projections.push(p);
-                current = &p.input;
-            }
-            LogicalPlan::Window(w) => break w,
-            _ => return Ok(None),
-        }
-    };
-    // `rn = 1` on the window's output (directly or via an alias in a projection), possibly AND-ed
-    // with other predicates, which are kept in a filter above.
-    let window_output = window.schema.fields().len() - 1;
-    let output_name = window.schema.field(window_output).name();
-    let is_rn = |rn: &datafusion::common::Column| {
-        rn.name == *output_name
-            || projections.iter().any(|p| {
-                p.expr.iter().any(|e| {
-                    matches!(e, Expr::Alias(a) if a.name == rn.name
-                        && matches!(a.expr.as_ref(), Expr::Column(c) if c.name == *output_name))
-                })
-            })
-    };
+    let Some((window, projections)) = window_under(&filter.input) else { return Ok(None) };
+    // `rn = 1` on the window's output, possibly AND-ed with other predicates, kept in a filter above.
+    let is_rn = |rn: &Column| names_window_output(rn, window, &projections);
     let (Some(rn), others) = split_rn_equals_one(&filter.predicate, is_rn) else { return Ok(None) };
     if others.iter().any(|e| e.column_refs().iter().any(|c| c.name == rn.name)) {
         return Ok(None);
     }
-    let [window_expr] = window.window_expr.as_slice() else { return Ok(None) };
     let LogicalPlan::TableScan(scan) = window.input.as_ref() else { return Ok(None) };
     if !scan.filters.is_empty() || scan.fetch.is_some() {
         return Ok(None);
     }
     let Some((table, time_column)) = indexed_table(scan) else { return Ok(None) };
-    let Expr::WindowFunction(wf) = window_expr.clone().unalias() else { return Ok(None) };
-    let WindowFunction { fun, params } = wf.as_ref();
-    if !matches!(fun, WindowFunctionDefinition::WindowUDF(u) if u.name() == "row_number") {
+    if !is_newest_per_series(window, &table, &time_column) {
         return Ok(None);
-    }
-    let partition_by: Option<Vec<&str>> = params
-        .partition_by
-        .iter()
-        .map(|e| match e {
-            Expr::Column(c) => Some(c.name.as_str()),
-            _ => None,
-        })
-        .collect();
-    if partition_by != Some(table.contract().series_key.iter().map(String::as_str).collect()) {
-        return Ok(None);
-    }
-    match params.order_by.as_slice() {
-        [Sort { expr: Expr::Column(c), asc: false, .. }] if c.name == time_column => {}
-        _ => return Ok(None),
     }
     // Window → Projection(input columns…, 1 AS <window column>) over the index scan.
     let index_scan = latest_scan(scan, table);
     let mut exprs: Vec<Expr> = scan.projected_schema.columns().into_iter().map(Expr::Column).collect();
-    let (qualifier, field) = window.schema.qualified_field(window_output);
+    let (qualifier, field) = window.schema.qualified_field(window.schema.fields().len() - 1);
     exprs.push(Expr::Literal(ScalarValue::UInt64(Some(1)), None).alias_qualified(qualifier.cloned(), field.name()));
     let mut rebuilt =
         LogicalPlan::Projection(Projection::try_new_with_schema(exprs, Arc::new(index_scan), window.schema.clone())?);
@@ -178,6 +134,52 @@ fn rewrite_row_number(node: &LogicalPlan) -> DfResult<Option<LogicalPlan>> {
         Some(predicate) => Ok(Some(LogicalPlan::Filter(Filter::try_new(predicate, Arc::new(rebuilt))?))),
         None => Ok(Some(rebuilt)),
     }
+}
+
+/// The window node under `plan` and the projections above it (column-only or aliases), outermost
+/// first.
+fn window_under(mut plan: &LogicalPlan) -> Option<(&Window, Vec<&Projection>)> {
+    let mut projections = vec![];
+    loop {
+        match plan {
+            LogicalPlan::Projection(p) => {
+                projections.push(p);
+                plan = &p.input;
+            }
+            LogicalPlan::Window(w) => return Some((w, projections)),
+            _ => return None,
+        }
+    }
+}
+
+/// Whether `rn` is the window's output column, directly or by an alias in one of `projections`.
+fn names_window_output(rn: &Column, window: &Window, projections: &[&Projection]) -> bool {
+    let output = window.schema.field(window.schema.fields().len() - 1).name();
+    let aliased = |e: &Expr| {
+        matches!(e, Expr::Alias(a) if a.name == rn.name
+            && matches!(a.expr.as_ref(), Expr::Column(c) if c.name == *output))
+    };
+    rn.name == *output || projections.iter().any(|p| p.expr.iter().any(aliased))
+}
+
+/// Whether the window is only `row_number() OVER (PARTITION BY <series key> ORDER BY <time> DESC)`.
+fn is_newest_per_series(window: &Window, table: &Table, time_column: &str) -> bool {
+    let [window_expr] = window.window_expr.as_slice() else { return false };
+    let Expr::WindowFunction(wf) = window_expr.clone().unalias() else { return false };
+    let WindowFunction { fun, params } = wf.as_ref();
+    if !matches!(fun, WindowFunctionDefinition::WindowUDF(u) if u.name() == "row_number") {
+        return false;
+    }
+    let partition_by: Option<Vec<&str>> = params
+        .partition_by
+        .iter()
+        .map(|e| match e {
+            Expr::Column(c) => Some(c.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    partition_by == Some(table.contract().series_key.iter().map(String::as_str).collect())
+        && matches!(params.order_by.as_slice(), [Sort { expr: Expr::Column(c), asc: false, .. }] if c.name == time_column)
 }
 
 /// `Limit(1) ← Sort(time DESC) ← [Filter on series key] ← Scan(filters on series key)`
