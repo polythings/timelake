@@ -17,6 +17,7 @@ import timelake
 from timelake import _timelake
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -45,8 +46,8 @@ def stub_signature(func: ast.FunctionDef) -> list[tuple[str, str | None]]:
     return [(a.arg, d) for a, d in zip(args, defaults, strict=True)]
 
 
-def runtime_signature(obj: object) -> list[tuple[str, str | None]]:
-    params = [p for p in inspect.signature(obj).parameters.values() if p.name != "self"]  # ty: ignore[invalid-argument-type]
+def runtime_signature(obj: Callable[..., object]) -> list[tuple[str, str | None]]:
+    params = [p for p in inspect.signature(obj).parameters.values() if p.name != "self"]
     return [(p.name, None if p.default is p.empty else repr(p.default)) for p in params]
 
 

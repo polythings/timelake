@@ -312,9 +312,9 @@ impl Table {
             duplicate: result.commit.duplicate,
         };
         self.set(table);
-        // `maintenance` is only present when inline maintenance ran.
         let dict = summary.into_pyobject(py)?;
-        // A failed inline maintenance doesn't undo the committed append; report it instead of raising.
+        // `maintenance` is only present when inline maintenance ran. A failed one doesn't undo the committed append:
+        // report it instead of raising.
         match &result.maintenance {
             Some(Ok(report)) => dict.set_item("maintenance", report_dict(py, report)?)?,
             Some(Err(err)) => dict.set_item("maintenance_error", err.to_string())?,

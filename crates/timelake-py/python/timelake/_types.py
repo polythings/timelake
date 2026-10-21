@@ -1,7 +1,5 @@
 """Types of the values the native module takes and returns."""
 
-from __future__ import annotations
-
 from typing import Protocol, TypedDict
 
 
