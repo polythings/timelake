@@ -23,6 +23,13 @@ MAINTAINED = "maintained"
 """The checkpoint after each system's maintenance: the last one."""
 
 
+class SystemMeta(TypedDict):
+    """A system as a run describes it: its title, and its readers, its own first (``System.title``, ``readers``)."""
+
+    title: str
+    readers: list[str]
+
+
 class RunRecord(TypedDict, total=False):
     """The first line of a run file: what ran, where, and on which commit."""
 
@@ -55,6 +62,8 @@ class RunRecord(TypedDict, total=False):
     started: str
     readers: dict[str, list[str]]
     """The systems of the run -> their readers in it."""
+    systems: dict[str, SystemMeta]
+    """The systems of the run -> their title and every reader they have; absent in runs before 2026-10-21."""
     versions: dict[str, str]
     """Package -> version, for Timelake and every system and reader."""
     runs: int

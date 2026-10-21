@@ -24,7 +24,7 @@ export function MaintenancePanel({ run }: { run: Run }) {
         {steps.map((p) => (
           <li key={p.system} className="grid gap-x-4 gap-y-1 py-2 sm:grid-cols-[14rem_minmax(0,1fr)_5rem]">
             <span className={p.system === "timelake" ? "text-sm" : "text-sm text-muted-foreground"}>
-              {systemLabel(p.system)}
+              {systemLabel(p.system, run.header.systems)}
             </span>
             <span className="text-xs text-muted-foreground">{SYSTEM_INFO[p.system]?.when}</span>
             <span className="font-mono text-xs tabular-nums sm:text-right">{stepTime(p)}</span>

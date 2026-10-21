@@ -1,5 +1,14 @@
 /** How the benchmark pages name and color systems, and the shape of a ranking: shared by server and client code. */
 
+/**
+ * A system as a run's header describes it (timebench's `System.title` and `readers`, its own reader first). Runs
+ * before 2026-10-21 don't carry it, and the site's own lists below stand in.
+ */
+export type SystemMeta = { title: string; readers: string[] }
+
+/** A run's systems by name, as its header describes them. */
+export type SystemsMeta = Record<string, SystemMeta>
+
 /** How the site names each system and reader pair; a system's own reader comes first. */
 export const ENGINES: Record<string, string> = {
   "timelake+timelake": "Timelake",
@@ -57,9 +66,26 @@ export const engineOf = (r: { system: string; reader: string }) => `${r.system}+
 /** The system of "system+reader"; a system's own key passes through. */
 export const systemOf = (engine: string) => engine.split("+", 1)[0] ?? engine
 
-export const engineLabel = (engine: string) => ENGINES[engine] ?? engine
+/** A system's name: as the run's header gives it, else as the site names it. */
+export const systemLabel = (system: string, systems?: SystemsMeta) =>
+  systems?.[system]?.title ?? SYSTEMS[system] ?? system
 
-export const systemLabel = (system: string) => SYSTEMS[system] ?? system
+/**
+ * A system and reader pair's name: as the site words it (ENGINES), else the system's name, followed by the reader's
+ * when it isn't the system's own.
+ */
+export function engineLabel(engine: string, systems?: SystemsMeta): string {
+  const known = ENGINES[engine]
+  if (known) return known
+  const system = systemOf(engine)
+  const reader = engine.slice(system.length + 1)
+  const title = systemLabel(system, systems)
+  return !reader || reader === systemReaders(system, systems)[0] ? title : `${title} + ${READERS[reader] ?? reader}`
+}
+
+/** A system's readers, its own first: from the run's header, else as the site lists them. */
+export const systemReaders = (system: string, systems?: SystemsMeta): string[] =>
+  systems?.[system]?.readers ?? SYSTEM_INFO[system]?.readers ?? []
 
 /** A system's chart color, from "system" or "system+reader"; a neutral gray for systems the site doesn't know. */
 export const systemColor = (key: string) => SYSTEM_COLORS[systemOf(key)] ?? NEUTRAL_COLOR
@@ -237,13 +263,16 @@ export const readerDescription = (system: string, reader: string) =>
 export const entryAnchor = (key: string) => `entry-${systemOf(key)}`
 
 /**
- * A system's own reader, as an engine: the first of the system's engines in ENGINES (what timebench lists first in a
- * run's readers). Undefined for a system the site doesn't know.
+ * A system's own reader, as an engine: the first reader the run's header lists for it, else the first of the system's
+ * engines in ENGINES (what timebench lists first). Undefined for a system neither knows.
  */
-export const ownEngine = (system: string) => Object.keys(ENGINES).find((e) => systemOf(e) === system)
+export function ownEngine(system: string, systems?: SystemsMeta): string | undefined {
+  const own = systems?.[system]?.readers[0]
+  return own ? `${system}+${own}` : Object.keys(ENGINES).find((e) => systemOf(e) === system)
+}
 
 /** Whether `engine` is its system's own reader. */
-export const isOwnReader = (engine: string) => ownEngine(systemOf(engine)) === engine
+export const isOwnReader = (engine: string, systems?: SystemsMeta) => ownEngine(systemOf(engine), systems) === engine
 
 export type Rank = {
   key: string

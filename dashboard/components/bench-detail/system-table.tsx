@@ -1,6 +1,6 @@
 import { Panel } from "@/components/ranking-card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { systemLabel } from "@/lib/bench-systems"
+import { type SystemsMeta, systemLabel } from "@/lib/bench-systems"
 import { cn } from "@/lib/utils"
 
 /** A table's first column stays in place while the rest scrolls sideways on narrow screens. */
@@ -44,17 +44,20 @@ export function SystemTable({
 /** A system's row: its name, Timelake's in bold unless `plain` (a row that says what went wrong), then its cells. */
 export function SystemRow({
   system,
+  systems,
   plain = false,
   children,
 }: {
   system: string
+  /** The run's systems, for the name its header gives. */
+  systems?: SystemsMeta
   plain?: boolean
   children: React.ReactNode
 }) {
   return (
     <TableRow>
       <TableCell className={cn(FIRST, !plain && system === "timelake" && "font-medium")}>
-        {systemLabel(system)}
+        {systemLabel(system, systems)}
       </TableCell>
       {children}
     </TableRow>

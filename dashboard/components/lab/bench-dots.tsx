@@ -35,7 +35,7 @@ export function EngineLegend({ run }: { run: Run }) {
       {engines(run).map((e) => (
         <span key={e} className="flex items-center gap-2">
           <Swatch {...engineStyle(run, e)} />
-          {engineLabel(e)}
+          {engineLabel(e, run.header.systems)}
         </span>
       ))}
     </div>
@@ -57,7 +57,7 @@ export function BucketObjects({ run }: { run: Run }) {
           <div key={r.system} className="flex flex-col gap-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 text-sm">
               <span className={r.system === "timelake" ? "font-medium" : "text-muted-foreground"}>
-                {systemLabel(r.system)}
+                {systemLabel(r.system, run.header.systems)}
               </span>
               <span className="font-mono text-xs text-muted-foreground tabular-nums">
                 {formatNumber(r.data)} data + {formatNumber(r.objects - r.data)} other ={" "}
@@ -69,7 +69,7 @@ export function BucketObjects({ run }: { run: Run }) {
                 { count: r.data, color },
                 { count: r.objects - r.data, color, alpha: 0.3 },
               ]}
-              label={`${systemLabel(r.system)}: ${r.objects} objects, ${r.data} of them data files`}
+              label={`${systemLabel(r.system, run.header.systems)}: ${r.objects} objects, ${r.data} of them data files`}
             />
           </div>
         )
@@ -121,7 +121,7 @@ export function QueryMatrix({ run, checkpoint, title }: { run: Run; checkpoint: 
               return (
                 <span
                   key={`${query}-${e}`}
-                  title={`${engineLabel(e)} · ${query}: ${t === undefined ? "no result" : `${t.toFixed(3)} s${ratio && ratio > 1.05 ? `, ${ratio.toFixed(1)}× the fastest` : ", fastest"}`}`}
+                  title={`${engineLabel(e, run.header.systems)} · ${query}: ${t === undefined ? "no result" : `${t.toFixed(3)} s${ratio && ratio > 1.05 ? `, ${ratio.toFixed(1)}× the fastest` : ", fastest"}`}`}
                   className={ratio === null ? "size-3.5 border border-dashed" : "size-3.5"}
                   style={
                     ratio === null ? undefined : { background: color, opacity: Math.max(0.1, alpha / ratio ** 0.6) }
@@ -180,7 +180,7 @@ export function PerQuery({ run, checkpoint }: { run: Run; checkpoint: string }) 
                 return (
                   <div
                     key={e}
-                    title={`${engineLabel(e)}: ${kind === "requests" ? `${formatNumber(n)} requests` : `${formatNumber(value, 1)} MB`}`}
+                    title={`${engineLabel(e, run.header.systems)}: ${kind === "requests" ? `${formatNumber(n)} requests` : `${formatNumber(value, 1)} MB`}`}
                   >
                     <DotGrid dot={2} gap={1} segments={[{ count: Math.max(1, Math.round(value / per)), color }]} />
                   </div>

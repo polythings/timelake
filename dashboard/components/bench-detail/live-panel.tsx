@@ -20,13 +20,13 @@ export function LivePanel({ run }: { run: Run }) {
     >
       {rows.map((r) =>
         r.probes === 0 ? (
-          <SystemRow key={r.system} system={r.system} plain>
+          <SystemRow key={r.system} system={r.system} systems={run.header.systems} plain>
             <TableCell colSpan={3} className="text-muted-foreground">
               No probe finished during ingest.
             </TableCell>
           </SystemRow>
         ) : (
-          <SystemRow key={r.system} system={r.system}>
+          <SystemRow key={r.system} system={r.system} systems={run.header.systems}>
             <NumberCell>
               {r.behind} of {r.probes}
             </NumberCell>

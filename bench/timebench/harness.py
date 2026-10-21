@@ -35,6 +35,7 @@ from timebench.results import (
     QueryRecord,
     RunRecord,
     StageRecord,
+    SystemMeta,
     append_jsonl,
     best_time,
     first_time,
@@ -243,6 +244,11 @@ def server(spec: RunSpec, system: System, path: Path) -> Generator[bool]:
         subprocess.run([str(script), "down", system.server_name()], capture_output=True, check=False)
 
 
+def system_meta(system: type[System]) -> SystemMeta:
+    """How a system names itself and which readers it has, for reports that don't know it."""
+    return {"title": system.title, "readers": list(system.readers)}
+
+
 def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
     """The first record of a run: what runs, where, and on which commit."""
     workload, target, config = spec.workload, spec.target, spec.config
@@ -266,6 +272,7 @@ def run_header(spec: RunSpec, started: dt.datetime) -> RunRecord:
         "label": spec.label,
         "started": started.isoformat(timespec="seconds"),
         "readers": {s: spec.readers_of(s) for s in spec.systems},
+        "systems": {s: system_meta(systems()[s]) for s in spec.systems},
         "versions": versions,
         "runs": spec.runs,
         "tuning": spec.tuning,

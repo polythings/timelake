@@ -1,6 +1,13 @@
 import { Panel } from "@/components/ranking-card"
 import { SectionHead } from "@/components/section-head"
-import { READERS, SYSTEM_INFO, readerDescription, systemLabel, systemOrder } from "@/lib/bench-systems"
+import {
+  READERS,
+  SYSTEM_INFO,
+  type SystemsMeta,
+  readerDescription,
+  systemLabel,
+  systemOrder,
+} from "@/lib/bench-systems"
 import { TUNING_NOTES, type Run } from "@/lib/benchmarks"
 import { slugify } from "@/lib/utils"
 
@@ -20,6 +27,8 @@ export function EntriesSection({ latest }: { latest: Run[] }) {
     }
   }
   const listed = [...systems].sort(([a], [b]) => systemOrder(a) - systemOrder(b))
+  // Titles from the runs' headers, the newest run's last so it wins.
+  const meta: SystemsMeta = Object.assign({}, ...latest.map((r) => r.header.systems ?? {}))
   return (
     <section id={slugify(ENTRIES_TITLE)} className="flex scroll-mt-20 flex-col gap-4">
       <SectionHead label={ENTRIES_TITLE}>
@@ -33,7 +42,7 @@ export function EntriesSection({ latest }: { latest: Run[] }) {
       </p>
       <div className="grid gap-4 lg:grid-cols-2">
         {listed.map(([system, readers]) => (
-          <Entry key={system} system={system} readers={[...readers]} />
+          <Entry key={system} system={system} title={systemLabel(system, meta)} readers={[...readers]} />
         ))}
       </div>
     </section>
@@ -41,11 +50,11 @@ export function EntriesSection({ latest }: { latest: Run[] }) {
 }
 
 /** One system's entry: what it is, how it's written and maintained, and each reader that queried it. */
-function Entry({ system, readers }: { system: string; readers: string[] }) {
+function Entry({ system, title, readers }: { system: string; title: string; readers: string[] }) {
   const info = SYSTEM_INFO[system]
   return (
     <div id={`entry-${system}`} className="scroll-mt-20 rounded-lg target:ring-2 target:ring-ring">
-      <Panel title={systemLabel(system)} note={info?.summary} className="h-full">
+      <Panel title={title} note={info?.summary} className="h-full">
         <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[6.5rem_minmax(0,1fr)]">
           {info && (
             <>

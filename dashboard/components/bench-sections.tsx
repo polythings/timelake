@@ -231,7 +231,7 @@ function Details({ entry, metric }: { entry: Entry; metric: Metric }) {
       <RankingBars ranking={shown} perSystem={false} queries={entry.id ? 1 : entry.ranking.queries} learnMore="" />
       {entry.failed.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Failed or timed out: {entry.failed.map(engineLabel).join(", ")}.
+          Failed or timed out: {entry.failed.map((e) => engineLabel(e)).join(", ")}.
         </p>
       )}
       {entry.sql && <SqlBlock label="SQL every system runs" sql={entry.sql} />}

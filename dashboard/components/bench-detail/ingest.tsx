@@ -46,14 +46,14 @@ function IngestPanel({ run }: { run: Run }) {
         const after = m ?? p
         if (p.status !== "ok")
           return (
-            <SystemRow key={p.system} system={p.system} plain>
+            <SystemRow key={p.system} system={p.system} systems={run.header.systems} plain>
               <TableCell colSpan={staged ? 5 : 6} className="min-w-56 whitespace-normal text-muted-foreground">
                 Load failed: {p.error?.split("\n")[0] ?? p.status}
               </TableCell>
             </SystemRow>
           )
         return (
-          <SystemRow key={p.system} system={p.system}>
+          <SystemRow key={p.system} system={p.system} systems={run.header.systems}>
             <NumberCell>{orDash(p.commit_seconds ?? p.seconds, formatDuration)}</NumberCell>
             <NumberCell>{orDash(staged ? p.stages?.live?.commit_ms_p50 : p.commit_ms_p50, formatMs)}</NumberCell>
             {!staged && <NumberCell>{orDash(p.commit_ms_p95, formatMs)}</NumberCell>}

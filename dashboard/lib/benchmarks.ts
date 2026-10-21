@@ -19,6 +19,7 @@ import {
   systemOf,
   type Rank,
   type Ranking,
+  type SystemsMeta,
 } from "./bench-systems"
 
 export { engineLabel, type Rank, type Ranking } from "./bench-systems"
@@ -44,6 +45,8 @@ const RunHeaderSchema = z.object({
   tuning: z.string().optional(),
   started: z.string(),
   readers: z.record(z.string(), z.array(z.string())),
+  /** Each system's title and readers (timebench's), absent in runs before 2026-10-21. */
+  systems: z.record(z.string(), z.object({ title: z.string(), readers: z.array(z.string()) })).optional(),
   versions: z.record(z.string(), z.string()),
   runs: z.number(),
   live_interval_s: z.number().optional(),
@@ -226,7 +229,10 @@ export const answersChecked = (run: Run) => run.queries.some((q) => q.correct !=
 export const CHECKED_NOTE = "Answers are checked against a copy of the data with each row once."
 
 /** The systems a run has, by name: "Timelake, Iceberg (PyIceberg), Lance". */
-export const systemList = (run: Run) => Object.keys(run.header.readers).map(systemLabel).join(", ")
+export const systemList = (run: Run) =>
+  Object.keys(run.header.readers)
+    .map((s) => systemLabel(s, run.header.systems))
+    .join(", ")
 
 async function readRun(file: string): Promise<Run> {
   const lines = (await readFile(path.join(/*turbopackIgnore: true*/ RUNS, file), "utf8"))
@@ -298,7 +304,7 @@ export type Section = {
 }
 
 /** An engine's row in a ranking of query times over `rs`: first runs, best repeats and requests, averaged. */
-const rank = (engine: string, rs: OkQuery[]): Rank => {
+const rank = (engine: string, rs: OkQuery[], systems?: SystemsMeta): Rank => {
   const requests = rs.map((r) => r.requests?.[0])
   const usd = rs.map((r) => r.usd)
   const bytes = rs.map((r) => r.bytes?.[0])
@@ -308,7 +314,7 @@ const rank = (engine: string, rs: OkQuery[]): Rank => {
       : undefined
   return {
     key: engine,
-    label: engineLabel(engine),
+    label: engineLabel(engine, systems),
     system: systemOf(engine),
     value: gm(rs.map((r) => r.times[0])),
     repeat: gm(rs.map((r) => best(r.times))),
@@ -330,6 +336,7 @@ function queryRanking(
   keys: string[],
   by: Map<string, OkQuery>,
   head: (common: string[]) => Pick<Ranking, "id" | "title" | "note">,
+  systems?: SystemsMeta,
 ): Ranking | null {
   const common = keys.filter((k) => engines.every((e) => by.has(`${e}|${k}`)))
   if (common.length === 0) return null
@@ -342,6 +349,7 @@ function queryRanking(
         rank(
           e,
           common.flatMap((k) => by.get(`${e}|${k}`) ?? []),
+          systems,
         ),
       )
       .sort((a, b) => a.value - b.value),
@@ -363,11 +371,17 @@ export function sections(run: Run, workload: Workload): Section[] {
       const by = new Map(ok.map((q) => [`${engineOf(q)}|${q.query}`, q]))
       const engines = [...new Set(ok.map(engineOf))].sort((a, b) => engineOrder(a) - engineOrder(b))
       const allQueries = [...new Set(all.map((q) => q.query))]
-      const ranking = queryRanking(engines, allQueries, by, (common) => ({
-        id: "all",
-        title: "All queries",
-        note: `first run, geometric mean of ${common.length} queries`,
-      }))
+      const ranking = queryRanking(
+        engines,
+        allQueries,
+        by,
+        (common) => ({
+          id: "all",
+          title: "All queries",
+          note: `first run, geometric mean of ${common.length} queries`,
+        }),
+        run.header.systems,
+      )
       if (!ranking) continue
       const queries = allQueries.map((query): QueryResult => ({
         query,
@@ -382,7 +396,7 @@ export function sections(run: Run, workload: Workload): Section[] {
           rows: engines
             .flatMap((e) => {
               const r = by.get(`${e}|${query}`)
-              return r ? [rank(e, [r])] : []
+              return r ? [rank(e, [r], run.header.systems)] : []
             })
             .sort((a, b) => a.value - b.value),
         },
@@ -452,7 +466,12 @@ export type Failure = { engine: string; query: string; checkpoint: string; statu
 export function failures(run: Run): Failure[] {
   return run.queries
     .filter((q) => q.status !== "ok")
-    .map((q) => ({ engine: engineLabel(engineOf(q)), query: q.query, checkpoint: q.checkpoint, status: q.status }))
+    .map((q) => ({
+      engine: engineLabel(engineOf(q), run.header.systems),
+      query: q.query,
+      checkpoint: q.checkpoint,
+      status: q.status,
+    }))
 }
 
 /** How the site names run variants. */
@@ -499,7 +518,7 @@ export type HistoryPoint = { run: string; date: string; commit: string } & Recor
 
 /** A system's own reader in a run: the one the site ranks first, else the first the run lists. */
 export const ownEngineIn = (run: Run, system: string) =>
-  ownEngine(system) ?? `${system}+${run.header.readers[system]?.[0] ?? ""}`
+  ownEngine(system, run.header.systems) ?? `${system}+${run.header.readers[system]?.[0] ?? ""}`
 
 /**
  * Each system's own reader over time on one target: geometric-mean first run over all of a run's queries that it
@@ -549,9 +568,9 @@ function suiteCounts(run: Run, queries: string[]): string {
 }
 
 /** A system's row in a ranking of its ingest. */
-const phaseRank = (p: PhaseRecord, value: number): Rank => ({
+const phaseRank = (p: PhaseRecord, value: number, systems?: SystemsMeta): Rank => ({
   key: p.system,
-  label: systemLabel(p.system),
+  label: systemLabel(p.system, systems),
   system: p.system,
   value,
   timelake: p.system === "timelake",
@@ -573,16 +592,22 @@ export function rankings(run: Run): Ranking[] {
     if (engines.length < 2) continue
     const by = new Map(ok.map((q) => [`${engineOf(q)}|${q.suite}|${q.query}`, q]))
     const all = [...new Set(run.queries.filter((q) => q.checkpoint === checkpoint).map((q) => `${q.suite}|${q.query}`))]
-    const ranking = queryRanking(engines, all, by, (common) => ({
-      id: queriesRankingId(checkpoint),
-      title: `Queries, ${label.toLowerCase()}`,
-      note: `first run, geometric mean of ${common.length} queries${suiteCounts(run, common)}`,
-    }))
+    const ranking = queryRanking(
+      engines,
+      all,
+      by,
+      (common) => ({
+        id: queriesRankingId(checkpoint),
+        title: `Queries, ${label.toLowerCase()}`,
+        note: `first run, geometric mean of ${common.length} queries${suiteCounts(run, common)}`,
+      }),
+      run.header.systems,
+    )
     if (ranking) out.push(ranking)
   }
   const ingest = run.phases.filter((p) => p.kind === "ingest" && p.status === "ok" && p.commit_ms_p50 != null)
   if (ingest.some((p) => p.stages)) {
-    out.push(...stagedIngest(ingest))
+    out.push(...stagedIngest(ingest, run.header.systems))
   } else if (run.header.variant === "bulk" && ingest.length > 1) {
     // A bulk load is judged by its rate: rows per second spent committing.
     out.push({
@@ -592,7 +617,7 @@ export function rankings(run: Run): Ranking[] {
       unit: "rows/s",
       higherIsBetter: true,
       rows: ingest
-        .map((p) => phaseRank(p, (p.rows ?? 0) / (p.commit_seconds ?? p.seconds ?? 1)))
+        .map((p) => phaseRank(p, (p.rows ?? 0) / (p.commit_seconds ?? p.seconds ?? 1), run.header.systems))
         .sort((a, b) => b.value - a.value),
     })
   } else if (ingest.length > 1) {
@@ -601,7 +626,7 @@ export function rankings(run: Run): Ranking[] {
       title: "Commit",
       note: "median time per commit while streaming",
       unit: "milliseconds",
-      rows: ingest.map((p) => phaseRank(p, p.commit_ms_p50 ?? 0)).sort((a, b) => a.value - b.value),
+      rows: ingest.map((p) => phaseRank(p, p.commit_ms_p50 ?? 0, run.header.systems)).sort((a, b) => a.value - b.value),
     })
   }
   return out
@@ -611,15 +636,15 @@ export function rankings(run: Run): Ranking[] {
  * A staged stream's ingest: the bulk history's load rate (rows per second over its stages), and the live day's median
  * commit time.
  */
-function stagedIngest(ingest: PhaseRecord[]): Ranking[] {
+function stagedIngest(ingest: PhaseRecord[], systems?: SystemsMeta): Ranking[] {
   const load = ingest.map((p) => {
     const stages = Object.entries(p.stages ?? {}).flatMap(([name, s]) => (name === "live" ? [] : [s]))
     const seconds = stages.reduce((t, s) => t + s.seconds, 0)
-    return phaseRank(p, seconds > 0 ? stages.reduce((t, s) => t + s.rows, 0) / seconds : 0)
+    return phaseRank(p, seconds > 0 ? stages.reduce((t, s) => t + s.rows, 0) / seconds : 0, systems)
   })
   const live = ingest.flatMap((p) => {
     const ms = p.stages?.live?.commit_ms_p50
-    return ms == null ? [] : [phaseRank(p, ms)]
+    return ms == null ? [] : [phaseRank(p, ms, systems)]
   })
   const staged: Ranking[] = [
     {
@@ -672,7 +697,7 @@ export function lastLocRacers(run: Run, measure: "requests" | "bytes" = "request
     const [value, dots] = measure === "requests" ? [n, n] : [n / 1e6, Math.max(1, Math.round(n / 1e5))]
     return [
       {
-        label: engineLabel(engine),
+        label: engineLabel(engine, run.header.systems),
         value,
         dots,
         seconds: query.times[0],

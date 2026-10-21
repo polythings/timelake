@@ -13,7 +13,7 @@ export function CostPanel({ run }: { run: Run }) {
       columns={["Ingest, per month", "Storage, per month", "Per query"]}
     >
       {rows.map((r) => (
-        <SystemRow key={r.system} system={r.system}>
+        <SystemRow key={r.system} system={r.system} systems={run.header.systems}>
           <NumberCell>{orDash(r.ingestMonth, formatUsd)}</NumberCell>
           <NumberCell>{orDash(r.storageMonth, formatUsd)}</NumberCell>
           <NumberCell>{orDash(r.perQuery, formatUsd)}</NumberCell>

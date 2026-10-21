@@ -145,6 +145,8 @@ def test_a_run_ingests_maintains_and_queries(system: str, config: BenchConfig) -
     assert header["workload"] == "tiny"
     assert header["target"] == "local"
     assert len(header["commit"]) == 40
+    # Every reader the system has, not only the ones this run asked for, for reports that don't know the system.
+    assert set(header["readers"][system]) <= set(header["systems"][system]["readers"])
     ingest = next(r for r in records if r["kind"] == "ingest")
     assert ingest["status"] == "ok", ingest
     assert ingest["commits"] == 48

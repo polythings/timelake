@@ -22,7 +22,7 @@ export function ConcurrencyPanel({ run }: { run: Run }) {
       columns={counts.map(clients)}
     >
       {systems.map((system) => (
-        <SystemRow key={system} system={system}>
+        <SystemRow key={system} system={system} systems={run.header.systems}>
           {counts.map((n) => {
             const c = run.concurrency.find((x) => x.system === system && x.clients === n)
             return (
