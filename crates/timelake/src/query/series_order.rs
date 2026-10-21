@@ -36,6 +36,8 @@ use super::provider::{Kind, TimelakeProvider};
 use super::rollup::unalias;
 use super::runs::over_readings;
 use super::settings::{SERIES_ORDER, WINDOW_SERIES_ORDER};
+use crate::table::LiveEntry;
+use crate::write::file_partition;
 use timelake_format::{AutoBool, SeriesOrder as Setting};
 
 /// How a scan under a signal aggregate reads each series in time order (setting `series-order`).
@@ -50,6 +52,19 @@ pub(crate) enum Order {
     /// All files merged if they're in one time partition (a window's `auto`); else read as other
     /// scans are, which DataFusion then splits by series and sorts.
     MergeOnePartition,
+}
+
+impl Order {
+    /// How `files` are read: [`Order::MergeOnePartition`] is a merge if they're all in one time
+    /// partition, else no particular order.
+    pub(crate) fn for_files<'a>(self, files: impl IntoIterator<Item = &'a LiveEntry>) -> Option<Self> {
+        if self != Self::MergeOnePartition {
+            return Some(self);
+        }
+        let mut partitions = files.into_iter().map(|f| file_partition(&f.data_file));
+        let first = partitions.next();
+        partitions.all(|p| Some(p) == first).then_some(Self::Merge)
+    }
 }
 
 impl From<Setting> for Order {

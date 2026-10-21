@@ -65,28 +65,7 @@ impl Session {
     /// A session with a custom DataFusion configuration. Its default schema, if set, is the
     /// namespace unqualified table names resolve in.
     pub fn with_config(lake: Lake, config: SessionConfig) -> Self {
-        let namespace = match config.options().catalog.default_schema.as_str() {
-            "public" => DEFAULT_NAMESPACE.to_string(),
-            s => s.to_string(),
-        };
-        // Raise the default (one partition per core) on remote storage, unless the caller changed it.
-        let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
-        let config = if lake.storage().is_remote() && config.target_partitions() == cores {
-            config.with_target_partitions((cores * REMOTE_PARTITIONS_PER_CORE).max(MIN_REMOTE_PARTITIONS))
-        } else {
-            config
-        };
-        let config = if config.options().extensions.get::<SessionSettings>().is_some() {
-            config
-        } else {
-            config.with_option_extension(SessionSettings::default())
-        };
-        // Rollup routing unions a raw table's rows with a rollup's, whose columns carry other Iceberg
-        // field ids: DataFusion's logical union drops metadata its inputs disagree on, the physical
-        // union merges it, and its check of an aggregate's input schema rejects the difference.
-        let mut config = config;
-        config.options_mut().execution.skip_physical_aggregate_schema_check = true;
-        let config = config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace);
+        let config = session_config(&lake, config);
         let routes = RouteMap::default();
         let state = SessionStateBuilder::new()
             .with_config(config)
@@ -104,35 +83,7 @@ impl Session {
         ctx.register_object_store(lake.storage().url(), lake.storage().object_store());
         let catalog = Arc::new(LakeCatalog::new(lake.clone()));
         ctx.register_catalog(CATALOG, catalog.clone());
-        // time_bucket(width, ts [, origin]) is the name time-series users know for date_bin.
-        let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
-        ctx.register_udf(time_bucket);
-        ctx.register_udf(super::asof::marker_udf());
-        ctx.register_udaf(super::m4::m4_udaf());
-        ctx.register_udaf(super::ohlc::udaf());
-        ctx.register_udaf(super::lttb::udaf());
-        ctx.register_udaf(super::histogram::udaf());
-        for f in super::selection::udafs().into_iter().chain(super::moments::udafs()).chain(super::quantile::udafs()) {
-            ctx.register_udaf(f);
-        }
-        // pandas' names for DataFusion's sample standard deviation and covariance.
-        ctx.register_udaf(
-            datafusion::functions_aggregate::stddev::stddev_udaf().as_ref().clone().with_aliases(["std"]),
-        );
-        ctx.register_udaf(
-            datafusion::functions_aggregate::covariance::covar_samp_udaf().as_ref().clone().with_aliases(["cov"]),
-        );
-        ctx.register_udtf("time_buckets", Arc::new(super::gapfill::TimeBuckets));
-        for f in super::gapfill::window_udfs()
-            .into_iter()
-            .chain(super::changes::window_udfs())
-            .chain(super::rolling::window_udfs())
-        {
-            ctx.register_udwf(f);
-        }
-        register_family(&ctx, super::signal::udaf);
-        register_family(&ctx, super::gaps::udaf);
-        register_family(&ctx, super::flatline::udaf);
+        register_functions(&ctx);
         Self { lake, ctx, catalog, routes }
     }
 
@@ -314,6 +265,63 @@ impl Session {
             .drop_columns(&[ROW_NUMBER])?;
         Ok(df)
     }
+}
+
+/// `config` with what a Timelake session needs: its settings, the lake's catalog with the default
+/// schema as the namespace of unqualified names, and more partitions on remote storage.
+fn session_config(lake: &Lake, config: SessionConfig) -> SessionConfig {
+    let namespace = match config.options().catalog.default_schema.as_str() {
+        "public" => DEFAULT_NAMESPACE.to_string(),
+        s => s.to_string(),
+    };
+    // Raise the default (one partition per core) on remote storage, unless the caller changed it.
+    let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    let config = if lake.storage().is_remote() && config.target_partitions() == cores {
+        config.with_target_partitions((cores * REMOTE_PARTITIONS_PER_CORE).max(MIN_REMOTE_PARTITIONS))
+    } else {
+        config
+    };
+    let mut config = if config.options().extensions.get::<SessionSettings>().is_some() {
+        config
+    } else {
+        config.with_option_extension(SessionSettings::default())
+    };
+    // Rollup routing unions a raw table's rows with a rollup's, whose columns carry other Iceberg
+    // field ids: DataFusion's logical union drops metadata its inputs disagree on, the physical
+    // union merges it, and its check of an aggregate's input schema rejects the difference.
+    config.options_mut().execution.skip_physical_aggregate_schema_check = true;
+    config.with_information_schema(true).with_default_catalog_and_schema(CATALOG, namespace)
+}
+
+/// Registers Timelake's SQL functions with `ctx`.
+fn register_functions(ctx: &SessionContext) {
+    // time_bucket(width, ts [, origin]) is the name time-series users know for date_bin.
+    let time_bucket = datafusion::functions::datetime::date_bin().as_ref().clone().with_aliases(["time_bucket"]);
+    ctx.register_udf(time_bucket);
+    ctx.register_udf(super::asof::marker_udf());
+    ctx.register_udaf(super::m4::m4_udaf());
+    ctx.register_udaf(super::ohlc::udaf());
+    ctx.register_udaf(super::lttb::udaf());
+    ctx.register_udaf(super::histogram::udaf());
+    for f in super::selection::udafs().into_iter().chain(super::moments::udafs()).chain(super::quantile::udafs()) {
+        ctx.register_udaf(f);
+    }
+    // pandas' names for DataFusion's sample standard deviation and covariance.
+    ctx.register_udaf(datafusion::functions_aggregate::stddev::stddev_udaf().as_ref().clone().with_aliases(["std"]));
+    ctx.register_udaf(
+        datafusion::functions_aggregate::covariance::covar_samp_udaf().as_ref().clone().with_aliases(["cov"]),
+    );
+    ctx.register_udtf("time_buckets", Arc::new(super::gapfill::TimeBuckets));
+    for f in super::gapfill::window_udfs()
+        .into_iter()
+        .chain(super::changes::window_udfs())
+        .chain(super::rolling::window_udfs())
+    {
+        ctx.register_udwf(f);
+    }
+    register_family(ctx, super::signal::udaf);
+    register_family(ctx, super::gaps::udaf);
+    register_family(ctx, super::flatline::udaf);
 }
 
 /// Registers an aggregate for each function of family `F`, made by `udaf`.
