@@ -134,9 +134,24 @@ export class Writer {
 }
 
 /**
+ * Bytes to read from the end of a data file first: the whole footer of typical files.
+ */
+export function footerPrefetchBytes(): number;
+
+/**
+ * The table's head object.
+ */
+export function headUri(location: string): string;
+
+/**
  * The most heap bytes in use at once so far.
  */
 export function heapPeakBytes(): number;
+
+/**
+ * The table's version hint.
+ */
+export function hintUri(location: string): string;
 
 /**
  * Bytes of WebAssembly memory the module has grown to. It never shrinks, so this is the peak of
@@ -144,6 +159,37 @@ export function heapPeakBytes(): number;
  * the JavaScript heap).
  */
 export function memoryBytes(): number;
+
+/**
+ * The metadata file of table version `version`.
+ */
+export function metadataUri(location: string, version: number): string;
+
+/**
+ * The version of a `…/v<N>.metadata.json` URI; undefined for other URIs.
+ */
+export function metadataVersion(uri: string): number | undefined;
+
+/**
+ * Microseconds of a duration such as `10m`, `1h` or `3 hours`, as table settings take them.
+ */
+export function parseDuration(duration: string): number;
+
+/**
+ * `[namespace.]table` as `{ namespace, name }`; a name without a namespace is in `default`.
+ * Throws for names outside `[A-Za-z0-9_-]`.
+ */
+export function parseTableName(name: string): any;
+
+/**
+ * Where table `name` lives in the warehouse at `warehouse` (no trailing slash).
+ */
+export function tableLocation(warehouse: string, name: string): string;
+
+/**
+ * The warehouse's table index, for stores that can't list.
+ */
+export function tablesIndexUri(warehouse: string): string;
 
 /**
  * Version of this crate.
@@ -158,15 +204,23 @@ export interface InitOutput {
     readonly __wbg_query_free: (a: number, b: number) => void;
     readonly __wbg_table_free: (a: number, b: number) => void;
     readonly __wbg_writer_free: (a: number, b: number) => void;
+    readonly footerPrefetchBytes: () => number;
+    readonly headUri: (a: number, b: number) => [number, number];
     readonly heapPeakBytes: () => number;
+    readonly hintUri: (a: number, b: number) => [number, number];
     readonly memoryBytes: () => number;
+    readonly metadataUri: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly metadataVersion: (a: number, b: number) => [number, number];
     readonly parquetfile_addRange: (a: number, b: number, c: number, d: number) => [number, number];
     readonly parquetfile_footerLength: (a: number, b: number) => [number, number, number];
     readonly parquetfile_new: (a: number, b: number, c: number) => [number, number, number];
     readonly parquetfile_plan: (a: number, b: any) => [number, number, number];
+    readonly parseDuration: (a: number, b: number) => [number, number, number];
+    readonly parseTableName: (a: number, b: number) => [number, number, number];
     readonly query_finish: (a: number) => [number, number, number, number];
     readonly query_new: (a: any) => [number, number, number];
     readonly query_push: (a: number, b: number) => [number, number];
+    readonly tableLocation: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly table_addManifest: (a: number, b: number, c: number) => [number, number];
     readonly table_addManifestList: (a: number, b: number, c: number) => [number, number, number, number];
     readonly table_files: (a: number) => [number, number, number];
@@ -179,6 +233,7 @@ export interface InitOutput {
     readonly table_planFiles: (a: number, b: any) => [number, number, number];
     readonly table_queryLastValues: (a: number, b: any) => [number, number, number, number];
     readonly table_version: (a: number) => [number, number];
+    readonly tablesIndexUri: (a: number, b: number) => [number, number];
     readonly version: () => [number, number];
     readonly writer_appendIpc: (a: number, b: number, c: number, d: any) => any;
     readonly writer_appendJson: (a: number, b: number, c: number, d: any) => any;
@@ -201,8 +256,8 @@ export interface InitOutput {
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
-    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __externref_table_dealloc: (a: number) => void;
     readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }

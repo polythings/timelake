@@ -401,12 +401,61 @@ export class Writer {
 if (Symbol.dispose) Writer.prototype[Symbol.dispose] = Writer.prototype.free;
 
 /**
+ * Bytes to read from the end of a data file first: the whole footer of typical files.
+ * @returns {number}
+ */
+export function footerPrefetchBytes() {
+    const ret = wasm.footerPrefetchBytes();
+    return ret;
+}
+
+/**
+ * The table's head object.
+ * @param {string} location
+ * @returns {string}
+ */
+export function headUri(location) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(location, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.headUri(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * The most heap bytes in use at once so far.
  * @returns {number}
  */
 export function heapPeakBytes() {
     const ret = wasm.heapPeakBytes();
     return ret;
+}
+
+/**
+ * The table's version hint.
+ * @param {string} location
+ * @returns {string}
+ */
+export function hintUri(location) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(location, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.hintUri(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**
@@ -418,6 +467,125 @@ export function heapPeakBytes() {
 export function memoryBytes() {
     const ret = wasm.memoryBytes();
     return ret;
+}
+
+/**
+ * The metadata file of table version `version`.
+ * @param {string} location
+ * @param {number} version
+ * @returns {string}
+ */
+export function metadataUri(location, version) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(location, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.metadataUri(ptr0, len0, version);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * The version of a `…/v<N>.metadata.json` URI; undefined for other URIs.
+ * @param {string} uri
+ * @returns {number | undefined}
+ */
+export function metadataVersion(uri) {
+    const ptr0 = passStringToWasm0(uri, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.metadataVersion(ptr0, len0);
+    return ret[0] === 0 ? undefined : ret[1];
+}
+
+/**
+ * Microseconds of a duration such as `10m`, `1h` or `3 hours`, as table settings take them.
+ * @param {string} duration
+ * @returns {number}
+ */
+export function parseDuration(duration) {
+    const ptr0 = passStringToWasm0(duration, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parseDuration(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0];
+}
+
+/**
+ * `[namespace.]table` as `{ namespace, name }`; a name without a namespace is in `default`.
+ * Throws for names outside `[A-Za-z0-9_-]`.
+ * @param {string} name
+ * @returns {any}
+ */
+export function parseTableName(name) {
+    const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parseTableName(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Where table `name` lives in the warehouse at `warehouse` (no trailing slash).
+ * @param {string} warehouse
+ * @param {string} name
+ * @returns {string}
+ */
+export function tableLocation(warehouse, name) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(warehouse, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.tableLocation(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * The warehouse's table index, for stores that can't list.
+ * @param {string} warehouse
+ * @returns {string}
+ */
+export function tablesIndexUri(warehouse) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(warehouse, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.tablesIndexUri(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**
@@ -777,7 +945,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 293, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 286, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_bedb11be96d84d49___convert__closures_____invoke___wasm_bindgen_bedb11be96d84d49___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_bedb11be96d84d49___JsError___true_);
             return ret;
         },
