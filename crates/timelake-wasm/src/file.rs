@@ -156,25 +156,26 @@ impl FileReader {
         self.data.chunks.insert(start, Bytes::from(bytes));
     }
 
-    /// Decodes the planned row groups and columns and applies the query's filters.
-    pub fn read(&self, spec: &QuerySpec) -> Result<Vec<RecordBatch>> {
-        if self.row_groups.is_empty() {
-            return Ok(vec![]);
-        }
+    /// Decodes the planned row groups and columns a batch at a time, with the query's filters applied; batches
+    /// without matching rows are left out.
+    pub fn batches<'a>(&self, spec: &'a QuerySpec) -> Result<impl Iterator<Item = Result<RecordBatch>> + 'a> {
         let mask = ProjectionMask::leaves(self.meta.file_metadata().schema_descr(), self.leaves.iter().copied());
-        let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(self.data.clone(), self.reader_meta.clone())
-            .with_row_groups(self.row_groups.clone())
-            .with_projection(mask)
-            .with_batch_size(BATCH_ROWS)
-            .build()?;
-        let mut out = vec![];
-        for batch in reader {
-            let batch = filter(&batch?, spec)?;
-            if batch.num_rows() > 0 {
-                out.push(batch);
-            }
-        }
-        Ok(out)
+        let reader = (!self.row_groups.is_empty())
+            .then(|| {
+                ParquetRecordBatchReaderBuilder::new_with_metadata(self.data.clone(), self.reader_meta.clone())
+                    .with_row_groups(self.row_groups.clone())
+                    .with_projection(mask)
+                    .with_batch_size(BATCH_ROWS)
+                    .build()
+            })
+            .transpose()?;
+        Ok(reader.into_iter().flatten().filter_map(move |batch| match batch.map_err(Error::from) {
+            Ok(batch) => match filter(&batch, spec) {
+                Ok(batch) if batch.num_rows() == 0 => None,
+                result => Some(result),
+            },
+            Err(e) => Some(Err(e)),
+        }))
     }
 }
 

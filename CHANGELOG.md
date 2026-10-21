@@ -355,6 +355,9 @@ version is a [tag on GitHub](https://github.com/polythings/timelake/tags), so it
   longer prefixed with `head:`.
 - TypeScript client: `TableWriter` takes a table name without a namespace (`readings` is `default.readings`), like the
   reader and the engine, and both check names with the engine's rules, so `iot/readings` or `a.b.c` is an error.
+- The WebAssembly reader (TypeScript client) decodes a file a batch at a time and, for a query with a `limit`,
+  keeps only the rows that can still be in the result, so it uses memory for about `limit` rows rather than every
+  matching row. The newest 10 of 1 Mi rows: 4 MB at most instead of 55 MB, which matters in a Worker's 128 MB.
 - Python: `Table.info()` returns every field of `timelake info --json`, typed as `TableInfo`: the schema, retention,
   partitions, and the newest 50 `snapshots`, newest first. `snapshots` was a count before; the count is now
   `snapshot_count`. `timelake info --json` gains `timelake_format_version` and `current_snapshot`. The Rust API has

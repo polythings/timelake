@@ -97,13 +97,13 @@ pub fn version() -> String {
 /// The most heap bytes in use at once, counted by the WebAssembly build's allocator.
 static HEAP_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 #[global_allocator]
 static ALLOCATOR: counting::Counting = counting::Counting;
 
 /// Counts heap bytes in use and their peak, to tell the heap's own size from the memory the
-/// allocator has grown to (which never shrinks). Only the WebAssembly build installs it; native
-/// tests and dependents keep their own allocator.
+/// allocator has grown to (which never shrinks). The WebAssembly build and this crate's tests install it; native
+/// dependents keep their own allocator.
 #[cfg(any(target_arch = "wasm32", test))]
 mod counting {
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -115,6 +115,35 @@ mod counting {
     pub(crate) struct Counting;
 
     static HEAP: AtomicUsize = AtomicUsize::new(0);
+
+    /// What one thread allocated, for tests: they run at once, each on its own thread.
+    #[cfg(test)]
+    pub(crate) mod thread {
+        use std::cell::Cell;
+
+        thread_local! {
+            /// Bytes this thread allocated less those it freed (freeing another thread's makes it negative).
+            static IN_USE: Cell<isize> = const { Cell::new(0) };
+            static PEAK: Cell<isize> = const { Cell::new(0) };
+        }
+
+        pub(super) fn add(bytes: isize) {
+            let now = IN_USE.get() + bytes;
+            IN_USE.set(now);
+            PEAK.set(PEAK.get().max(now));
+        }
+
+        /// Runs `f` and returns its result with the most heap bytes it had in use at once, beyond what this thread
+        /// had in use before.
+        pub(crate) fn peak_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
+            let (start, outer) = (IN_USE.get(), PEAK.get());
+            PEAK.set(start);
+            let out = f();
+            let peak = PEAK.get();
+            PEAK.set(outer.max(peak));
+            (out, usize::try_from(peak - start).unwrap_or(0))
+        }
+    }
 
     #[expect(unsafe_code, reason = "a global allocator wraps the system one")]
     unsafe impl GlobalAlloc for Counting {
@@ -131,7 +160,7 @@ mod counting {
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            HEAP.fetch_sub(layout.size(), Relaxed);
+            shrank(layout.size());
             // SAFETY: the caller's contract is passed on unchanged.
             unsafe { System.dealloc(ptr, layout) }
         }
@@ -142,7 +171,7 @@ mod counting {
             if new_size > layout.size() {
                 grew(new_size - layout.size());
             } else {
-                HEAP.fetch_sub(layout.size() - new_size, Relaxed);
+                shrank(layout.size() - new_size);
             }
             // SAFETY: the caller's contract is passed on unchanged.
             unsafe { System.realloc(ptr, layout, new_size) }
@@ -153,32 +182,41 @@ mod counting {
     fn grew(bytes: usize) {
         let now = HEAP.fetch_add(bytes, Relaxed) + bytes;
         HEAP_PEAK.fetch_max(now, Relaxed);
+        #[cfg(test)]
+        thread::add(isize::try_from(bytes).unwrap_or(isize::MAX));
+    }
+
+    /// Counts `bytes` fewer in use.
+    fn shrank(bytes: usize) {
+        HEAP.fetch_sub(bytes, Relaxed);
+        #[cfg(test)]
+        thread::add(-isize::try_from(bytes).unwrap_or(isize::MAX));
     }
 
     #[cfg(test)]
     mod tests {
         use std::alloc::{GlobalAlloc, Layout};
-        use std::sync::atomic::Ordering::Relaxed;
 
-        use super::super::HEAP_PEAK;
-        use super::{Counting, HEAP};
+        use super::{Counting, thread};
 
         #[test]
         #[expect(unsafe_code, reason = "drives the allocator directly")]
         fn growing_in_place_counts_only_the_new_size() {
             let (small, large) = (Layout::from_size_align(1000, 8).unwrap(), 3000);
             // SAFETY: each block is freed once, with the layout it has.
-            unsafe {
+            let ((), peak) = thread::peak_of(|| unsafe {
                 let p = Counting.alloc(small);
                 let q = Counting.realloc(p, small, large);
-                assert_eq!((HEAP.load(Relaxed), HEAP_PEAK.load(Relaxed)), (3000, 3000));
                 Counting.dealloc(q, Layout::from_size_align(large, 8).unwrap());
+            });
+            assert_eq!(peak, 3000);
+            // SAFETY: as above.
+            let ((), peak) = thread::peak_of(|| unsafe {
                 let z = Counting.alloc_zeroed(small);
                 assert!(std::slice::from_raw_parts(z, 1000).iter().all(|&b| b == 0));
-                assert_eq!(HEAP.load(Relaxed), 1000);
                 Counting.dealloc(z, small);
-            }
-            assert_eq!(HEAP.load(Relaxed), 0);
+            });
+            assert_eq!(peak, 1000);
         }
     }
 }
@@ -401,8 +439,8 @@ impl Query {
         Ok(self.collector.push(&file.reader)?)
     }
 
-    /// The result as a JSON array string.
-    pub fn finish(&self) -> Result<String, JsValue> {
+    /// The result as a JSON array string. Call it once: the rows are handed over.
+    pub fn finish(&mut self) -> Result<String, JsValue> {
         Ok(self.collector.finish()?)
     }
 }

@@ -35,7 +35,7 @@ impl LatestRows {
         let keys = self.keys.encode(batch)?;
         let winners = self.winners.take().unwrap_or_else(|| batch.slice(0, 0));
         // Files may differ in columns or types: the winners and the batch must share a schema.
-        let (_, both) = unify(&[winners, batch.clone()])?;
+        let (_, both) = unify(vec![winners, batch.clone()])?;
         let [winners, batch] = <[RecordBatch; 2]>::try_from(both).map_err(|_| Error::invalid("two batches"))?;
         let batch = &batch;
         // Rows of the new winners batch, as (0 = old winners | 1 = this batch, row).

@@ -154,7 +154,7 @@ impl Aggregator {
             fields.push(Field::new(agg.name(), array.data_type().clone(), true));
             columns.push(array);
         }
-        to_json(&RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?)
+        to_json(&[RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?])
     }
 }
 

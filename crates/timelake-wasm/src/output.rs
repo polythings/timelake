@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions, new_null_array};
+use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, new_null_array};
 use arrow_cast::cast;
 use arrow_json::writer::JsonArray;
 use arrow_ord::sort::{SortOptions, sort_to_indices};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use arrow_select::concat::concat_batches;
-use arrow_select::take::take_record_batch;
+use arrow_select::concat::concat;
+use arrow_select::interleave::interleave_record_batch;
 
 use crate::error::{Error, Result};
 use crate::spec::QuerySpec;
@@ -20,11 +20,13 @@ pub(crate) fn iso(micros: i64) -> String {
         .unwrap_or_default()
 }
 
-/// A batch as a JSON array of objects, with nulls written out.
-pub(crate) fn to_json(batch: &RecordBatch) -> Result<String> {
+/// Batches as one JSON array of objects, with nulls written out.
+pub(crate) fn to_json(batches: &[RecordBatch]) -> Result<String> {
     let mut buf = vec![];
     let mut writer = arrow_json::WriterBuilder::new().with_explicit_nulls(true).build::<_, JsonArray>(&mut buf);
-    writer.write(batch)?;
+    for batch in batches {
+        writer.write(batch)?;
+    }
     writer.finish()?;
     drop(writer);
     String::from_utf8(buf).map_err(|e| Error::invalid(e.to_string()))
@@ -46,10 +48,11 @@ fn wider(one: &DataType, other: &DataType) -> Option<DataType> {
 /// `batches` in one schema, columns matched by name: files written with different schemas, or
 /// projected to different columns, hold different columns or narrower types. A column a batch
 /// lacks is null there.
-pub(crate) fn unify(batches: &[RecordBatch]) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+pub(crate) fn unify(batches: Vec<RecordBatch>) -> Result<(SchemaRef, Vec<RecordBatch>)> {
     let Some(first) = batches.first() else { return Ok((Arc::new(Schema::empty()), vec![])) };
-    if batches.iter().all(|b| b.schema() == first.schema()) {
-        return Ok((first.schema(), batches.to_vec()));
+    let schema = first.schema();
+    if batches.iter().all(|b| b.schema() == schema) {
+        return Ok((schema, batches));
     }
     let mut fields: Vec<Field> = vec![];
     for f in batches.iter().flat_map(|b| b.schema().fields().iter().cloned().collect::<Vec<_>>()) {
@@ -89,31 +92,68 @@ pub(crate) fn unify(batches: &[RecordBatch]) -> Result<(SchemaRef, Vec<RecordBat
     Ok((schema, aligned))
 }
 
-/// Rows ordered by time, limited and projected as the query asks, as JSON.
-pub(crate) fn rows_json(batches: &[RecordBatch], spec: &QuerySpec) -> Result<String> {
-    if batches.is_empty() {
-        return Ok("[]".into());
-    }
+/// The rows a query returns, in its order and within its limit: by time when the batches have the time column,
+/// else as they came. Takes the batches, so each is freed once its rows are copied out.
+pub(crate) fn top_rows(batches: Vec<RecordBatch>, spec: &QuerySpec) -> Result<Vec<RecordBatch>> {
     let (schema, batches) = unify(batches)?;
-    let all = concat_batches(&schema, &batches)?;
-    let sorted = match spec.time_column.as_ref().and_then(|tc| all.column_by_name(tc)) {
-        Some(time) => {
-            let options = SortOptions { descending: spec.descending, nulls_first: false };
-            take_record_batch(&all, &sort_to_indices(time, Some(options), spec.limit)?)?
+    let Some(time) = spec.time_column.as_ref().and_then(|tc| schema.index_of(tc).ok()) else {
+        return Ok(first_rows(batches, spec.limit));
+    };
+    // Sort the time column alone, then copy the rows out in that order: no copy of every row first.
+    let times: Vec<&dyn Array> = batches.iter().map(|b| b.column(time).as_ref()).collect();
+    let options = SortOptions { descending: spec.descending, nulls_first: false };
+    let order = sort_to_indices(&concat(&times)?, Some(options), spec.limit)?;
+    let starts: Vec<usize> = batches
+        .iter()
+        .scan(0, |start, b| {
+            let this = *start;
+            *start += b.num_rows();
+            Some(this)
+        })
+        .collect();
+    let picks: Vec<(usize, usize)> = order
+        .values()
+        .iter()
+        .map(|&row| {
+            let row = row as usize;
+            let batch = starts.partition_point(|&start| start <= row) - 1;
+            (batch, row - starts[batch])
+        })
+        .collect();
+    let refs: Vec<&RecordBatch> = batches.iter().collect();
+    Ok(vec![interleave_record_batch(&refs, &picks)?])
+}
+
+/// The first `limit` rows of `batches`, in order.
+pub(crate) fn first_rows(batches: Vec<RecordBatch>, limit: Option<usize>) -> Vec<RecordBatch> {
+    let mut left = limit.unwrap_or(usize::MAX);
+    let mut out = Vec::with_capacity(batches.len());
+    for b in batches {
+        if left == 0 {
+            break;
         }
-        None => all,
-    };
-    let limited = match spec.limit {
-        Some(n) if n < sorted.num_rows() => sorted.slice(0, n),
-        _ => sorted,
-    };
-    let projected = if spec.columns.is_empty() {
-        limited
-    } else {
-        let schema = limited.schema();
-        let indices: Vec<usize> = spec.columns.iter().filter_map(|c| schema.index_of(c).ok()).collect();
-        limited.project(&indices)?
-    };
+        let n = b.num_rows().min(left);
+        left -= n;
+        out.push(if n < b.num_rows() { b.slice(0, n) } else { b });
+    }
+    out
+}
+
+/// Rows ordered by time, limited and projected as the query asks, as a JSON array of objects.
+pub(crate) fn rows_json(batches: Vec<RecordBatch>, spec: &QuerySpec) -> Result<String> {
+    let rows = top_rows(batches, spec)?;
+    let projected = rows
+        .iter()
+        .map(|b| {
+            if spec.columns.is_empty() {
+                return Ok(b.clone());
+            }
+            let schema = b.schema();
+            let indices: Vec<usize> = spec.columns.iter().filter_map(|c| schema.index_of(c).ok()).collect();
+            Ok(b.project(&indices)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    drop(rows);
     to_json(&projected)
 }
 
@@ -132,7 +172,7 @@ mod tests {
             ("v", Arc::new(Int64Array::from(vec![1 << 40]))),
         ])
         .unwrap();
-        let json = rows_json(&[old, new], &QuerySpec::default()).unwrap();
+        let json = rows_json(vec![old, new], &QuerySpec::default()).unwrap();
         assert_eq!(json, r#"[{"v":1,"tag":null},{"v":1099511627776,"tag":"a"}]"#);
     }
 
