@@ -29,10 +29,10 @@ serde_json = "1"
 serde-wasm-bindgen = "0.6"
 thiserror = "2"
 lakekit-iceberg = { version = "0.1", default-features = false }
-# loko's store, clock, and random services, at the revision lakekit uses (polythings/loko#1 publishes them).
-loko-store = { git = "https://github.com/polythings/loko", rev = "0c425d3bf65cdedbadd628843fe68d3e9ddc419b", version = "0.2.0" }
-loko-clock = { git = "https://github.com/polythings/loko", rev = "0c425d3bf65cdedbadd628843fe68d3e9ddc419b", version = "0.2.0", features = ["js"] }
-loko-random = { git = "https://github.com/polythings/loko", rev = "0c425d3bf65cdedbadd628843fe68d3e9ddc419b", version = "0.2.0", features = ["js", "getrandom"] }
+# loko's store, clock, and random services, as lakekit uses them.
+loko-store = "0.2"
+loko-clock = { version = "0.2", features = ["js"] }
+loko-random = { version = "0.2", features = ["js", "getrandom"] }
 bytes = "1"
 arrow-arith = "58"
 arrow-array = "58"
@@ -47,11 +47,6 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # ahash (through arrow) seeds from getrandom 0.2, which needs its JavaScript backend on wasm32. The writer's own random
 # numbers come from loko's JsRandom.
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
-
-# Until lakekit 0.1.0 is on crates.io (polythings/lakekit#7), as in the root Cargo.toml.
-[patch.crates-io]
-lakekit-core = { git = "https://github.com/polythings/lakekit", rev = "786f8932a9a66333b493112921ab12f341df7cf8" }
-lakekit-iceberg = { git = "https://github.com/polythings/lakekit", rev = "786f8932a9a66333b493112921ab12f341df7cf8" }
 
 [profile.release]
 opt-level = "s"

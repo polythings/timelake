@@ -2731,7 +2731,8 @@ dependencies = [
 [[package]]
 name = "lakekit-core"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=786f8932a9a66333b493112921ab12f341df7cf8#786f8932a9a66333b493112921ab12f341df7cf8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ddcfe96f287ecee1f46043e6ad70a9d6a881dc53e7dec6c989118186f419b20"
 dependencies = [
  "loko-clock",
  "loko-random",
@@ -2743,7 +2744,8 @@ dependencies = [
 [[package]]
 name = "lakekit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/polythings/lakekit?rev=786f8932a9a66333b493112921ab12f341df7cf8#786f8932a9a66333b493112921ab12f341df7cf8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b402a3745de04da5ee604bea2e6709a8c1956be7219f62eaadd05cf14d3b9d06"
 dependencies = [
  "apache-avro 0.22.0",
  "arrow-schema",
@@ -2878,12 +2880,14 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "loko-clock"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e098e3ebb2e92998727a81827ea7c0d03005b67aede91524fb7466eda0c7d27a"
 
 [[package]]
 name = "loko-random"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82c0143fe1ce8afcd853de0bfdccb4398f481087dc36b6dcef9756a1f8add511"
 dependencies = [
  "rand_core 0.10.1",
 ]
@@ -2891,7 +2895,8 @@ dependencies = [
 [[package]]
 name = "loko-store"
 version = "0.2.0"
-source = "git+https://github.com/polythings/loko?rev=0c425d3bf65cdedbadd628843fe68d3e9ddc419b#0c425d3bf65cdedbadd628843fe68d3e9ddc419b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f05068f849d83d8945e53a06d9f1c5c8fa67110865c19f290a9d0fedf23d5cf"
 
 [[package]]
 name = "lru-slab"
