@@ -17,7 +17,7 @@ dependencies = [
     "boto3>=1.43.112",
     "clickhouse-connect>=1.10.1",
     "questdb[dataframe]>=5.0.0",
-    "botocore[crt]>=1.43.112",
+    "botocore[crt]>=1.43.114",
 ]
 
 [project.scripts]

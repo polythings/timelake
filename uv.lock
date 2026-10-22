@@ -1565,7 +1565,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.112" },
-    { name = "botocore", extras = ["crt"], specifier = ">=1.43.112" },
+    { name = "botocore", extras = ["crt"], specifier = ">=1.43.114" },
     { name = "clickhouse-connect", specifier = ">=1.10.1" },
     { name = "datafusion", specifier = ">=54,<55" },
     { name = "duckdb", specifier = ">=1.5" },
