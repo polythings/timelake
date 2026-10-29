@@ -4,7 +4,7 @@
 members = ["bench", "crates/timelake-py"]
 
 [dependency-groups]
-dev = ["ruff>=0.17", "ty>=0.0.87", "pytest>=8", "duckdb>=1.5", "polars>=1.30"]
+dev = ["ruff>=0.17.1", "ty>=0.0.90", "pytest>=8", "duckdb>=1.5", "polars>=1.30"]
 
 [tool.ruff]
 line-length = 120
