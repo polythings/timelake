@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 vortex = { version = "=0.88.0", features = ["tokio"] }
-vortex-datafusion = "=0.88.0"
+vortex-datafusion = "=0.89.0"
 datafusion = "55"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
