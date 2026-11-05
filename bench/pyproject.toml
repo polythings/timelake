@@ -7,7 +7,7 @@ dependencies = [
     "timelake",
     "duckdb>=1.5",
     "datafusion>=54,<55",                      # pylance 13 (Lance's DataFusion table provider) is built for 54
-    "polars>=1.30",
+    "polars>=2.1.0",
     "pyarrow>=20",
     "numpy>=2",
     "pyiceberg[sql-sqlite,pyarrow,pyiceberg-core]>=0.10",

@@ -21,7 +21,7 @@ python-source = "python"
 module-name = "timelake._timelake"
 
 [dependency-groups]
-test = ["pytest>=8", "duckdb>=1.5", "polars>=1.30"]
+test = ["pytest>=9.2.0", "duckdb>=1.5", "polars>=1.30"]
 
 [tool.uv]
 # Rebuild the native module when Rust sources change.
